@@ -122,6 +122,8 @@ $script:StageBBuildRejections = New-Object System.Collections.ArrayList
 # not. A failed pre- or post-condition READ and a failed SaveAs are different
 # findings, and the label has to say which.
 $script:StageBBuildSubOps = @(
+    'open.ready.fullname'
+    'open.ready.fileformat'
     'saveas.presave.fullname'
     'saveas.presave.fileformat'
     'saveas.presave.target'
@@ -291,6 +293,160 @@ function Get-StageBNonEmptyString {
         throw ($What + ' answered an empty string.')
     }
     return $text
+}
+
+# ===========================================================================
+# THE OPENED WORKBOOK DOES NOT ALWAYS ANSWER FOR ITSELF YET
+# ===========================================================================
+# TWO WINDOWS RUNS, AND THE FAILURE MOVED WITH THE POSITION RATHER THAN THE MEMBER.
+# At cc9cf8d the first read after Workbooks.Open was FileFormat and it answered with
+# nothing. The read wrapper was removed, so at c66e752 the first read after
+# Workbooks.Open became FullName - and IT answered with nothing, in the same place,
+# with COMREJECT|build|none|attempts=0|waited=0 beside it both times. In that same
+# c66e752 run the FIRST Excel session read FullName and FileFormat successfully and
+# completed its SaveAs.
+#
+# So it is not the member and it is not the wrapper. What Windows shows is that
+# Workbooks.Open can return a Workbook RCW in the second isolated session BEFORE its
+# own read-only properties reliably answer. That is WHERE the gap is observed.
+#
+# WHY EXCEL BEHAVES THIS WAY IS NOT ESTABLISHED, and nothing here asserts one: not a
+# message-filter race, not modal state, not OneDrive, not a file lock, not lifecycle
+# overlap, not a marshaling cause, not a bug. The gate is a bounded OBSERVATION, and
+# it waits only because an observation did not answer.
+#
+# AND IT IS NOT A DELAY. Nothing sleeps on the way past a workbook that answers: the
+# first attempt returns and the run continues. A sleep happens only after a
+# readiness observation came back with no answer, or was refused by the message
+# filter and the accepted helper could not resolve it within its own bounds.
+
+# READ-ONLY, AND STRICTER THAN THE HELPER IT CALLS. Invoke-ComRetryRead returning a
+# record whose Value is $null is a SUCCESS to the helper - it read the member and
+# that is what came back. To this gate it means NOT READY YET, which is the whole
+# difference and the reason the gate exists rather than a wider retry.
+function Wait-StageBWorkbookReady {
+    param($Workbook, [string]$ExpectedPath,
+          [int]$MaxAttempts   = 12,
+          [int]$FirstDelayMs  = 250,
+          [int]$MaxDelayMs    = 2000,
+          [int]$TotalBudgetMs = 15000)
+    if ($null -eq $Workbook) { throw 'Wait-StageBWorkbookReady: no workbook.' }
+    if ([string]::IsNullOrWhiteSpace($ExpectedPath)) {
+        throw 'Wait-StageBWorkbookReady: no expected path to recognise the workbook by.'
+    }
+    if ($MaxAttempts -lt 1) { throw 'Wait-StageBWorkbookReady: MaxAttempts must be at least 1.' }
+    if ($TotalBudgetMs -lt 0) { throw 'Wait-StageBWorkbookReady: TotalBudgetMs may not be negative.' }
+
+    $attempt     = 0
+    $waitedMs    = 0
+    $delay       = $FirstDelayMs
+    $nameState   = 'unresolved'
+    $formatState = 'unresolved'
+    $fullName    = ''
+    $format      = 0
+    $ready       = $false
+
+    # THE BOUND IS IN THE HEAD, as it is in the read helper and the SaveAs loop.
+    while ($attempt -lt $MaxAttempts) {
+        $attempt     = $attempt + 1
+        $nameState   = 'unresolved'
+        $formatState = 'unresolved'
+
+        # --- A. which file is this workbook? --------------------------------
+        Set-StageBBuildStep 'open.ready.fullname'
+        $nameValue = $null
+        try {
+            $nameRead = Invoke-ComRetryRead -Target $Workbook -Member 'FullName' `
+                            -Description 'the opened workbook FullName'
+            Add-StageBReadRejection -Operation (Get-StageBBuildLabel) -Record $nameRead
+            $nameValue = $nameRead.Value
+        } catch {
+            # A REFUSAL THE HELPER COULD NOT RESOLVE WITHIN ITS OWN BOUNDS IS 'NOT
+            # READY YET'. Anything else Excel accepted and failed, and that aborts.
+            if ([string]::IsNullOrWhiteSpace((Get-ComRejectionName $_))) { throw }
+            $nameValue = $null
+        }
+        if ($null -eq $nameValue) {
+            $nameState = 'no-answer'
+        } elseif ($nameValue -is [System.Array]) {
+            throw ('READY: the opened workbook FullName answered with ' +
+                   [string]@($nameValue).Count + ' values where one string was required.')
+        } elseif ([string]::IsNullOrWhiteSpace([string]$nameValue)) {
+            $nameState = 'no-answer'
+        } else {
+            # A REAL PATH THAT IS THE WRONG PATH IS AN IDENTITY FAILURE, NOT A DELAY.
+            # Waiting cannot change which workbook this is, so polling would only
+            # spend the budget on a question already answered.
+            if ((Get-StageBComparablePath ([string]$nameValue)) -ne
+                (Get-StageBComparablePath $ExpectedPath)) {
+                throw ('READY: the opened workbook is bound to ' + [string]$nameValue +
+                       ' and not to ' + $ExpectedPath + '. Waiting cannot change which ' +
+                       'workbook this is.')
+            }
+            $fullName  = [string]$nameValue
+            $nameState = 'ok'
+        }
+
+        # --- B. what format is it in? ---------------------------------------
+        # OBSERVED, NEVER ASSUMED. This value becomes the original source format the
+        # SaveAs NOT-EXECUTED verdict is measured against, so a literal here would
+        # be this script restating a contract it is supposed to read.
+        Set-StageBBuildStep 'open.ready.fileformat'
+        $formatValue = $null
+        try {
+            $formatRead = Invoke-ComRetryRead -Target $Workbook -Member 'FileFormat' `
+                              -Description 'the opened workbook FileFormat'
+            Add-StageBReadRejection -Operation (Get-StageBBuildLabel) -Record $formatRead
+            $formatValue = $formatRead.Value
+        } catch {
+            if ([string]::IsNullOrWhiteSpace((Get-ComRejectionName $_))) { throw }
+            $formatValue = $null
+        }
+        if ($null -eq $formatValue) {
+            $formatState = 'no-answer'
+        } elseif ($formatValue -is [System.Array]) {
+            throw ('READY: the opened workbook FileFormat answered with ' +
+                   [string]@($formatValue).Count + ' values where one scalar was required.')
+        } elseif ([string]::IsNullOrWhiteSpace([string]$formatValue)) {
+            $formatState = 'no-answer'
+        } elseif ((([string]$formatValue).Trim()) -notmatch '^-?[0-9]+$') {
+            # A REAL BUT UNUSABLE ANSWER IS AN ERROR, not a readiness delay.
+            throw ('READY: the opened workbook FileFormat answered ' +
+                   ([string]$formatValue).Trim() + ', which is not an integer.')
+        } else {
+            $format      = [int](([string]$formatValue).Trim())
+            $formatState = 'ok'
+        }
+
+        if (($nameState -eq 'ok') -and ($formatState -eq 'ok')) { $ready = $true; break }
+
+        # NO SLEEP ON THE WAY OUT. The break above happens first, so a workbook that
+        # answered is never waited on.
+        if ($attempt -ge $MaxAttempts) { break }
+        if (($waitedMs + $delay) -gt $TotalBudgetMs) { break }
+        Start-Sleep -Milliseconds $delay
+        $waitedMs = $waitedMs + $delay
+        $delay = [Math]::Min(($delay + $FirstDelayMs), $MaxDelayMs)
+    }
+
+    if (-not $ready) {
+        Add-Note ('READY|open|exhausted|attempts=' + [string]$attempt + '|waited=' +
+                  [string]$waitedMs + '|fullname=' + $nameState + '|fileformat=' + $formatState)
+        throw ('READY: the opened workbook did not answer its own properties after ' +
+               [string]$attempt + ' attempt(s) and ' + [string]$waitedMs + ' ms ' +
+               '(fullname=' + $nameState + ', fileformat=' + $formatState + '). ' +
+               'Stage-B stops here; SaveAs was not attempted.')
+    }
+    # ONE LINE, whatever happened. A run that waited nine seconds and one that did
+    # not must not look alike.
+    Add-Note ('READY|open|attempt=' + [string]$attempt + '|fullname=True|fileformat=' +
+              [string]$format + '|waited=' + [string]$waitedMs)
+    return [pscustomobject]@{
+        FullName   = $fullName
+        FileFormat = $format
+        Attempts   = $attempt
+        WaitedMs   = $waitedMs
+    }
 }
 
 # ===========================================================================
@@ -608,30 +764,29 @@ try {
     Set-StageBBuildOp 'open.workbook'
     $workbooks = $excel.Workbooks
     $wb = $workbooks.Open($stageAPath)
-    Add-Step 'Open the Stage-A workbook' 'PASS' $stageAPath
+    # IMMEDIATELY, ON THE OBJECT Open JUST RETURNED, and before anything at all is
+    # read or written through it. Two Windows runs failed on the FIRST property read
+    # after this line - different members, same position.
+    $ready = Wait-StageBWorkbookReady -Workbook $wb -ExpectedPath $stageAPath
+    Add-Step 'Open the Stage-A workbook' 'PASS' `
+        ($stageAPath + '; ready on attempt ' + [string]$ready.Attempts + ', waited ' +
+         [string]$ready.WaitedMs + ' ms, FileFormat=' + [string]$ready.FileFormat)
 
     # --- 3. save as .xlsm --------------------------------------------------
     if (Test-Path -LiteralPath $stageBPath) { Remove-Item -LiteralPath $stageBPath -Force }
-    # THE BASELINE IS OBSERVED FIRST, AND IN THE PROVEN SHAPE. 'Nothing moved' can
-    # only be proved against what the workbook WAS, so a NOT-EXECUTED verdict is
-    # worth nothing without a trustworthy baseline - and run 5 is what a baseline
-    # nobody checked looks like. Both reads use the accepted helper directly, on
-    # $wb, one hop from the member access, exactly as the reopen verification does.
+    # THE BASELINE IS WHAT THE READINESS GATE ALREADY OBSERVED, and it is NOT read
+    # again. A second read for symmetry's sake would be a second chance for the
+    # workbook to answer differently, and the value the NOT-EXECUTED verdict is
+    # measured against has to be the one readiness actually established.
     Set-StageBBuildOp 'saveas.xlsm'
 
     Set-StageBBuildStep 'saveas.presave.fullname'
-    $preName = Invoke-ComRetryRead -Target $wb -Member 'FullName' `
-                   -Description 'the Stage-A workbook FullName before SaveAs'
-    Add-StageBReadRejection -Operation (Get-StageBBuildLabel) -Record $preName
-    $sourceFullName = Get-StageBNonEmptyString -Value $preName.Value `
-                          -What 'the Stage-A workbook FullName before SaveAs'
+    $sourceFullName = Get-StageBNonEmptyString -Value $ready.FullName `
+                          -What 'the Stage-A workbook FullName observed at open'
 
     Set-StageBBuildStep 'saveas.presave.fileformat'
-    $preFormat = Invoke-ComRetryRead -Target $wb -Member 'FileFormat' `
-                     -Description 'the Stage-A workbook FileFormat before SaveAs'
-    Add-StageBReadRejection -Operation (Get-StageBBuildLabel) -Record $preFormat
-    $sourceFormat = Get-StageBScalarInt -Value $preFormat.Value `
-                        -What 'the Stage-A workbook FileFormat before SaveAs'
+    $sourceFormat = Get-StageBScalarInt -Value $ready.FileFormat `
+                        -What 'the Stage-A workbook FileFormat observed at open'
 
     # AND THE BASELINE MUST BE INTERNALLY CONSISTENT BEFORE ANYTHING IS SAVED. If
     # the workbook is not the Stage-A file, or the target is already there, then

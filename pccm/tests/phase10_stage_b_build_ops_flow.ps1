@@ -52,6 +52,8 @@
       TELEMETRY|<case>|...
       SUBOPS|<n>|<comma-separated sub-operation vocabulary>
       STEP|<case>|<label>|<outcome>
+      READY|<case>|<outcome>|<attempts>|<waited>|<format>|<reads>|<sleeps>|<detail>
+      READYNOTE|<case>|<diagnostic line>
     Exit 0 always.
 #>
 param(
@@ -84,6 +86,15 @@ if ($errors -and $errors.Count -gt 0) {
 # control rather than reading an undefined script variable.
 $script:StageBBuildOps    = @()
 $script:StageBBuildSubOps = @()
+
+# Section R's scripted stand-in for the accepted helper records what it was asked
+# for. Declared HERE rather than beside the stub, because a script-scope variable
+# first assigned after the first helper call is the defect the uninitialised-scope
+# audit exists to catch.
+$script:ReadyStubScript = @()
+$script:ReadyStubIndex  = 0
+$script:ReadyStubReads  = 0
+$script:ReadyStubPath   = ''
 
 # Section D's stub records what the wrapper handed it. Declared HERE rather than
 # beside the stub, because a script-scope variable first assigned after the first
@@ -118,7 +129,8 @@ foreach ($name in @('Add-Note', 'Set-StageBBuildOp', 'Get-StageBBuildOp',
                     'Get-StageBBuildRejections', 'Add-StageBReadRejection',
                     'Get-StageBScalarInt', 'Get-StageBNonEmptyString',
                     'Get-StageBComHResult', 'New-StageBRejectionLine',
-                    'Get-StageBComparablePath', 'Get-StageBSaveAsPostcondition',
+                    'Get-StageBComparablePath', 'Wait-StageBWorkbookReady',
+                    'Get-StageBSaveAsPostcondition',
                     'Invoke-StageBSaveAs', 'New-StageBSaveAsResult')) {
     $body = $null
     foreach ($fn in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
@@ -527,5 +539,161 @@ Write-Output ('STEP|typo|' + (Get-StageBBuildLabel) + '|' + $outcome)
 Set-StageBBuildStep 'saveas.call'
 $null = Set-StageBBuildOp 'vbcomponents.import'
 Write-Output ('STEP|cleared|' + (Get-StageBBuildLabel) + '|' + (Get-StageBBuildStep) + '|ok')
+
+# ---------------------------------------------------------------------------
+# R. THE POST-OPEN READINESS GATE
+# ---------------------------------------------------------------------------
+# TWO WINDOWS RUNS FAILED ON THE FIRST PROPERTY READ AFTER Workbooks.Open -
+# FileFormat at cc9cf8d, FullName at c66e752 - while the first Excel session in the
+# same run read both and saved. So the fake here answers with NOTHING for a
+# configurable number of attempts, then answers properly, and what is counted is:
+# how many attempts it took, how long was waited, and whether anything was waited on
+# at all when the workbook answered straight away.
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public class PccmFakeOpened {
+    public static int  NameSilent   = 0;   // answer FullName with null this many times
+    public static int  FormatSilent = 0;   // answer FileFormat with null this many times
+    public static int  NameRefusals = 0;   // raise a retryable refusal this many times
+    public static int  NameReads    = 0;
+    public static int  FormatReads  = 0;
+    public static string Path       = "";
+    public static object FormatAnswer = null;
+    public static bool PlainError   = false;
+    public object FullName {
+        get {
+            NameReads++;
+            if (PlainError) throw new InvalidOperationException("Excel accepted this and it failed");
+            if (NameReads <= NameRefusals) throw new COMException("Call was rejected by callee.", -2147418111);
+            if (NameReads <= NameRefusals + NameSilent) return null;
+            return Path;
+        }
+    }
+    public object FileFormat {
+        get {
+            FormatReads++;
+            if (FormatReads <= FormatSilent) return null;
+            return FormatAnswer;
+        }
+    }
+}
+'@
+
+$readyRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('pccm_ready_' + [System.Guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Path $readyRoot -Force
+$expected = Join-Path $readyRoot 'PCCM_stageA.xlsx'
+Set-Content -LiteralPath $expected -Value 'stage a' -NoNewline
+
+foreach ($c in @(
+    @{ n='ready-first';        ns=0; fs=0; nr=0; fmt=51; path='EXPECTED'; plain=$false; a=12; d=1;  b=15000 },
+    @{ n='name-null-then-ok';  ns=2; fs=0; nr=0; fmt=51; path='EXPECTED'; plain=$false; a=12; d=1;  b=15000 },
+    @{ n='format-null-then-ok';ns=0; fs=2; nr=0; fmt=51; path='EXPECTED'; plain=$false; a=12; d=1;  b=15000 },
+    @{ n='both-null-then-ok';  ns=3; fs=3; nr=0; fmt=52; path='EXPECTED'; plain=$false; a=12; d=1;  b=15000 },
+    @{ n='wrong-path';         ns=0; fs=0; nr=0; fmt=51; path='OTHER';    plain=$false; a=12; d=1;  b=15000 },
+    @{ n='bad-format';         ns=0; fs=0; nr=0; fmt='xlsm'; path='EXPECTED'; plain=$false; a=12; d=1; b=15000 },
+    @{ n='attempt-exhausted';  ns=99;fs=0; nr=0; fmt=51; path='EXPECTED'; plain=$false; a=3;  d=1;  b=15000 },
+    @{ n='budget-exhausted';   ns=99;fs=0; nr=0; fmt=51; path='EXPECTED'; plain=$false; a=50; d=2;  b=5 })) {
+    $notes.Clear()
+    $null = Set-StageBBuildOp 'open.workbook'
+    [PccmFakeOpened]::NameSilent   = [int]$c.ns
+    [PccmFakeOpened]::FormatSilent = [int]$c.fs
+    [PccmFakeOpened]::NameRefusals = [int]$c.nr
+    [PccmFakeOpened]::NameReads    = 0
+    [PccmFakeOpened]::FormatReads  = 0
+    [PccmFakeOpened]::PlainError   = [bool]$c.plain
+    [PccmFakeOpened]::FormatAnswer = $c.fmt
+    [PccmFakeOpened]::Path = $(if ([string]$c.path -eq 'EXPECTED') { $expected }
+                               else { Join-Path $readyRoot 'SOMETHING_ELSE.xlsx' })
+    $opened = New-Object PccmFakeOpened
+
+    $outcome = 'READY'; $attempts = -1; $waited = -1; $format = -1; $detail = ''
+    try {
+        $r = Wait-StageBWorkbookReady -Workbook $opened -ExpectedPath $expected `
+                 -MaxAttempts ([int]$c.a) -FirstDelayMs ([int]$c.d) `
+                 -MaxDelayMs ([int]$c.d) -TotalBudgetMs ([int]$c.b)
+        $attempts = [int]$r.Attempts
+        $waited = [int]$r.WaitedMs
+        $format = [int]$r.FileFormat
+        if ((Get-StageBComparablePath ([string]$r.FullName)) -ne (Get-StageBComparablePath $expected)) {
+            $outcome = 'WRONG-PATH-RETURNED'
+        }
+    } catch {
+        $outcome = 'ABORTED'
+        $detail = [string]$_.Exception.Message
+    }
+    Write-Output ('READY|' + $c.n + '|' + $outcome + '|' + [string]$attempts + '|' +
+                  [string]$waited + '|' + [string]$format + '|nameReads=' +
+                  [string][PccmFakeOpened]::NameReads + '|formatReads=' +
+                  [string][PccmFakeOpened]::FormatReads + '|' + $detail)
+    foreach ($line in @($notes)) { Write-Output ('READYNOTE|' + $c.n + '|' + $line) }
+}
+
+# --- REFUSALS AND REAL ERRORS, THROUGH A SCRIPTED HELPER --------------------
+# A PROPERTY GETTER CANNOT RAISE ON THIS HOST - it is swallowed and the value comes
+# back $null. A fake that "threw" a rejection from FullName therefore exercised the
+# NULL path and proved nothing about the refusal path, so both are driven through a
+# scripted stand-in for the accepted helper instead. Its CONTRACT is what the gate
+# depends on: a refusal it could not resolve escapes as a retryable COMException,
+# and anything Excel accepted escapes as itself.
+#
+# LAST IN THE FILE, because PowerShell resolves a function name at CALL time and the
+# last definition wins - every case above has already run against the real helper.
+function Invoke-ComRetryRead {
+    param($Target, [string]$Member, $Key, [string]$Description,
+          [int]$MaxAttempts = 12, [int]$FirstDelayMs = 250,
+          [int]$MaxDelayMs = 2000, [int]$TotalBudgetMs = 15000)
+    $script:ReadyStubReads = $script:ReadyStubReads + 1
+    if ($Member -eq 'FileFormat') {
+        return [pscustomobject]@{ Description = $Description; Value = 51
+                                  Attempts = 1; WaitedMs = 0; Rejections = '' }
+    }
+    $step = 'value'
+    if ($script:ReadyStubIndex -lt @($script:ReadyStubScript).Count) {
+        $step = [string]$script:ReadyStubScript[$script:ReadyStubIndex]
+    }
+    $script:ReadyStubIndex = $script:ReadyStubIndex + 1
+    if ($step -eq 'refused') {
+        throw (New-Object System.Runtime.InteropServices.COMException 'Call was rejected by callee.', -2147418111)
+    }
+    if ($step -eq 'accepted-error') {
+        throw (New-Object System.Runtime.InteropServices.COMException 'Exception from HRESULT: 0x800A03EC', -2146827284)
+    }
+    if ($step -eq 'null') {
+        return [pscustomobject]@{ Description = $Description; Value = $null
+                                  Attempts = 1; WaitedMs = 0; Rejections = '' }
+    }
+    return [pscustomobject]@{ Description = $Description; Value = $script:ReadyStubPath
+                              Attempts = 1; WaitedMs = 0; Rejections = '' }
+}
+
+$script:ReadyStubPath = $expected
+foreach ($c in @(
+    @{ n='refused-then-ok';      script=@('refused', 'refused', 'value') },
+    @{ n='non-retryable-aborts'; script=@('accepted-error') },
+    @{ n='refused-then-null-then-ok'; script=@('refused', 'null', 'value') })) {
+    $notes.Clear()
+    $null = Set-StageBBuildOp 'open.workbook'
+    $script:ReadyStubScript = @($c.script)
+    $script:ReadyStubIndex  = 0
+    $script:ReadyStubReads  = 0
+    $outcome = 'READY'; $attempts = -1; $waited = -1; $format = -1; $detail = ''
+    try {
+        $r = Wait-StageBWorkbookReady -Workbook $opened -ExpectedPath $expected `
+                 -MaxAttempts 12 -FirstDelayMs 1 -MaxDelayMs 1 -TotalBudgetMs 15000
+        $attempts = [int]$r.Attempts; $waited = [int]$r.WaitedMs; $format = [int]$r.FileFormat
+    } catch {
+        $outcome = 'ABORTED'
+        $detail = [string]$_.Exception.Message
+        $hex = Get-StageBComHResult $_
+        if ($hex -ne '') { $detail = $hex + ' ' + $detail }
+    }
+    Write-Output ('READY|' + $c.n + '|' + $outcome + '|' + [string]$attempts + '|' +
+                  [string]$waited + '|' + [string]$format + '|nameReads=' +
+                  [string]$script:ReadyStubIndex + '|formatReads=0|' + $detail)
+    foreach ($line in @($notes)) { Write-Output ('READYNOTE|' + $c.n + '|' + $line) }
+}
+
+Remove-Item -LiteralPath $readyRoot -Recurse -Force -ErrorAction SilentlyContinue
 
 exit 0

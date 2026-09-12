@@ -90,6 +90,8 @@ DECLARED_POSTCONDITION_READS = {
 # operation=saveas.xlsm, which reads as though the save had been attempted; it had
 # not. Restated here so a sub-operation quietly dropped fails a control.
 BUILD_SUB_OPS = (
+    "open.ready.fullname",
+    "open.ready.fileformat",
     "saveas.presave.fullname",
     "saveas.presave.fileformat",
     "saveas.presave.target",
@@ -107,6 +109,11 @@ SAVEAS_HELPERS = (
     "Invoke-StageBSaveAs",
     "New-StageBSaveAsResult",
 )
+
+# Every build-only function that performs a COM read. The readiness gate joined this
+# list when Windows proved the post-open gap; a read hidden in a function that is not
+# here is a read no control looks at.
+READ_SITE_FUNCTIONS = ("Wait-StageBWorkbookReady",) + SAVEAS_HELPERS
 
 # Every non-idempotent build mutation. A retry around any of these would be a
 # guess about whether Excel accepted it, which is the one thing the refusal
@@ -267,7 +274,8 @@ def _flow() -> dict:
         rows: dict = {"ops": [], "label": {}, "hres": {}, "line": {}, "retry": {},
                       "ledger": {}, "wrap": {}, "host": (), "unmet": [],
                       "save": {}, "savenote": {}, "savestate": {}, "savepath": {},
-                      "read": {}, "telemetry": {}, "subops": [], "step": {}}
+                      "read": {}, "telemetry": {}, "subops": [], "step": {},
+                      "ready": {}, "readynote": {}}
         for raw in done.stdout.splitlines():
             if raw.startswith(("PARSE|", "MISSING|")):
                 rows["unmet"].append(raw)
@@ -295,6 +303,22 @@ def _flow() -> dict:
             elif raw.startswith("HOST|"):
                 prop, method = raw[len("HOST|"):].split("|", 1)
                 rows["host"] = (prop, method)
+            elif raw.startswith("READY|"):
+                parts = raw[len("READY|"):].split("|")
+                case, outcome, attempts, waited, fmt = parts[0], parts[1], parts[2], parts[3], parts[4]
+                rest = "|".join(parts[5:])
+                row = {"outcome": outcome, "attempts": int(attempts),
+                       "waited": int(waited), "format": int(fmt), "detail": rest,
+                       "nameReads": -1, "formatReads": -1}
+                for part in rest.split("|"):
+                    if part.startswith("nameReads="):
+                        row["nameReads"] = int(part.split("=", 1)[1])
+                    elif part.startswith("formatReads="):
+                        row["formatReads"] = int(part.split("=", 1)[1])
+                rows["ready"][case] = row
+            elif raw.startswith("READYNOTE|"):
+                case, line = raw[len("READYNOTE|"):].split("|", 1)
+                rows["readynote"].setdefault(case, []).append(line)
             elif raw.startswith("READ|"):
                 case, outcome, detail, kind, lines = raw[len("READ|"):].split("|", 4)
                 rows["read"][case] = {"outcome": outcome, "value": detail,
@@ -489,13 +513,23 @@ def test_14_the_only_sleep_in_either_script_is_inside_the_bounded_retry() -> Non
                    for block in (retry, wait_exit)), lifecycle[at - 200 : at + 60]
     code = _build_code()
     saveas = _ps_function(code, "Invoke-StageBSaveAs")
+    ready = _ps_function(code, "Wait-StageBWorkbookReady")
+    # EXACTLY TWO, EACH IN A BOUNDED LOOP, EACH GATED ON AN OBSERVATION THAT DID NOT
+    # SUCCEED. The second one arrived when Windows proved the post-open readiness gap
+    # twice over; it is declared rather than admitted by widening the count.
     build_sleeps = [m.start() for m in re.finditer(r"Start-Sleep", code)]
-    assert len(build_sleeps) == 1, f"the bootstrap sleeps in {len(build_sleeps)} places"
-    assert "Start-Sleep" in saveas, "the bootstrap's sleep is not in the SaveAs retry"
-    # AND IT IS GATED ON THE OBSERVATION, not merely on the refusal.
+    assert len(build_sleeps) == 2, f"the bootstrap sleeps in {len(build_sleeps)} places"
+    assert saveas.count("Start-Sleep") == 1, "the SaveAs retry lost its backoff"
+    assert ready.count("Start-Sleep") == 1, "the readiness gate lost its backoff"
+    # THE SAVEAS SLEEP IS GATED ON THE POSTCONDITION, not merely on the refusal.
     gate = saveas.index("if ($state.State -ne 'not-executed') {")
     sleep_at = saveas.index("Start-Sleep")
     assert gate < sleep_at, "the sleep is reached before the state is established"
+    # THE READINESS SLEEP IS GATED ON READINESS HAVING FAILED, and the success path
+    # breaks out before it.
+    ready_ok = ready.index("if (($nameState -eq 'ok') -and ($formatState -eq 'ok')) { $ready = $true; break }")
+    ready_sleep = ready.index("Start-Sleep")
+    assert ready_ok < ready_sleep, "the readiness gate can sleep before checking"
 
 
 def test_14a_the_retry_loop_carries_its_bound_in_its_own_head() -> None:
@@ -673,7 +707,7 @@ def test_33_the_build_block_retries_only_its_declared_property_gets() -> None:
     """
     code = _build_code()
     scope = _joined(_build_block()) + "\n" + "\n".join(
-        _joined(_ps_function(code, name)) for name in SAVEAS_HELPERS)
+        _joined(_ps_function(code, name)) for name in READ_SITE_FUNCTIONS)
     allowed = dict(DECLARED_BUILD_READS)
     allowed.update(DECLARED_POSTCONDITION_READS)
     calls = [line for line in re.findall(r"Invoke-ComRetryRead\b[^\n]*", scope)
@@ -1081,7 +1115,7 @@ def test_69_the_operation_label_is_set_before_the_call_is_forwarded() -> None:
     and observed on the reissued one."""
     code = _build_code()
     scope = _joined(_build_block()) + "\n" + "\n".join(
-        _joined(_ps_function(code, name)) for name in SAVEAS_HELPERS)
+        _joined(_ps_function(code, name)) for name in READ_SITE_FUNCTIONS)
     # IMMEDIATELY BEFORE, NOT MERELY NEARBY. A six-line window passed when the label
     # was moved to AFTER its read, because the PREVIOUS read's label was still in
     # the window - so the check is now the nearest preceding statement.
@@ -1091,10 +1125,22 @@ def test_69_the_operation_label_is_set_before_the_call_is_forwarded() -> None:
         if "Invoke-ComRetryRead" not in line or "-Target " not in line:
             continue
         assert index > 0, line
-        previous = lines[index - 1].strip()
-        assert previous.startswith(("Set-StageBBuildStep ", "Set-StageBBuildOp ")), (
-            f"this read does not set its label immediately before it:\n"
-            f"  {previous}\n  {line.strip()}")
+        # THE PROPERTY IS THAT NO COM CALL INTERVENES. Block scaffolding and local
+        # initialisers legitimately sit between a label and its read - the readiness
+        # gate wraps each read in a try so a refusal it cannot resolve becomes 'not
+        # ready yet' - but another READ must not, because then this read would be
+        # carrying that one's label.
+        back = index - 1
+        while back >= 0 and not lines[back].strip().startswith(
+                ("Set-StageBBuildStep ", "Set-StageBBuildOp ")):
+            back -= 1
+        assert back >= 0, f"this read sets no label at all:\n  {line.strip()}"
+        between = lines[back + 1 : index]
+        for candidate in between:
+            assert "Invoke-ComRetryRead" not in candidate, (
+                f"this read carries the label of an earlier one:\n"
+                f"  {lines[back].strip()}\n  {candidate.strip()}\n  {line.strip()}")
+            assert ".SaveAs(" not in candidate, candidate
     # EXECUTED: the reissued read's telemetry line carries the SUB-operation.
     row = _flow()["telemetry"]["retry-then-value"]
     assert "saveas.presave.fileformat" in row["detail"], row
@@ -1228,30 +1274,37 @@ def test_74_every_other_structural_mutation_is_also_left_alone() -> None:
             assert f"-Member '{banned}'" not in line, line
 
 
-def test_75_no_blanket_sleep_and_no_readiness_gate_was_added() -> None:
-    """NOT AUTHORISED IN ANY BATCH SO FAR, AND REFUSED HERE RATHER THAN REMEMBERED.
-    We still do not know WHY Excel refuses the second-session SaveAs, and a poll
-    inserted before that evidence exists could make the symptom disappear without
-    proving its cause."""
+def test_75_the_only_wait_is_the_bounded_post_open_readiness_gate() -> None:
+    """DECLARED. This used to refuse a readiness gate outright, because nothing had
+    shown one was needed. Two Windows runs then failed on the FIRST property read
+    after Workbooks.Open - FileFormat at cc9cf8d, FullName at c66e752, the same
+    position with different members - while the first Excel session of the same run
+    read both and saved. So the gate is authorised, and what this control now states
+    is its SHAPE: one bounded loop, in one place, that waits only when an
+    observation did not answer.
+    """
     code = _build_code()
     outside = code.replace(_ps_function(code, "Invoke-StageBSaveAs"), "")
-    assert "Start-Sleep" not in outside, "the bootstrap sleeps outside the SaveAs retry"
-    for banned in ("Wait-ExcelReady", "Test-ExcelReady", "Wait-WorkbookReady",
-                   "readiness", "-Member 'Ready'", "Start-Process", "Get-Random"):
-        assert banned not in code, f"a readiness mechanism appeared: {banned}"
-    # THE STRUCTURAL CHECK, NOT A WORD LIST. Between the Open and the save there is
-    # the pre-save OBSERVATION and nothing else - no wait, no loop, no poll.
+    outside = outside.replace(_ps_function(code, "Wait-StageBWorkbookReady"), "")
+    assert "Start-Sleep" not in outside, (
+        "the bootstrap sleeps outside the SaveAs retry and the readiness gate")
+    for banned in ("Start-Process", "Get-Random", "Wait-Process", "WaitForExit"):
+        assert banned not in code, f"an unbounded wait appeared: {banned}"
+    # NOT A BROAD HEALTH PROBE. The gate observes exactly two members and nothing
+    # else - no Ready, no Saved, no Application, no window handle.
+    ready = _joined(_ps_function(code, "Wait-StageBWorkbookReady"))
+    members = set(re.findall(r"-Member '(\w+)'", ready))
+    assert members == {"FullName", "FileFormat"}, sorted(members)
+    # THE STRUCTURAL CHECK. Between the Open and the save there is the GATE and the
+    # baseline validation - no other wait, no other loop, no unconditional delay.
     joined = _joined(_build_block())
     span = joined[joined.index("$wb = $workbooks.Open($stageAPath)")
                   : joined.index("$saveAs = Invoke-StageBSaveAs")]
     for banned in ("Start-Sleep", "while", "do {", "for (", "-Member 'Worksheets'",
                    "-Member 'VBProject'", "-Member 'VBComponents'"):
         assert banned not in span, f"something was inserted after the Open: {span!r}"
-    # Exactly the two baseline reads, each labelled.
-    assert span.count("Invoke-ComRetryRead") == 2, span
-    assert "-Member 'FullName'" in span and "-Member 'FileFormat'" in span
-    assert "Set-StageBBuildStep 'saveas.presave.fullname'" in span
-    assert "Set-StageBBuildStep 'saveas.presave.fileformat'" in span
+    # The span performs NO read of its own: the gate did the observing.
+    assert "Invoke-ComRetryRead" not in span, span
 
 
 
@@ -1659,14 +1712,17 @@ def test_99_the_baseline_is_observed_before_the_save_and_proved_consistent() -> 
     Run 5 is what an unchecked baseline looks like: the read answered with nothing
     and the run had no business attempting a save at all."""
     joined = _joined(_build_block())
-    assert "-Description 'the Stage-A workbook FullName before SaveAs'" in joined
-    assert "-Description 'the Stage-A workbook FileFormat before SaveAs'" in joined
-    name_at = joined.index("$preName = Invoke-ComRetryRead")
-    fmt_at = joined.index("$preFormat = Invoke-ComRetryRead")
+    # THE BASELINE IS WHAT READINESS OBSERVED, and it is not read a second time: a
+    # re-read would be a second chance for the workbook to answer differently than
+    # the value the NOT-EXECUTED verdict is measured against.
+    name_at = joined.index("$sourceFullName = Get-StageBNonEmptyString -Value $ready.FullName")
+    fmt_at = joined.index("$sourceFormat = Get-StageBScalarInt -Value $ready.FileFormat")
     call_at = joined.index("$saveAs = Invoke-StageBSaveAs")
-    assert name_at < fmt_at < call_at, "the baseline is read after the save"
+    ready_at = joined.index("$ready = Wait-StageBWorkbookReady -Workbook $wb")
+    assert ready_at < name_at < fmt_at < call_at, "the baseline is not taken in order"
     assert "-SourceFormat $sourceFormat" in joined
     assert "-SourceFullName $sourceFullName" in joined
+    assert joined.count("Wait-StageBWorkbookReady -Workbook") == 1, "readiness runs twice"
     # AND THE BASELINE MUST BE CONSISTENT OR THE SAVE IS NOT ATTEMPTED.
     assert "SAVEAS BASELINE: the workbook is bound to " in joined
     assert "so NOT EXECUTED could not be recognised. The save was not attempted." in joined
@@ -1827,7 +1883,7 @@ def test_105_every_build_read_uses_the_windows_proven_form() -> None:
     no intermediate reader stands between the COM object and the member access."""
     code = _build_code()
     scope = _joined(_build_block()) + "\n" + "\n".join(
-        _joined(_ps_function(code, name)) for name in SAVEAS_HELPERS)
+        _joined(_ps_function(code, name)) for name in READ_SITE_FUNCTIONS)
     reads = [line for line in re.findall(r"[^\n]*Invoke-ComRetryRead\b[^\n]*", scope)
              if "-Target " in line]
     assert len(reads) >= 6, reads
@@ -1857,7 +1913,7 @@ def test_106_the_value_is_never_produced_by_an_expression_that_also_reports() ->
     a report that is not in its expression, and it cannot be lost to one either."""
     code = _build_code()
     scope = _joined(_build_block()) + "\n" + "\n".join(
-        _joined(_ps_function(code, name)) for name in SAVEAS_HELPERS)
+        _joined(_ps_function(code, name)) for name in READ_SITE_FUNCTIONS)
     for line in scope.splitlines():
         if "Add-StageBReadRejection" not in line:
             continue
@@ -1894,7 +1950,7 @@ def test_108_every_sub_operation_maps_to_a_real_call_site() -> None:
     """A VOCABULARY ENTRY WITH NO CALL SITE CAN NEVER APPEAR IN A DIAGNOSTIC."""
     code = _build_code()
     scope = _joined(_build_block()) + "\n" + "\n".join(
-        _joined(_ps_function(code, name)) for name in SAVEAS_HELPERS)
+        _joined(_ps_function(code, name)) for name in READ_SITE_FUNCTIONS)
     for step in BUILD_SUB_OPS:
         assert f"Set-StageBBuildStep '{step}'" in scope, f"{step} is never set"
     used = set(re.findall(r"Set-StageBBuildStep '([^']+)'", scope))
@@ -1908,7 +1964,15 @@ def test_109_a_failed_observation_is_not_reported_as_a_failed_save() -> None:
     code = _build_code()
     # The presave reads set presave labels; the call sets saveas.call.
     joined = _joined(_build_block())
-    fmt_at = joined.index("$preFormat = Invoke-ComRetryRead")
+    # The baseline VALIDATION carries the presave labels; the reads that feed it
+    # carry the readiness labels, and the gate is where they happen.
+    gate = _joined(_ps_function(code, "Wait-StageBWorkbookReady"))
+    for step, member in (("open.ready.fullname", "FullName"),
+                         ("open.ready.fileformat", "FileFormat")):
+        step_at = gate.index(f"Set-StageBBuildStep '{step}'")
+        read_at = gate.index(f"-Member '{member}'", step_at)
+        assert step_at < read_at, step
+    fmt_at = joined.index("$sourceFormat = Get-StageBScalarInt -Value $ready.FileFormat")
     assert joined.index("Set-StageBBuildStep 'saveas.presave.fileformat'") < fmt_at
     saveas = _joined(_ps_function(code, "Invoke-StageBSaveAs"))
     call_at = saveas.index(".SaveAs(")
@@ -1945,8 +2009,8 @@ def test_110_the_baseline_gates_the_save() -> None:
     head = joined[:call_at]
     # The two reads, the two validators and the two consistency refusals all
     # precede the save.
-    for required in ("Get-StageBNonEmptyString -Value $preName.Value",
-                     "Get-StageBScalarInt -Value $preFormat.Value",
+    for required in ("Get-StageBNonEmptyString -Value $ready.FullName",
+                     "Get-StageBScalarInt -Value $ready.FileFormat",
                      "SAVEAS BASELINE:",
                      "Add-Note ('SAVEAS|baseline|"):
         assert required in head, f"{required} does not precede the save"
@@ -1954,6 +2018,12 @@ def test_110_the_baseline_gates_the_save() -> None:
     # straight-line region, with no try/catch swallowing them.
     region = head[head.index("Set-StageBBuildStep 'saveas.presave.fullname'"):]
     assert "catch" not in region, f"a baseline failure can be swallowed: {region!r}"
+    # AND READINESS GATES ALL OF IT. The gate throws on exhaustion, so nothing below
+    # it is reachable until the workbook has answered for itself.
+    ready_at = head.index("$ready = Wait-StageBWorkbookReady -Workbook $wb")
+    assert ready_at < head.index("Set-StageBBuildStep 'saveas.presave.fullname'")
+    between = head[ready_at:head.index("Set-StageBBuildOp 'saveas.xlsm'")]
+    assert "catch" not in between, f"a readiness failure can be swallowed: {between!r}"
 
 
 def test_111_the_three_state_settlement_is_unchanged_in_substance() -> None:
@@ -1988,6 +2058,246 @@ def test_112_the_freezes_this_batch_may_not_touch() -> None:
     assert _ps_function(_gate(), "Get-EquivalenceSnapshot") == \
         _ps_function(_at("99cb472", "pccm/tests/phase10_fixture_equivalence.ps1"),
                      "Get-EquivalenceSnapshot")
+
+
+# ===========================================================================
+# J. THE POST-OPEN READINESS GATE
+# ===========================================================================
+# THE FAILURE MOVED WITH THE POSITION, NOT THE MEMBER. cc9cf8d: the first read after
+# Workbooks.Open was FileFormat and it answered with nothing. The wrapper was removed,
+# so at c66e752 the first read became FullName - and IT answered with nothing, same
+# place, COMREJECT|build|none|attempts=0|waited=0 both times. In that same c66e752 run
+# the FIRST Excel session read both and completed its SaveAs. So a bounded read-only
+# gate belongs exactly where the gap shows itself.
+def test_113_the_gate_is_immediately_after_the_open_and_gates_everything() -> None:
+    """REQUIRED CONTROLS 1-2. It runs on the object Open just returned, before any
+    read, any baseline and any mutation - and it THROWS on exhaustion, so nothing
+    below it is reachable until the workbook has answered for itself."""
+    joined = _joined(_build_block())
+    open_at = joined.index("$wb = $workbooks.Open($stageAPath)")
+    gate_at = joined.index("$ready = Wait-StageBWorkbookReady -Workbook $wb")
+    save_at = joined.index("$saveAs = Invoke-StageBSaveAs")
+    assert open_at < gate_at < save_at, "the gate is not between the open and the save"
+    # NOTHING BETWEEN THE OPEN AND THE GATE but the gate's own call.
+    between = joined[open_at + len("$wb = $workbooks.Open($stageAPath)") : gate_at]
+    for banned in ("Invoke-ComRetryRead", ".SaveAs(", "Remove-Item", "Start-Sleep",
+                   "Add-Step", "$wb."):
+        assert banned not in between, f"{banned} runs before readiness: {between!r}"
+    # AND IT ABORTS RATHER THAN RETURNING A VERDICT.
+    gate = _ps_function(_build_code(), "Wait-StageBWorkbookReady")
+    assert "if (-not $ready) {" in gate
+    exhausted = gate.index("if (-not $ready) {")
+    assert "throw (" in gate[exhausted : gate.index("return [pscustomobject]@{")], gate[exhausted:]
+    assert "SaveAs was not attempted" in gate
+
+
+def test_114_readiness_requires_all_three_observations() -> None:
+    """REQUIRED CONTROLS 3-7. A non-empty FullName, equal to the expected Stage-A
+    path after normalisation, and a non-null scalar integer FileFormat - which is
+    OBSERVED, never assumed."""
+    gate = _ps_function(_build_code(), "Wait-StageBWorkbookReady")
+    assert "if (($nameState -eq 'ok') -and ($formatState -eq 'ok')) { $ready = $true; break }" in gate
+    assert "[string]::IsNullOrWhiteSpace([string]$nameValue)" in gate
+    assert "(Get-StageBComparablePath ([string]$nameValue)) -ne" in gate
+    assert "(Get-StageBComparablePath $ExpectedPath)" in gate
+    assert "$formatValue -is [System.Array]" in gate
+    assert "-notmatch '^-?[0-9]+$'" in gate
+    # NOT HARD-CODED. No literal format anywhere in the gate, and the observed value
+    # is what it returns.
+    assert "51" not in gate, "the gate hard-codes a FileFormat"
+    assert "52" not in gate, "the gate hard-codes a FileFormat"
+    assert "FileFormat = $format" in gate
+    # AND NOT A BROAD HEALTH PROBE.
+    members = set(re.findall(r"-Member '(\w+)'", _joined(gate)))
+    assert members == {"FullName", "FileFormat"}, sorted(members)
+
+
+def test_115_readiness_succeeds_on_the_first_attempt_without_waiting() -> None:
+    """EXECUTED, AND REQUIRED CONTROLS 16 AND 18. A workbook that answers is never
+    waited on: one attempt, one read of each member, zero milliseconds. There is no
+    unconditional post-open delay."""
+    flow = _flow()
+    assert not flow["unmet"], flow["unmet"]
+    row = flow["ready"]["ready-first"]
+    assert row["outcome"] == "READY", row
+    assert (row["attempts"], row["waited"]) == (1, 0), row
+    assert (row["nameReads"], row["formatReads"]) == (1, 1), row
+    assert row["format"] == 51, row
+    assert "READY|open|attempt=1|fullname=True|fileformat=51|waited=0" in \
+        flow["readynote"]["ready-first"], flow["readynote"]["ready-first"]
+
+
+def test_116_a_no_answer_causes_another_bounded_attempt() -> None:
+    """EXECUTED, REQUIRED CONTROLS 8-9. FullName silent twice, FileFormat silent
+    twice, and both silent three times - each resolves on a later attempt, and the
+    observed format is whatever the workbook actually said."""
+    flow = _flow()
+    name = flow["ready"]["name-null-then-ok"]
+    assert (name["outcome"], name["attempts"]) == ("READY", 3), name
+    assert name["waited"] > 0, "nothing was waited on between polls"
+    fmt = flow["ready"]["format-null-then-ok"]
+    assert (fmt["outcome"], fmt["attempts"]) == ("READY", 3), fmt
+    both = flow["ready"]["both-null-then-ok"]
+    assert (both["outcome"], both["attempts"]) == ("READY", 4), both
+    assert both["format"] == 52, f"the observed format was not carried through: {both}"
+
+
+def test_117_a_retryable_refusal_causes_another_attempt_and_a_real_error_aborts() -> None:
+    """EXECUTED, REQUIRED CONTROLS 10-11. A refusal the accepted helper could not
+    resolve within its own bounds is 'not ready yet'; an HRESULT Excel ACCEPTED and
+    that then failed aborts on the first observation, with its own code intact."""
+    flow = _flow()
+    refused = flow["ready"]["refused-then-ok"]
+    assert (refused["outcome"], refused["attempts"]) == ("READY", 3), refused
+    mixed = flow["ready"]["refused-then-null-then-ok"]
+    assert (mixed["outcome"], mixed["attempts"]) == ("READY", 3), mixed
+    real = flow["ready"]["non-retryable-aborts"]
+    assert real["outcome"] == "ABORTED", real
+    assert "0x800a03ec" in real["detail"], real
+    assert real["nameReads"] == 1, f"a real error was polled over: {real}"
+    # IN SOURCE: the classifier decides, and anything it cannot name is rethrown.
+    gate = _ps_function(_build_code(), "Wait-StageBWorkbookReady")
+    assert gate.count("if ([string]::IsNullOrWhiteSpace((Get-ComRejectionName $_))) { throw }") == 2
+
+
+def test_118_a_real_wrong_answer_aborts_instead_of_polling() -> None:
+    """EXECUTED, REQUIRED CONTROL 12. Waiting cannot change which workbook this is,
+    and it cannot turn 'xlsm' into an integer. Both abort on the first observation."""
+    flow = _flow()
+    wrong = flow["ready"]["wrong-path"]
+    assert wrong["outcome"] == "ABORTED", wrong
+    assert wrong["nameReads"] == 1, f"the wrong path was polled over: {wrong}"
+    assert wrong["formatReads"] == 0, wrong
+    assert "Waiting cannot change which" in wrong["detail"], wrong
+    bad = flow["ready"]["bad-format"]
+    assert bad["outcome"] == "ABORTED", bad
+    assert (bad["nameReads"], bad["formatReads"]) == (1, 1), bad
+    assert "not an integer" in bad["detail"], bad
+
+
+def test_119_both_bounds_hold_and_the_sleep_is_conditional() -> None:
+    """EXECUTED, REQUIRED CONTROLS 13-15. Three attempts allowed means three
+    observations; a five-millisecond budget ends it well before fifty; and the
+    exhaustion line names which observation was unresolved."""
+    flow = _flow()
+    attempt = flow["ready"]["attempt-exhausted"]
+    assert attempt["outcome"] == "ABORTED", attempt
+    assert attempt["nameReads"] == 3, attempt
+    assert any("exhausted|attempts=3" in line and "fullname=no-answer" in line
+               for line in flow["readynote"]["attempt-exhausted"]), \
+        flow["readynote"]["attempt-exhausted"]
+    budget = flow["ready"]["budget-exhausted"]
+    assert budget["outcome"] == "ABORTED", budget
+    assert budget["nameReads"] < 50, budget
+    assert any("exhausted" in line for line in flow["readynote"]["budget-exhausted"])
+    # THE BOUND IS IN THE HEAD, and both guards precede the sleep.
+    gate = _ps_function(_build_code(), "Wait-StageBWorkbookReady")
+    heads = re.findall(r"while\s*\(([^)]*)\)\s*\{", gate)
+    assert heads and all("-lt " in head for head in heads), heads
+    assert "while ($true)" not in gate and "do {" not in gate
+    sleep_at = gate.index("Start-Sleep")
+    assert gate.index("if ($attempt -ge $MaxAttempts) { break }") < sleep_at
+    assert gate.index("if (($waitedMs + $delay) -gt $TotalBudgetMs) { break }") < sleep_at
+    assert "$waitedMs = $waitedMs + $delay" in gate
+
+
+def test_120_the_observed_format_feeds_the_saveas_baseline() -> None:
+    """REQUIRED CONTROL 19, AND IT IS NOT RE-READ. A second read for symmetry would
+    be a second chance for the workbook to answer differently than the value the
+    NOT-EXECUTED verdict is measured against."""
+    joined = _joined(_build_block())
+    assert "$sourceFormat = Get-StageBScalarInt -Value $ready.FileFormat" in joined
+    assert "$sourceFullName = Get-StageBNonEmptyString -Value $ready.FullName" in joined
+    assert "-SourceFormat $sourceFormat" in joined
+    # NO RE-READ OF EITHER MEMBER after the gate. The collection acquisitions below
+    # it are legitimate reads of other members; what must not happen is FullName or
+    # FileFormat being asked again, because the baseline would then rest on a
+    # different answer than readiness established.
+    after = joined[joined.index("$ready = Wait-StageBWorkbookReady -Workbook $wb"):]
+    for member in ("FullName", "FileFormat"):
+        assert f"-Member '{member}'" not in after, (
+            f"{member} is read again after readiness observed it")
+
+
+def test_121_no_inter_pass_drain_and_no_generic_mutation_retry() -> None:
+    """REQUIRED CONTROLS 17 AND 22, STILL FORBIDDEN. The gap is handled where it
+    manifests, not by spacing the sessions out."""
+    gate_file = _gate()
+    for banned in ("Start-Sleep", "Get-Process", "Stop-Process", "Wait-Process",
+                   "WaitForExit", "Wait-ExcelExit", "drain", "quiet period"):
+        assert banned not in gate_file, f"the equivalence gate waits between passes: {banned}"
+    code = _joined(_build_code())
+    for call in ("$vbcomps.Import($file)", "$codeModule.AddFromString($docText)",
+                 "$shapes.AddShape(5,", "$pws.Protect([Type]::Missing", "$wb.Save()"):
+        assert call in code
+        for line in code.splitlines():
+            if call in line:
+                for banned in ("Invoke-ComRetryRead", "Invoke-StageBSaveAs",
+                               "Wait-StageBWorkbookReady"):
+                    assert banned not in line, line
+
+
+def test_122_the_freezes_this_batch_may_not_touch() -> None:
+    """REQUIRED CONTROLS 20-21 AND 23-26, against the Windows-tested revision."""
+    done = subprocess.run(["git", "diff", "--name-only", "c66e752", "--", "pccm/src/vba"],
+                          cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE, text=True)
+    assert done.stdout.strip() == "", done.stdout
+    assert _lifecycle() == _at("c66e752", "pccm/bootstrap/windows/com_lifecycle.ps1")
+    assert BENCHMARK_PS1.read_text(encoding="utf-8") == \
+        _at("c66e752", "pccm/bootstrap/windows/phase10_benchmark.ps1")
+    assert _gate() == _at("c66e752", "pccm/tests/phase10_fixture_equivalence.ps1")
+    for name in ("Set-BenchmarkRegisterRowCount", "New-BenchmarkRegisterBlock",
+                 "Get-BenchmarkPermanentId", "Set-BenchmarkBulkFixture"):
+        now = _ps_function(BENCHMARK_PS1.read_text(encoding="utf-8"), name)
+        then = _ps_function(_at("c66e752", "pccm/bootstrap/windows/phase10_benchmark.ps1"), name)
+        assert now == then, f"{name} changed"
+    assert _ps_function(_gate(), "Get-EquivalenceSnapshot") == \
+        _ps_function(_at("99cb472", "pccm/tests/phase10_fixture_equivalence.ps1"),
+                     "Get-EquivalenceSnapshot")
+    # AND THE SAVEAS SETTLEMENT IS SUBSTANTIVELY UNCHANGED.
+    checker = _ps_function(_build_code(), "Get-StageBSaveAsPostcondition")
+    assert "$boundToTarget -and ($format -eq $TargetFormat) -and $targetExists" in checker
+    assert "$boundToSource -and ($format -eq $SourceFormat) -and (-not $targetExists)" in checker
+    saveas = _ps_function(_build_code(), "Invoke-StageBSaveAs")
+    assert saveas.count(".SaveAs(") == 1
+    assert "SAVEAS AMBIGUOUS after " in saveas
+    # READINESS IS NOT EVIDENCE THAT SaveAs WILL SUCCEED: the postcondition
+    # inspection is still there, on both paths.
+    assert saveas.count("Get-StageBSaveAsPostcondition -Workbook $Workbook") == 2
+
+
+def test_123_the_cross_run_record_supports_the_gate_without_claiming_a_cause() -> None:
+    """THE EVIDENCE RULE. Two runs, two different members, one position - that is
+    what licences a readiness gate, and it is all that is claimed."""
+    text = _evidence()
+    at = text.index("## Equivalence run 6")
+    after = text.find("\n## ", at + 10)
+    section = text[at:] if after == -1 else text[at:after]
+    plain = section.replace("`", "").replace("**", "")
+    for required in ("saveas.presave.fullname", "answered with nothing",
+                     "SaveAs itself was NOT executed", "INVALID / NOT EVALUATED",
+                     "must not be read as a fixture DIFFER",
+                     "Bulk remains NOT authorised", "attempts=0"):
+        assert required in plain, required
+    # THE CROSS-RUN COMPARISON, BOTH HALVES.
+    assert "cc9cf8d" in plain and "c66e752" in plain
+    assert "FileFormat" in plain and "FullName" in plain
+    assert "first Excel session" in plain
+    # THE CONCLUSION ITSELF, not only its two halves. Either run alone reads as a
+    # member-specific or wrapper-specific defect; the sentence is what rules that out.
+    assert "no longer supports a member-specific or wrapper-specific diagnosis" in plain
+    assert "post-open readiness gap" in plain
+    # AND NO CAUSE IS ASSERTED. The disclaimer must name what it refuses.
+    marker = "What is still NOT known"
+    assert marker in plain, plain[-800:]
+    asserted, disclaimed = plain.split(marker, 1)
+    for overclaim in ("message-filter race", "modal state", "OneDrive", "file lock",
+                      "lifecycle overlap", "marshaling"):
+        assert overclaim.lower() not in asserted.lower(), \
+            f"the record asserts a cause: {overclaim}"
+        assert overclaim.lower() in disclaimed.lower(), \
+            f"the record does not say {overclaim} is unproved"
+    assert "bug" not in asserted.lower()
 
 
 if __name__ == "__main__":

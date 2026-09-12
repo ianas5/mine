@@ -2627,3 +2627,130 @@ never started.
 claims lifecycle overlap, an Excel readiness race, OneDrive, file locking, modal
 state or message-filter timing. Run 5 did not reach the save at all, so it adds no
 evidence either way.
+
+---
+
+## Equivalence run 6 — INVALID / NOT EVALUATED — THE OPENED WORKBOOK DID NOT ANSWER YET
+
+**Harness commit:** `c66e752`. Windows PowerShell 5.1. Stage A immediately before
+the run: 351 passed, 0 failed.
+
+### The first Excel session was clean
+
+```
+SAVEAS|baseline|fullname=ok|format=51|target-absent=True
+SAVEAS|attempt=1|success
+SAVEAS|verified|path=True|format=52|exists=True
+```
+
+No build COM rejection occurred. The Endpoints fixture completed and the real
+`PCCM_Calculate` ran.
+
+### The second, isolated Bulk session did not
+
+```
+[PASS] Read Stage-A build outputs
+[PASS] Open an owned Excel instance
+[PASS] Open the Stage-A workbook
+[FAIL] Stage-B build
+       operation=saveas.presave.fullname;
+       the Stage-A workbook FullName before SaveAs answered with nothing.
+       The read was not refused and it was not answered.
+COMREJECT|build|none|attempts=0|waited=0
+```
+
+Immediately after `Workbooks.Open`, before `SaveAs`. Shutdown was clean.
+**`SaveAs` itself was NOT executed.** No Bulk fixture was built and no comparison
+occurred. This record **must not be read as a fixture DIFFER**; it is
+**INVALID / NOT EVALUATED**, and **Bulk remains NOT authorised**.
+
+### The cross-run comparison, which is what licences the gate
+
+| run | first post-open pre-SaveAs read | result |
+|---|---|---|
+| `cc9cf8d` | `FileFormat` | answered with nothing |
+| `c66e752` | `FullName` — the wrapper had been removed, so this became first | answered with nothing |
+
+Both with `attempts=0`, so **no RPC rejection was recorded** in either. And in the
+**same** `c66e752` run the **first Excel session** observed `FullName` **and**
+`FileFormat` successfully and completed its `SaveAs`.
+
+So the evidence no longer supports a member-specific or wrapper-specific diagnosis.
+What Windows shows is a **post-open readiness gap**: `Workbooks.Open` may return a
+Workbook RCW in the second isolated session **before its own read-only properties
+reliably answer**.
+
+**That says WHERE the gap is observed. It does not say WHY.**
+
+### The gate
+
+Immediately after `$workbooks.Open($stageAPath)`, on the object it returned, before
+any read, any baseline and any mutation. A workbook is READY only when:
+
+| | observation |
+|---|---|
+| A | `FullName` is a non-empty scalar string |
+| B | its normalised form equals the expected Stage-A path |
+| C | `FileFormat` is a non-null scalar integer-compatible value |
+
+The observed `FileFormat` **becomes** the original source format the SaveAs
+NOT-EXECUTED verdict is measured against. It is **not** re-read afterwards, and no
+literal `51` appears anywhere in the gate.
+
+**No answer, or a refusal the accepted helper could not resolve within its own
+bounds, means NOT READY YET** — poll again. Bounds are the accepted envelope's own
+values: 12 attempts, 250 ms rising to 2000 ms, 15000 ms total. **A real but wrong
+answer is not a delay**: a non-empty `FullName` that is the wrong path, or a
+`FileFormat` that is not an integer, **aborts immediately** — waiting cannot change
+which workbook this is. A non-retryable exception aborts on the first observation.
+
+On exhaustion Stage-B **stops before `SaveAs`** — no call, no partial build, no
+fixture pass, no comparison.
+
+**Nothing sleeps on the way past a workbook that answers.** The success path breaks
+out before the backoff, so a first-attempt readiness costs zero milliseconds.
+
+```
+READY|open|attempt=1|fullname=True|fileformat=51|waited=0
+READY|open|attempt=3|fullname=True|fileformat=51|waited=2
+READY|open|exhausted|attempts=12|waited=15000|fullname=no-answer|fileformat=ok
+```
+
+### Executed, not asserted
+
+| case | outcome | attempts | waited | reads |
+|---|---|---|---|---|
+| answers immediately | READY | 1 | **0** | 1 + 1 |
+| `FullName` silent twice | READY | 3 | >0 | 3 + 3 |
+| `FileFormat` silent twice | READY | 3 | >0 | 3 + 3 |
+| both silent three times | READY, format **52** observed | 4 | >0 | 4 + 4 |
+| refused twice, then answers | READY | 3 | >0 | 3 |
+| refused, then silent, then answers | READY | 3 | >0 | 3 |
+| **wrong path** | **ABORTED** | — | — | **1 + 0** |
+| **`FileFormat` = "xlsm"** | **ABORTED** | — | — | 1 + 1 |
+| **non-retryable `0x800A03EC`** | **ABORTED**, code intact | — | — | **1** |
+| 3 attempts allowed, always silent | ABORTED, exhausted line | 3 | 2 ms | 3 |
+| 50 allowed, 5 ms budget | ABORTED | 3 | 4 ms | 3 |
+
+A property getter cannot raise on the harness host — it is swallowed and the value
+returns `$null` — so the refusal and real-error paths are driven through a scripted
+stand-in for the accepted helper whose **contract** is what the gate depends on. An
+earlier draft "threw" a rejection from a fake property and therefore exercised the
+**null** path while claiming to test refusals; that case was replaced rather than
+kept. Excel is never started.
+
+### Unchanged
+
+`Invoke-ComRetryRead` byte-identical. The SaveAs three-state settlement untouched,
+including its postcondition inspection on **both** the refused and the normal-return
+paths — **readiness success is not evidence that `SaveAs` will succeed**. No
+inter-pass drain, no sleep between sessions, no PID quiet period, no session
+spacing, no merging of the two sessions, no generic mutation retry.
+
+### What is still NOT known
+
+**Why the opened workbook does not answer for itself yet is not established.** No
+claim is made about a message-filter race, modal state, OneDrive, a file lock,
+lifecycle overlap, COM marshaling, or an Excel bug. The gate is a bounded
+observation of a condition Windows has now shown twice; it is not a theory about its
+cause.

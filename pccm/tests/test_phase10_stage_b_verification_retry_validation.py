@@ -624,14 +624,20 @@ def test_90_setting_the_label_after_the_read_is_refused() -> None:
     no value on Windows. The property is unchanged and now lives at the read itself,
     so the mutation moves the label to AFTER the call it is supposed to name.
     """
+    # RE-ANCHORED AGAIN, and to the readiness gate this time: the pre-save reads moved
+    # into it when Windows proved the post-open gap. The property is unchanged.
     _mutate_on_disk(
         "build", "test_69",
-        "    Set-StageBBuildStep 'saveas.presave.fileformat'\n"
-        "    $preFormat = Invoke-ComRetryRead -Target $wb -Member 'FileFormat' `\n"
-        "                     -Description 'the Stage-A workbook FileFormat before SaveAs'",
-        "    $preFormat = Invoke-ComRetryRead -Target $wb -Member 'FileFormat' `\n"
-        "                     -Description 'the Stage-A workbook FileFormat before SaveAs'\n"
-        "    Set-StageBBuildStep 'saveas.presave.fileformat'")
+        "        Set-StageBBuildStep 'open.ready.fileformat'\n"
+        "        $formatValue = $null\n"
+        "        try {\n"
+        "            $formatRead = Invoke-ComRetryRead -Target $Workbook -Member 'FileFormat' `\n"
+        "                              -Description 'the opened workbook FileFormat'",
+        "        $formatValue = $null\n"
+        "        try {\n"
+        "            $formatRead = Invoke-ComRetryRead -Target $Workbook -Member 'FileFormat' `\n"
+        "                              -Description 'the opened workbook FileFormat'\n"
+        "            Set-StageBBuildStep 'open.ready.fileformat'")
 
 
 def test_91_suppressing_the_clean_run_line_is_refused() -> None:
@@ -944,12 +950,13 @@ def test_118_speculating_about_the_root_cause_in_the_record_is_refused() -> None
 def test_119_suppressing_the_returned_fileformat_is_refused() -> None:
     """RUN 5's DEFECT, PLANTED. A read whose value never arrives must fail at the
     operation it happened at - not three statements later on a garbage baseline."""
+    # RE-ANCHORED: the baseline now takes the value the readiness gate observed.
     _mutate_on_disk(
         "build", "test_",
-        "    $sourceFormat = Get-StageBScalarInt -Value $preFormat.Value `\n"
-        "                        -What 'the Stage-A workbook FileFormat before SaveAs'",
+        "    $sourceFormat = Get-StageBScalarInt -Value $ready.FileFormat `\n"
+        "                        -What 'the Stage-A workbook FileFormat observed at open'",
         "    $sourceFormat = Get-StageBScalarInt -Value $null `\n"
-        "                        -What 'the Stage-A workbook FileFormat before SaveAs'")
+        "                        -What 'the Stage-A workbook FileFormat observed at open'")
 
 
 def test_120_emitting_telemetry_before_the_value_is_refused() -> None:
@@ -1057,12 +1064,13 @@ def test_128_labelling_a_pre_save_read_as_the_save_is_refused() -> None:
     """RUN 5's REPORTING DEFECT. A failed observation reported as saveas.call reads
     as though the save had been attempted, and the next batch would chase the wrong
     thing."""
+    # RE-ANCHORED to the readiness gate. Labelling its FileFormat observation
+    # saveas.call reads as though the save had been attempted, which is run 5's
+    # reporting defect arriving one function earlier.
     _mutate_on_disk(
         "build", "test_10",
-        "    Set-StageBBuildStep 'saveas.presave.fileformat'\n"
-        "    $preFormat = Invoke-ComRetryRead",
-        "    Set-StageBBuildStep 'saveas.call'\n"
-        "    $preFormat = Invoke-ComRetryRead")
+        "        Set-StageBBuildStep 'open.ready.fileformat'",
+        "        Set-StageBBuildStep 'saveas.call'")
 
 
 def test_129_reporting_the_region_instead_of_the_step_is_refused() -> None:
@@ -1095,19 +1103,17 @@ def test_131_opening_the_sub_operation_vocabulary_is_refused() -> None:
 def test_132_bringing_the_read_wrapper_back_is_refused() -> None:
     """IT PRODUCED NO ANSWER ON WINDOWS. Reinstating an intermediate reader puts the
     unproven hop back between the COM object and the member access."""
+    # RE-ANCHORED to the readiness gate, where the first post-open read now lives.
     _mutate_on_disk(
         "build", "test_",
-        "    $preFormat = Invoke-ComRetryRead -Target $wb -Member 'FileFormat' `\n"
-        "                     -Description 'the Stage-A workbook FileFormat before SaveAs'\n"
-        "    Add-StageBReadRejection -Operation (Get-StageBBuildLabel) -Record $preFormat\n"
-        "    $sourceFormat = Get-StageBScalarInt -Value $preFormat.Value `\n"
-        "                        -What 'the Stage-A workbook FileFormat before SaveAs'",
-        "    function Invoke-StageBBuildRead {\n"
-        "        param($Target, [string]$Member, [string]$Description)\n"
-        "        return Invoke-ComRetryRead -Target $Target -Member $Member -Description $Description\n"
-        "    }\n"
-        "    $sourceFormat = [int](Invoke-StageBBuildRead -Target $wb -Member 'FileFormat' `\n"
-        "                              -Description 'the Stage-A workbook FileFormat before SaveAs').Value")
+        "            $nameRead = Invoke-ComRetryRead -Target $Workbook -Member 'FullName' `\n"
+        "                            -Description 'the opened workbook FullName'",
+        "            function Invoke-StageBBuildRead {\n"
+        "                param($Target, [string]$Member, [string]$Description)\n"
+        "                return Invoke-ComRetryRead -Target $Target -Member $Member -Description $Description\n"
+        "            }\n"
+        "            $nameRead = Invoke-StageBBuildRead -Target $Workbook -Member 'FullName' `\n"
+        "                            -Description 'the opened workbook FullName'")
 
 
 def test_133_taking_the_value_inside_the_read_expression_is_refused() -> None:
@@ -1152,6 +1158,207 @@ def test_136_dropping_the_run_5_verdict_is_refused() -> None:
         "evidence", "test_109",
         "and it is **not** another SaveAs rejection. It is\n**INVALID / NOT EVALUATED**",
         "and it is a partial result. It is\n**a fixture difference**")
+
+
+# ===========================================================================
+# J. THE POST-OPEN READINESS GATE
+# ===========================================================================
+# THE GATE IS THE EASIEST THING HERE TO TURN INTO A SLEEP. Every way of making it
+# always succeed, accept an absence, poll over a real answer, or wait when it should
+# not is fed in, and the executed harness - which counts reads, attempts and
+# milliseconds - is what catches it.
+def test_137_a_gate_that_always_succeeds_is_refused() -> None:
+    """THE WHOLE POINT IN ONE MUTATION. A gate that reports READY without observing
+    anything puts the run back where c66e752 was."""
+    _mutate_on_disk(
+        "build", "test_11",
+        "        if (($nameState -eq 'ok') -and ($formatState -eq 'ok')) { $ready = $true; break }",
+        "        $ready = $true; break")
+
+
+def test_138_accepting_a_null_fullname_is_refused() -> None:
+    """A WORKBOOK THAT WILL NOT SAY WHICH FILE IT IS cannot establish the baseline the
+    NOT-EXECUTED verdict depends on."""
+    _mutate_on_disk(
+        "build", "test_11",
+        "        if ($null -eq $nameValue) {\n"
+        "            $nameState = 'no-answer'",
+        "        if ($null -eq $nameValue) {\n"
+        "            $nameState = 'ok'")
+
+
+def test_139_accepting_a_null_fileformat_is_refused() -> None:
+    """[int]$null IS 0, AND 0 AS THE SOURCE FORMAT MAKES EVERY NOT-EXECUTED VERDICT
+    WRONG. That is run 5's defect arriving through the gate instead."""
+    _mutate_on_disk(
+        "build", "test_11",
+        "        if ($null -eq $formatValue) {\n"
+        "            $formatState = 'no-answer'",
+        "        if ($null -eq $formatValue) {\n"
+        "            $formatState = 'ok'")
+
+
+def test_140_polling_over_a_real_wrong_path_is_refused() -> None:
+    """WAITING CANNOT CHANGE WHICH WORKBOOK THIS IS. Treating an identity failure as a
+    delay spends the whole budget on a question already answered, and then reports
+    'not ready' for a workbook that was never the right one."""
+    _mutate_on_disk(
+        "build", "test_118",
+        "                throw ('READY: the opened workbook is bound to ' + [string]$nameValue +\n"
+        "                       ' and not to ' + $ExpectedPath + '. Waiting cannot change which ' +\n"
+        "                       'workbook this is.')",
+        "                $nameState = 'no-answer'")
+
+
+def test_141_polling_over_an_unusable_fileformat_is_refused() -> None:
+    """A REAL BUT UNUSABLE ANSWER IS AN ERROR, not a readiness delay."""
+    _mutate_on_disk(
+        "build", "test_118",
+        "            throw ('READY: the opened workbook FileFormat answered ' +\n"
+        "                   ([string]$formatValue).Trim() + ', which is not an integer.')",
+        "            $formatState = 'no-answer'")
+
+
+def test_142_hard_coding_the_source_format_is_refused() -> None:
+    """OBSERVED, NEVER ASSUMED. A literal 51 here is this script restating a contract
+    it is supposed to read - and it would make a workbook in any other format look
+    ready when it is not the workbook the build expects."""
+    _mutate_on_disk(
+        "build", "test_114",
+        "            $format      = [int](([string]$formatValue).Trim())",
+        "            $format      = 51")
+
+
+def test_143_treating_a_real_error_as_not_ready_is_refused() -> None:
+    """AN HRESULT EXCEL ACCEPTED DESCRIBES SOMETHING THAT HAPPENED. Polling over it
+    hides a genuine failure behind fifteen seconds of waiting."""
+    _mutate_on_disk(
+        "build", "test_117",
+        "            if ([string]::IsNullOrWhiteSpace((Get-ComRejectionName $_))) { throw }\n"
+        "            $nameValue = $null",
+        "            $nameValue = $null")
+
+
+def test_144_removing_the_readiness_attempt_bound_is_refused() -> None:
+    """AN UNBOUNDED POLL ON A WINDOWS HOST HOLDS AN EXCEL PROCESS OPEN and produces no
+    transcript at all."""
+    _mutate_on_disk(
+        "build", "test_119",
+        "        if ($attempt -ge $MaxAttempts) { break }\n"
+        "        if (($waitedMs + $delay) -gt $TotalBudgetMs) { break }",
+        "        if (($waitedMs + $delay) -gt $TotalBudgetMs) { break }")
+
+
+def test_145_removing_the_readiness_wait_bound_is_refused() -> None:
+    """THE OTHER BOUND, TESTED SEPARATELY because a small attempt limit would
+    otherwise hide it."""
+    _mutate_on_disk(
+        "build", "test_119",
+        "        if (($waitedMs + $delay) -gt $TotalBudgetMs) { break }\n"
+        "        Start-Sleep -Milliseconds $delay",
+        "        Start-Sleep -Milliseconds $delay")
+
+
+def test_146_an_unconditional_post_open_sleep_is_refused() -> None:
+    """THE FIX IS NOT 'WAIT A BIT AND HOPE'. A delay after every Open is the blanket
+    sleep this project has refused from the first readiness run, and it would cost
+    every clean session the same seconds."""
+    _mutate_on_disk(
+        "build", "test_",
+        "    $ready = Wait-StageBWorkbookReady -Workbook $wb -ExpectedPath $stageAPath",
+        "    Start-Sleep -Milliseconds 3000\n"
+        "    $ready = Wait-StageBWorkbookReady -Workbook $wb -ExpectedPath $stageAPath")
+
+
+def test_147_sleeping_after_successful_readiness_is_refused() -> None:
+    """A WORKBOOK THAT ANSWERED IS NEVER WAITED ON. Moving the break after the backoff
+    charges every clean run 250 ms for nothing."""
+    _mutate_on_disk(
+        "build", "test_115",
+        "        if (($nameState -eq 'ok') -and ($formatState -eq 'ok')) { $ready = $true; break }",
+        "        if (($nameState -eq 'ok') -and ($formatState -eq 'ok')) {\n"
+        "            $ready = $true\n"
+        "            Start-Sleep -Milliseconds $delay\n"
+        "            $waitedMs = $waitedMs + $delay\n"
+        "            break\n"
+        "        }")
+
+
+def test_148_an_inter_pass_sleep_in_the_gate_is_refused() -> None:
+    """STILL FORBIDDEN. The gap is handled where it manifests, not by spacing the
+    sessions out - and a pause between passes would hide the condition the gate is
+    meant to observe."""
+    _mutate_on_disk(
+        "gate", "test_121",
+        "    $bootstrapExit = $LASTEXITCODE",
+        "    Start-Sleep -Seconds 15\n"
+        "    $bootstrapExit = $LASTEXITCODE")
+
+
+def test_149_running_the_gate_after_the_baseline_is_refused() -> None:
+    """IT MUST GATE EVERYTHING. A readiness check that runs after the baseline has
+    already been taken is a report, not a gate."""
+    _mutate_on_disk(
+        "build", "test_113",
+        "    $ready = Wait-StageBWorkbookReady -Workbook $wb -ExpectedPath $stageAPath\n",
+        "")
+
+
+def test_150_letting_the_gate_return_a_verdict_instead_of_aborting_is_refused() -> None:
+    """EXHAUSTION MUST STOP STAGE-B BEFORE SaveAs. A gate that returns anyway hands
+    the baseline a format nobody observed."""
+    _mutate_on_disk(
+        "build", "test_113",
+        "    if (-not $ready) {\n"
+        "        Add-Note ('READY|open|exhausted|attempts=' + [string]$attempt + '|waited=' +\n"
+        "                  [string]$waitedMs + '|fullname=' + $nameState + '|fileformat=' + $formatState)",
+        "    if ($false) {\n"
+        "        Add-Note ('READY|open|exhausted|attempts=' + [string]$attempt + '|waited=' +\n"
+        "                  [string]$waitedMs + '|fullname=' + $nameState + '|fileformat=' + $formatState)")
+
+
+def test_151_rereading_the_format_for_the_baseline_is_refused() -> None:
+    """A SECOND READ IS A SECOND CHANCE TO ANSWER DIFFERENTLY than the value the
+    NOT-EXECUTED verdict is measured against."""
+    _mutate_on_disk(
+        "build", "test_120",
+        "    $sourceFormat = Get-StageBScalarInt -Value $ready.FileFormat `\n"
+        "                        -What 'the Stage-A workbook FileFormat observed at open'",
+        "    $reFormat = Invoke-ComRetryRead -Target $wb -Member 'FileFormat' `\n"
+        "                    -Description 'the Stage-A workbook FileFormat again'\n"
+        "    $sourceFormat = Get-StageBScalarInt -Value $reFormat.Value `\n"
+        "                        -What 'the Stage-A workbook FileFormat observed at open'")
+
+
+def test_152_widening_the_gate_into_a_health_probe_is_refused() -> None:
+    """NOT A BROAD EXCEL PROBE. Every extra member is another thing that can answer
+    with nothing, and another reason a clean session waits."""
+    _mutate_on_disk(
+        "build", "test_114",
+        "        Set-StageBBuildStep 'open.ready.fileformat'\n"
+        "        $formatValue = $null",
+        "        Set-StageBBuildStep 'open.ready.fileformat'\n"
+        "        $null = Invoke-ComRetryRead -Target $Workbook -Member 'Saved' `\n"
+        "                    -Description 'the opened workbook Saved flag'\n"
+        "        $formatValue = $null")
+
+
+def test_153_claiming_a_cause_for_the_readiness_gap_is_refused() -> None:
+    """WE KNOW WHERE, NOT WHY. A record that names a cause nobody proved would send
+    the next batch after the wrong thing."""
+    _mutate_on_disk(
+        "evidence", "test_123",
+        "**That says WHERE the gap is observed. It does not say WHY.**",
+        "**The cause is a message-filter race in the second session.**")
+
+
+def test_154_dropping_the_cross_run_comparison_is_refused() -> None:
+    """THE TWO RUNS TOGETHER ARE WHAT LICENCE THE GATE. Either half alone reads as a
+    member-specific or wrapper-specific defect."""
+    _mutate_on_disk(
+        "evidence", "test_123",
+        "So the evidence no longer supports a member-specific or wrapper-specific diagnosis.",
+        "So the FullName read is unreliable.")
 
 
 if __name__ == "__main__":
