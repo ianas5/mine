@@ -177,6 +177,12 @@ foreach ($scenario in $scenarios) {
     $manifest = New-FakeManifest
     # The lifted caller region's own variables.
     $wb = 'workbook'; $inspection = 'inspection'; $model = 'model'
+    # THE LIFTED CALLER REGION BRANCHES ON THE FIXTURE METHOD, and under
+    # StrictMode an unset variable is a terminating error - so the default the
+    # runner declares is supplied here. These scenarios are about the WINDOW's
+    # exception flow, which is identical for either builder.
+    $FixtureMode = 'Endpoints'
+    $scenarioSpec = [pscustomobject]@{ id = 'PERF-SMALL'; years = 10 }
     $protectionAfter = $null
     $script:FixtureThrows = [bool]$scenario.FixtureThrows
     $script:Timed = 0

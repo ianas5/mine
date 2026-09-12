@@ -1685,3 +1685,210 @@ and the baseline policy. The fixture window and its shim are byte-identical to
 `ce5951f` — the run that proved them — and a control compares each of its six
 functions against that commit.
 
+## PERF-LARGE attempt 1 — OPERATOR-ABORTED IN FIXTURE CONSTRUCTION
+
+**Harness commit:** `f3b3a33`
+
+Stage A 351 passed, 0 failed. Stage-B PASS — 14 sheets, 32 VBA modules, 11
+buttons, protection applied, reopened verification PASS, clean COM lifecycle.
+Protection at benchmark open:
+`OK|applied=True|depth=0|structure=True|sheets=14|protected=14`.
+
+Environment: Windows 11 Pro, Excel 64-bit, AMD Ryzen 7 7800X3D, 31.2 GB RAM,
+workbook on local temp storage, repository under OneDrive.
+
+The run reached `BUILDING PERF-LARGE` and stayed there for **more than four
+hours** without reaching the first timed production operation. The operator
+aborted it — the run is **operator-aborted**. Shutdown was clean: `Workbook.Close = True`,
+`Application.Quit = True`, natural PID exit `True`, emergency required `False`,
+all transient COM releases clean.
+
+```
+PERF-LARGE WINDOWS RUN: OPERATOR-ABORTED DURING FIXTURE CONSTRUCTION AFTER >4 HOURS
+0 timed operations completed
+0 warm medians
+```
+
+**NOT a baseline. NOT a partial baseline. NOT performance evidence for the PCCM
+runtime.** No Calculate, Simulation, Sensitivity or Annual timing began.
+
+### What it is evidence of, and what it is not
+
+It is evidence about the **benchmark fixture-construction method**. The original
+endpoint-by-endpoint method is therefore **operationally impractical** for the
+Large scenario.
+
+It **does NOT mean** any of the following, and none may be inferred from it:
+
+* that a Large calculation takes >4 hours;
+* that Simulation takes >4 hours;
+* that the Large scenario is unsupported.
+
+**No production defect is established.** Every production command the fixture
+invoked answered correctly; there were simply three hundred of them.
+
+---
+
+## The fixture cost, counted
+
+Derived from source, not estimated. Two costs, and the smaller one is the
+harness's.
+
+### The harness's cross-process COM calls
+
+Counted from the helpers' own bodies in `phase10_benchmark.ps1` —
+`Set-TableCell` is 7 calls, `Get-TableBody` is `9 + 2·rows·cols`,
+`Get-TableRowCount` is a full `Get-TableBody`.
+
+| | SMALL | MEDIUM | LARGE |
+|---|---|---|---|
+| step F, the Adds and their two verifications each | 24,816 | 157,560 | **1,123,080** |
+| step G, rates and profiling weights | 3,007 | 23,817 | 110,627 |
+| everything else | 7,638 | 9,898 | 19,018 |
+| **total** | **35,461** | **191,275** | **1,252,725** |
+
+Step F is 70% of SMALL and **89.7%** of LARGE, because
+`Invoke-Phase5AddDriverAndRequireSuccess` reads the whole register **twice** per
+Add — once through `Get-IdColumnValues` and once for the permanent identifier —
+so the scans alone are O(N²·cols).
+
+### The production cost, which is the dominant one
+
+Each `PCCM_AddCostLine` / `PCCM_AddRisk` is a full structural operation
+(`modDrivers.RunDriverOperation`):
+
+| inside one Add | scope |
+|---|---|
+| `modProtection.ProtectionBeginStructural` | unprotect 14 sheets, then a second pass over all 14 to **prove** the release |
+| `modWorkbook.SnapshotTable` ×2 | every cell of the register **and** of the profiling grid, for the rollback |
+| `modProfiling.SyncRows` | every existing weight into a Dictionary, then the grid rewritten |
+| `modStructuralCheck.ValidateStructure` | the register and the grid again |
+| `modAppState.FinishOperation` | re-apply protection to 14 sheets and verify, then `RecalculateStructuralState` |
+| `modAppState.RecalculateStructuralState` | `.Calculate` on Setup, Cost Profiling, Risk Profiling, Inflation |
+
+That is **O(register rows × project years) per Add**, so N Adds is
+**O(N²·years)**:
+
+| | Adds | in-VBA cell visits | worksheet recalcs | sheet protect ops |
+|---|---|---|---|---|
+| SMALL | 20 | 46,580 | 80 | 1,400 |
+| MEDIUM | 100 | 543,760 | 400 | 7,000 |
+| **LARGE** | **300** | **5,816,730** | **1,200** | **21,000** |
+
+LARGE is **10.7×** MEDIUM on in-VBA cell visits and each of its 1,200
+recalculations covers a far larger grid. MEDIUM's fixture was tolerable; ×10.7 on
+a superlinear term is the four hours.
+
+**All of that is production behaving correctly.** One user adding one cost line
+*should* snapshot for rollback, re-sync the grid, validate and re-protect.
+Production is not changed to make a benchmark convenient.
+
+---
+
+## The bulk fixture
+
+### What must come from production, and does
+
+| product | producer |
+|---|---|
+| the year columns on all three grids | `modProfiling.SetYearColumns`, `modInflation.SetYearColumns` |
+| the profiling **rows** and their permanent-ID keying | `modProfiling.SyncRows`, `modInflation.SyncProfileRows` |
+| the applied-timeline defined names | `PCCM_ApplyTimeline` |
+| structural validation | `modStructuralCheck.ValidateStructure`, `PCCM_StructuralReport` |
+| **every calculation, simulation, sensitivity and annual result** | the timed endpoints, untouched |
+
+The first four all arrive from **ONE real `PCCM_ApplyTimeline`**, which does
+exactly them.
+
+### What the builder writes
+
+Only what a user types — the register business columns, the FX rates, the Config
+profile names, the profiling weights, the Setup scalars — plus the two identity
+artifacts production would have issued: the permanent IDs and the two counters.
+`modDrivers.AllocateId` increments the counter, persists it, and formats prefix +
+the sequence zero-padded to the declared width, so N adds always yield
+`CL-001..CL-00N` with the counter left at N. The prefix and pad width are read
+from the manifest's counter projection, never from a literal.
+
+Those identity artifacts are the one thing here that is not a plain user input,
+and they are exactly what the equivalence gate exists to prove.
+
+### It publishes nothing
+
+No write to `_Calc`, no write to `_SimData`, no fingerprint, no state label, no
+result of any kind. Controls ban each by name, and the only production operation
+the builder invokes is `PCCM_ApplyTimeline`.
+
+### The expected reduction
+
+| | endpoint path | bulk path |
+|---|---|---|
+| production structural operations | **301** (300 Adds + 1 Apply) | **1** (one Apply) |
+| in-VBA cell visits from those | **5,816,730** | the one Apply's own sync |
+| worksheet recalculations | **1,200** | **4** |
+| sheet protect/unprotect ops | **21,000** | **~70** |
+| register body COM writes | 3,420 individual | **2** rectangular |
+| profiling weight COM writes | 12,000 individual | **2** rectangular |
+| harness COM calls, total | **1,252,725** | **~2,000** |
+
+The superlinear term is removed outright: there is no longer a per-driver
+production operation, so nothing is O(N²·years) any more.
+
+### Protection
+
+Unchanged. The builder runs inside the **same** fixture maintenance window the
+endpoint path uses — no new release, no `Unprotect` of its own, no second
+authority. `ListRows.Add` to grow a register is a structural operation and is
+legal only inside that window, which is where it runs. The window's six functions
+and the shim are byte-identical to `ce5951f`, the run that proved them.
+
+### Timing semantics
+
+Unchanged. The builder sits between the fixture stopwatch's start and stop, so
+its cost is reported as the setup it is; the run loop is downstream of the window
+closing; cold is 1 and warm is 3; a median still requires every warm sample
+valid. The iteration matrix is untouched — Large stays capped at 50,000 with
+eight planned runs.
+
+---
+
+## The fixture equivalence gate
+
+**NOT YET RUN.** It is a Windows verification and no Windows was executed for
+this batch.
+
+`tests/phase10_fixture_equivalence.ps1` builds PERF-SMALL **both ways**, in two
+Excel sessions over two disposable copies of the same Stage-A build, captures a
+full state snapshot from each and compares them field for field, then runs the
+real `PCCM_Calculate` on both and compares production's own status and
+fingerprint. It lifts the builder out of the shipping runner by AST, so it cannot
+pass against a restatement of itself, and it asserts nothing — it prints tagged
+lines and `test_phase10_benchmark_harness.py` decides.
+
+Field families compared: cost-line identifiers and order; risk identifiers and
+order; both counters; both register bodies in full, column by column; the FX
+table; the Config profile master; the applied timeline defined names; the
+generated year headers on all three grids; the Cost Profiling and Risk Profiling
+weight bodies; the inflation grid; `nmStructuralState`; `PCCM_StructuralReport`;
+`PCCM_CurrentInputFingerprint`; `PCCM_CurrentSimulationRequestFingerprint`;
+`PCCM_ModelCheckCalculationState`. Then `PCCM_Calculate` on both, comparing
+`PCCM_CalculationStatus` and `PCCM_CalculationFingerprint`.
+
+**Until this gate has run and every family has matched, `-FixtureMode Bulk` must
+not be used for a baseline.** The default stays `Endpoints`, which is what the
+accepted SMALL and MEDIUM baselines were built by, and the artifact records
+`fixture_mode` so no baseline can be compared across methods unseen.
+
+### What is still unproven on Windows, stated plainly
+
+Two things, and both are what the gate is for:
+
+1. **`ListRows.Add` from a COM caller inside the open fixture window.** Run 5
+   proved production's own structural operations work inside production's window;
+   the harness doing it inside the harness's window is the same capability class
+   but has not been observed. If it is refused, the gate reports it as a raised
+   Bulk pass rather than a silent wrong answer.
+2. **A rectangular `Range.Value2 = object[,]` block write** into a ListObject body
+   on a protected sheet inside the window. Same class as the value writes Run 3
+   proved permitted, but as a block rather than a cell.
+

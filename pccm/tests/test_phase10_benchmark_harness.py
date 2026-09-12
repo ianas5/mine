@@ -1566,10 +1566,35 @@ def test_130_the_fixture_performs_no_listobject_structural_mutation() -> None:
 
     Every one of these is refused to a COM caller on a protected sheet, and the
     only legitimate way to reach one is a production endpoint."""
+    # DECLARED, NOT LOOSENED. Before the bulk builder existed, "this runner
+    # performs no structural mutation at all" was true and this control said so.
+    # `Set-BenchmarkRegisterRowCount` now grows a register with `ListRows.Add`,
+    # which is precisely what the fixture window exists to permit, and
+    # `Set-BenchmarkRangeBlock` uses `Range.Resize` - a Range method that selects a
+    # different rectangle and adds no table row or column at all.
+    #
+    # So the ban holds over the runner MINUS those two functions, both named here
+    # and both held to their own controls (test_194, test_195). A structural
+    # mutation anywhere else still fails, which is the property this control had.
     code = _code()
+    exempted = ("Set-BenchmarkRegisterRowCount", "Set-BenchmarkRangeBlock")
+    exempt = "\n".join(_function(code, name) for name in exempted)
+    assert "$rows.Add()" in exempt and "$anchor.Resize(" in exempt, (
+        "the declared exemption no longer contains the operations it exempts")
+    # REMOVED ONE AT A TIME: the two are not contiguous in the file, so a single
+    # concatenated replace would remove nothing and the ban would be vacuous.
+    rest = code
+    for name in exempted:
+        body = _function(code, name)
+        assert body in rest, name
+        rest = rest.replace(body, "")
+    assert len(rest) < len(code) - 100
     for banned in (".Delete()", ".ListRows.Add", ".ListColumns.Add",
                    ".ListColumns.Delete", ".EntireRow.Delete", ".Resize("):
-        assert banned not in code, f"the benchmark performs a structural mutation: {banned}"
+        assert banned not in rest, f"the benchmark performs a structural mutation: {banned}"
+    # AND NEITHER EXEMPT FUNCTION DELETES ANYTHING.
+    for banned in (".Delete()", ".ListColumns.Add", ".ListColumns.Delete"):
+        assert banned not in exempt, f"the exempt region deletes or adds columns: {banned}"
     # THE PRIMITIVE STILL EXISTS AND HAS NO CAPABILITY LEFT. Deleting the
     # definition outright was the first attempt and it was wrong: two functions
     # in the dot-sourced Gate-B file name `Remove-TableRow`, and a name a
@@ -1772,10 +1797,18 @@ def test_138_the_fixture_build_is_still_outside_every_measured_interval() -> Non
     # clock's start and stop. The name also occurs inside the row-delete
     # refusal's message, which is text and not a call, so the rule is stated over
     # INVOCATIONS: a line whose first token is the name.
+    # ONE CALLER, AND IT IS A FIXTURE BUILDER. The accepted step C reaches it from
+    # the dot-sourced Gate-B file; the bulk builder reaches it directly, for the
+    # same twenty-four cells. What must stay true is that neither the run loop nor
+    # anything between the window closing and the loop touches it.
     invocations = [line for line in code.splitlines()
                    if line.strip().startswith("Reset-Phase5FxTable ")]
-    assert invocations == [], (
-        f"the reset is invoked by the benchmark itself: {invocations}")
+    assert len(invocations) == 1, invocations
+    assert "Reset-Phase5FxTable" in _function(code, "Set-BenchmarkBulkFixture")
+    loop = code.index("foreach ($run in $plannedRuns) {")
+    closed = code.index("Close-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest")
+    assert "Reset-Phase5FxTable" not in code[closed:], (
+        "the FX reset is reachable after the fixture window closed")
     assert code.count("function Reset-Phase5FxTable {") == 1
 
 
@@ -2262,6 +2295,417 @@ def test_189_both_shape_root_causes_are_recorded_as_separate_defects() -> None:
     assert "REFUSED by name" in section
     # AND WHAT WAS DELIBERATELY LEFT ALONE.
     assert "byte-identical to `ce5951f`" in section
+
+
+EQUIV_HARNESS = PCCM_ROOT / "tests" / "phase10_fixture_equivalence.ps1"
+
+# The four timed operations and the production endpoint each must reach. Read
+# from the plan, never restated, so a retargeted operation is a failure here.
+TIMED_ENDPOINTS = {
+    "calculate": "PCCM_Calculate",
+    "simulation": "PCCM_RunSimulation",
+    "sensitivity": "PCCM_RunSensitivity",
+    "annual": "PCCM_RunAnnualStochastic",
+}
+
+# Everything the bulk builder is forbidden to touch. These are the publication
+# surfaces and the state labels: production owns every one of them.
+PUBLICATION_BANS = (
+    "_Calc", "_SimData", "SH_CALC", "SH_SIM",
+    "CalculationFingerprint", "SimulationResultDigest", "CalculationStatus",
+    "SimulationStatus", "nmStructuralState", "nmCalcState", "CURRENT",
+    "tblCalcDrivers", "tblCalcYears", "tblCalcAnnual", "tblCalcFX",
+    "tblCalcInflationFactors", "tblSimResults", "tblSensitivity",
+)
+
+
+def _equiv_harness() -> str:
+    if "equiv_harness" not in _MEMO:
+        _MEMO["equiv_harness"] = EQUIV_HARNESS.read_text(encoding="utf-8")
+    return _MEMO["equiv_harness"]
+
+
+BULK_FUNCTIONS = ("Set-BenchmarkRangeBlock", "Set-BenchmarkRegisterRowCount",
+                  "Get-BenchmarkPermanentId", "New-BenchmarkRegisterBlock",
+                  "New-BenchmarkWeightBlock", "Set-BenchmarkBulkFixture")
+
+
+def _bulk_functions() -> dict:
+    """The bulk builder's functions, comments stripped, by name.
+
+    DELIBERATELY NOT MEMOISED. It is derived from `_code`, and the mutation
+    battery damages the runner by installing a replacement for `runner` and
+    popping `code`. A cache here would survive that, so every mutation after the
+    first would be compared against the undamaged builder - which is exactly how
+    a whole family of controls goes quietly vacuous. String slicing is cheap;
+    a stale baseline is not.
+    """
+    code = _code()
+    return {name: _function(code, name) for name in BULK_FUNCTIONS}
+
+
+# ===========================================================================
+# P. THE BULK FIXTURE
+# ===========================================================================
+# PERF-LARGE was operator-aborted after >4 hours in fixture construction. The
+# cost is a production Add per driver, and each is O(register rows x years):
+# snapshot both tables, re-sync the grid, validate, re-protect fourteen sheets,
+# recalculate four. N of those is O(N^2 x years).
+def test_190_the_timed_operations_still_reach_the_real_production_endpoints() -> None:
+    """THE ONE THING THAT MAY NOT MOVE. A faster fixture is worthless if the
+    numbers stop coming from production. Every timed operation's endpoint is read
+    from the plan and must be the real PCCM_ command, and the runner must invoke
+    it by that name and nothing else."""
+    operations = {str(entry["key"]): entry for entry in _plan()["operations"]}
+    for key, endpoint in TIMED_ENDPOINTS.items():
+        assert key in operations, key
+        assert str(operations[key]["endpoint"]) == endpoint, (key, operations[key])
+    # The recalculation row is the one operation with no endpoint: it is
+    # Application.CalculateFull by declared mechanism, not a PCCM_ command.
+    assert operations["recalculation"]["endpoint"] is None
+    assert str(operations["recalculation"]["mechanism"]) == "Application.CalculateFull"
+
+    # AND THE RUNNER REACHES THEM BY THE PLAN'S OWN NAME, not a literal.
+    execution = _function(_code(), "Invoke-BenchmarkExecution")
+    assert "$Excel.Run([string]$Operation.endpoint)" in execution, execution
+    assert "$Excel.CalculateFull()" in execution
+    for endpoint in TIMED_ENDPOINTS.values():
+        assert endpoint not in execution, (
+            f"{endpoint} is hard-coded in the timed path instead of read from the plan")
+
+
+def test_191_the_bulk_fixture_publishes_nothing() -> None:
+    """IT MAY POPULATE INPUTS. IT MAY NOT PRODUCE RESULTS. A fixture that wrote a
+    _Calc block, a _SimData row, a fingerprint or a CURRENT label would be a
+    second business engine, and the benchmark would be measuring a workbook it
+    had written the answers into."""
+    for name, body in _bulk_functions().items():
+        for banned in PUBLICATION_BANS:
+            assert banned not in body, (
+                f"{name} touches a publication surface or a state label: {banned}")
+    # NOR DOES IT REACH THE RESULT-PRODUCING ENDPOINTS. The only production
+    # operation the builder invokes is ApplyTimeline.
+    orchestrator = _bulk_functions()["Set-BenchmarkBulkFixture"]
+    for endpoint in TIMED_ENDPOINTS.values():
+        assert endpoint not in orchestrator, (
+            f"the bulk fixture invokes {endpoint}, which only the timed path may")
+    invoked = re.findall(r"-Operation '([A-Za-z_]+)'", orchestrator)
+    assert invoked == ["PCCM_ApplyTimeline"], invoked
+
+
+def test_192_the_bulk_fixture_leaves_every_structural_product_to_production() -> None:
+    """WHAT IT WOULD BE EASIEST TO FAKE. The year columns, the profiling rows and
+    their permanent-ID keying, and the applied-timeline names all come from ONE
+    real PCCM_ApplyTimeline - modProfiling.SetYearColumns, modProfiling.SyncRows,
+    modInflation.SetYearColumns and modInflation.SyncProfileRows - and the builder
+    reproduces none of them.
+
+    That ApplyTimeline really does produce them is read out of production, not
+    assumed here."""
+    orchestrator = _bulk_functions()["Set-BenchmarkBulkFixture"]
+    assert "PCCM_ApplyTimeline" in orchestrator
+    assert "Assert-Phase5StructurallyCoherent" in orchestrator
+    # THE BUILDER NEVER WRITES A YEAR COLUMN OR A GRID ROW KEY.
+    for banned in ("ListColumns.Add", "ListColumns.Delete", "SetYearColumns", "SyncRows",
+                   "Resize(", ".Delete()"):
+        assert banned not in orchestrator, f"the bulk fixture does production's work: {banned}"
+
+    # PRODUCTION'S SIDE OF THE CLAIM, from src/vba.
+    timeline = (PCCM_ROOT / "src" / "vba" / "modTimeline.bas").read_text(encoding="utf-8")
+    for produced in ("modProfiling.SetYearColumns", "modProfiling.SyncRows",
+                     "modInflation.SetYearColumns", "modInflation.SyncProfileRows",
+                     "modStructuralCheck.ValidateStructure",
+                     "modWorkbook.WriteValue NM_APPLIED_BASE_YEAR"):
+        assert produced in timeline, (
+            f"PCCM_ApplyTimeline no longer produces {produced}, so the bulk fixture's "
+            f"assumption about what it gets for free is stale")
+
+
+def test_193_the_permanent_ids_and_counters_follow_productions_own_rule() -> None:
+    """THE ONE THING THE BUILDER WRITES THAT IS NOT A PLAIN USER INPUT.
+    modDrivers.AllocateId reads the counter, increments it, PERSISTS it and
+    formats prefix + the sequence zero-padded to the declared width - so N adds
+    yield prefix-001..prefix-00N and leave the counter at N.
+
+    The prefix and pad width come from the manifest's counter projection, never
+    from a literal, and the builder COMPARES its identifier against the model's
+    rather than trusting either."""
+    formatter = _bulk_functions()["Get-BenchmarkPermanentId"]
+    assert "[string]$Counter.prefix" in formatter
+    assert "[int]$Counter.pad_width" in formatter
+    for literal in ("'CL-'", '"CL-"', "'R-'", '"R-"', "D3", "000"):
+        assert literal not in formatter, f"the identifier format is hard-coded: {literal}"
+
+    block = _bulk_functions()["New-BenchmarkRegisterBlock"]
+    assert "-cne $declared" in block, "the issued identifier is not compared with the model's"
+    assert "CounterValue = [double]$drivers.Count" in block
+    orchestrator = _bulk_functions()["Set-BenchmarkBulkFixture"]
+    assert "$prepared.CounterValue" in orchestrator
+    assert "[string]$counter.defined_name" in orchestrator
+
+    # PRODUCTION'S SIDE: the counter really is persisted per allocation, and the
+    # manifest really declares the prefix and pad the builder reads.
+    drivers = (PCCM_ROOT / "src" / "vba" / "modDrivers.bas").read_text(encoding="utf-8")
+    assert "modWorkbook.WriteValue CounterName(Kind), nextSequence" in drivers
+    assert "AllocateId = FormatId(Kind, nextSequence)" in drivers
+    for counter in _manifest_json()["counters"]:
+        assert counter["prefix"] in ("CL-", "R-"), counter
+        assert int(counter["pad_width"]) == 3, counter
+        assert int(counter["initial"]) == 0, counter
+
+
+def test_194_the_bulk_fixture_writes_rectangular_blocks_not_cell_by_cell() -> None:
+    """THE WHOLE PERFORMANCE ARGUMENT. A 300x11 register body is ONE cross-process
+    assignment instead of 3,300, and a 300x40 weight block is one instead of
+    12,000. The writer refuses anything that is not a rank-2 rectangle, because a
+    jagged array of arrays is silently NOT the VARIANT shape Excel accepts."""
+    writer = _bulk_functions()["Set-BenchmarkRangeBlock"]
+    assert "$target.Value2 = $Block" in writer
+    assert "$Block.Rank -ne 2" in writer, "the block writer accepts a non-rectangular array"
+    assert "GetLength(0)" in writer and "GetLength(1)" in writer
+    assert "throw (" in writer
+    # ONE ASSIGNMENT PER BLOCK: no loop over cells anywhere in the writer.
+    assert "for (" not in writer and "foreach (" not in writer, (
+        "the block writer loops over cells, which is the cost it exists to remove")
+    # THE ARRAYS ARE BUILT AS RANK-2, not nested.
+    for builder in ("New-BenchmarkRegisterBlock", "New-BenchmarkWeightBlock"):
+        body = _bulk_functions()[builder]
+        assert "New-Object 'object[,]'" in body, (
+            f"{builder} builds a jagged array, which Excel rejects for a block write")
+    # AND THE ORCHESTRATOR USES IT FOR BOTH REGISTERS AND BOTH GRIDS.
+    orchestrator = _bulk_functions()["Set-BenchmarkBulkFixture"]
+    assert orchestrator.count("Set-BenchmarkRangeBlock") == 2, orchestrator
+
+
+def test_195_growing_a_register_is_bounded_proved_and_never_destructive() -> None:
+    """ListRows.Add IS STRUCTURAL, so it is only legal inside the fixture window -
+    which is where the builder runs. It is one COM call per row rather than a
+    whole production operation per row, and the result is PROVED: a grow that
+    silently did nothing would leave the block write landing outside the table.
+
+    It never deletes. Shrinking a register here would be the destructive path this
+    project removed from the FX reset."""
+    grower = _bulk_functions()["Set-BenchmarkRegisterRowCount"]
+    assert "$rows.Add()" in grower
+    assert ".Delete" not in grower, "the register grower deletes rows"
+    assert "$current -gt $RowCount" in grower and "never deletes rows" in grower
+    assert "$after -ne $RowCount" in grower, "the grow is not proved to have taken"
+    # AND THE BUILDER RUNS INSIDE THE WINDOW, which is what makes the add legal.
+    code = _code()
+    opened = code.index("Open-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest")
+    bulk = code.index("Set-BenchmarkBulkFixture -Excel $excel")
+    closed = code.index("Close-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest")
+    assert opened < bulk < closed, (opened, bulk, closed)
+
+
+def test_196_the_fixture_mode_is_declared_recorded_and_defaults_to_the_accepted_path() -> None:
+    """TWO METHODS THAT REACH THE SAME STATE ARE STILL TWO METHODS. The accepted
+    PERF-SMALL and PERF-MEDIUM baselines were built by the endpoint path, so that
+    stays the DEFAULT and the bulk path is opt-in - and whichever ran is written
+    into the artifact, so no baseline can be compared across methods without a
+    reader seeing it."""
+    runner = _runner()
+    assert "[ValidateSet('Endpoints', 'Bulk')]" in runner
+    assert "[string]$FixtureMode = 'Endpoints'" in runner, (
+        "the bulk path is the default, which would silently change what the accepted "
+        "baselines were built by")
+    code = _code()
+    assert "$report.Add('fixture_mode', [string]$FixtureMode)" in code
+    assert "if ($FixtureMode -eq 'Bulk') {" in code
+    # BOTH BUILDERS ARE REACHABLE, and exactly one runs.
+    assert code.count("Set-BenchmarkBulkFixture -Excel $excel") == 1
+    assert code.count("Set-Phase5Fixture -Excel $excel") == 1
+
+
+def test_197_the_bulk_fixture_is_inside_the_window_and_outside_every_clock() -> None:
+    """SETUP, EXACTLY AS THE ENDPOINT PATH IS. The builder sits between the fixture
+    stopwatch's start and stop - so its cost is reported as the setup it is - and
+    the run loop is downstream of the window closing."""
+    code = _code()
+    started = code.index("$fixtureWatch = [System.Diagnostics.Stopwatch]::StartNew()")
+    bulk = code.index("Set-BenchmarkBulkFixture -Excel $excel")
+    stopped = code.index("$fixtureWatch.Stop()")
+    loop = code.index("foreach ($run in $plannedRuns) {")
+    assert started < bulk < stopped < loop, (started, bulk, stopped, loop)
+    assert "$setupTimings.Add('scenario_fixture_ms'," in code
+    # NO STOPWATCH INSIDE THE BUILDER: it is not measuring anything.
+    assert "Stopwatch" not in _bulk_functions()["Set-BenchmarkBulkFixture"]
+
+
+def test_198_the_bulk_fixture_refuses_a_register_that_is_not_empty() -> None:
+    """IT WRITES IDENTIFIERS FROM SEQUENCE 1. A register that already carried rows
+    would be given duplicates and a counter that disagreed with the highest
+    identifier present - which production's own HighestIssued check exists to
+    catch, and which a fixture should never create."""
+    orchestrator = _bulk_functions()["Set-BenchmarkBulkFixture"]
+    assert "$existing.Count -ne 0" in orchestrator
+    assert "requires an empty" in orchestrator
+    # AND IT PROVES THE BLOCK LANDED before asking production to sync from it.
+    assert "-cne [string]$expected[$i]" in orchestrator, (
+        "the register is not read back after the block write")
+    written = orchestrator.index("Set-BenchmarkRangeBlock")
+    verified = orchestrator.index("-cne [string]$expected[$i]")
+    applied = orchestrator.index("PCCM_ApplyTimeline")
+    assert written < verified < applied, (written, verified, applied)
+
+
+def test_199_the_weight_block_is_keyed_by_what_production_synchronised() -> None:
+    """THE GRID ORDER IS PRODUCTION'S, NOT THE BUILDER'S. modProfiling.SyncRows
+    rebuilds the grid from the register, and nothing binds its physical order to
+    the order the register was written in - so the weight block reads the keys
+    back and maps each driver to the row production gave it.
+
+    It also refuses a non-contiguous or mismatched grid, because a single
+    rectangular write over a gap would land weights on the wrong drivers."""
+    weights = _bulk_functions()["New-BenchmarkWeightBlock"]
+    assert "Get-TableBody" in weights, "the grid order is assumed rather than read"
+    assert "$byId[$rows[$r]]" in weights
+    # THE CONDITION, NOT THE MESSAGE. A `if ($false)` in front of the same throw
+    # leaves the sentence in the file and the check gone, which is exactly the
+    # shape a reviewer skims past.
+    assert "if ([string]::IsNullOrWhiteSpace([string]$body[$r][0])) {" in weights, (
+        "the blank-key check no longer tests anything")
+    assert "are not contiguous" in weights
+    assert "$rows.Count -ne $drivers.Count" in weights
+    assert "declares $" not in weights
+    # EVERY DRIVER'S WEIGHTS MUST COVER EVERY PROJECT YEAR.
+    assert "$weights.Count -ne $Years" in weights
+
+
+def test_200_the_equivalence_gate_exists_tests_the_shipping_builder_and_judges_nothing() -> None:
+    """THE GATE IS WHAT MAKES THE BULK PATH LEGITIMATE. It builds PERF-SMALL BOTH
+    ways in two Excel sessions over two disposable copies of the same build,
+    compares a full state snapshot field for field, and then runs the REAL
+    PCCM_Calculate on both and compares production's own fingerprint.
+
+    It lifts the builder by AST, so it cannot pass against a restatement of
+    itself; and it asserts nothing - it prints tagged lines and the pytest control
+    decides, so the evidence and the verdict are two authorities."""
+    harness = _equiv_harness()
+    assert "FunctionDefinitionAst" in harness and "Invoke-Expression" in harness
+    assert "'Set-BenchmarkBulkFixture'" in harness
+    assert "Set-Phase5Fixture" in harness, "the gate does not build the reference way"
+    # BOTH PASSES, AND THE SAME WINDOW FOR EACH.
+    assert "foreach ($mode in @('Endpoints', 'Bulk'))" in harness
+    # THE CALL, NOT THE NAME. The gate also NAMES every function it lifts by AST,
+    # and naming one is the opposite of calling it - so the count is over
+    # invocations, of which there is exactly one, shared by both passes.
+    calls = [line.strip() for line in harness.splitlines()
+             if line.strip().startswith("$null = Open-BenchmarkFixtureWindow")]
+    assert len(calls) == 1, calls
+    assert "'Open-BenchmarkFixtureWindow'," in harness, "the window is not lifted by AST"
+    # THE REAL CALCULATE, ON BOTH.
+    assert "$excel.Run('PCCM_Calculate')" in harness
+    assert "PCCM_CalculationFingerprint" in harness
+    assert "CALCEQUIV|" in harness
+    # EVERY FIELD FAMILY THE AUTHORISATION NAMES.
+    # THE NAMES ARE COMPOSED, so the check is over the composition and the key
+    # lists that drive it - which is what actually decides the families.
+    for piece in ("'.ids'", "'.body'", "'.headers'", "'.columns'",
+                  "'counter.'", "'applied.'", "'structural.state'",
+                  "'structural.report'", "'fingerprint.calculation_inputs'",
+                  "'fingerprint.simulation_request'", "'modelcheck.calculation_state'"):
+        assert piece in harness, f"the snapshot omits {piece}"
+    # BOTH REGISTERS, ALL THREE GRIDS, AND THE APPLIED TIMELINE NAMES.
+    assert harness.count("@('cost_lines', 'risk_register')") >= 2, harness
+    assert "@('cost_profiling', 'risk_profiling', 'inflation')" in harness
+    for name in ("nmBaseYear_Applied", "nmStartYear_Applied", "nmDuration_Applied",
+                 "nmLastYear_Applied", "nmYearCount_Applied",
+                 "nmInflFirstYear", "nmInflLastYear"):
+        assert name in harness, f"the applied timeline comparison omits {name}"
+    # AND THE COMPARISON IS EXACT AND TWO-WAY: a field only one pass reported is a
+    # difference, not an omission.
+    assert "$left -ceq $right" in harness
+    assert "only the bulk pass reported this field" in harness
+    # IT JUDGES NOTHING.
+    assert "exit 0" in harness
+    assert "exit 1" not in harness, "the gate decides its own verdict"
+
+
+def test_201_the_bulk_path_is_not_usable_as_a_baseline_until_the_gate_has_run() -> None:
+    """THE GATE IS A WINDOWS FACT AND HAS NOT BEEN RUN. Until it has, the record
+    must say so, and no accepted baseline may claim the bulk method. When it HAS
+    run, every field family must have matched and the calculation fingerprint with
+    them - this control reads whichever of those two states the record is in and
+    refuses anything else."""
+    text = RUN_EVIDENCE.read_text(encoding="utf-8")
+    section = " ".join(_run_evidence_section("## The fixture equivalence gate").split())
+    if "NOT YET RUN" in section:
+        # OUTSTANDING. Then no baseline anywhere may have been built in bulk.
+        assert "fixture_mode: Bulk" not in text, (
+            "a baseline claims the bulk fixture while the equivalence gate is unrun")
+        assert "must not be used for a baseline" in section
+        return
+    # RUN. Then it passed, on every family and on the fingerprint.
+    assert "EVERY FIELD FAMILY MATCHED" in section, section
+    assert "CALCEQUIV|match" in section, section
+    assert "differ" not in section.replace("no field differed", ""), section
+
+
+def test_202_the_aborted_large_run_stays_recorded_as_aborted() -> None:
+    """>4 HOURS IN SETUP IS EVIDENCE ABOUT THE FIXTURE METHOD, NOT ABOUT PCCM.
+    The record has to say both halves: that the run produced nothing, and that it
+    says nothing about how long a Large calculation or simulation takes."""
+    section = " ".join(_run_evidence_section("## PERF-LARGE attempt 1").split())
+    for fact in ("f3b3a33", "operator-aborted", "more than four hours",
+                 "0 timed operations", "NOT a baseline", "Shutdown"):
+        assert fact in section, f"the aborted-run record omits: {fact}"
+    # AND IT REFUSES THE WRONG READING.
+    assert "does NOT mean" in section
+    for wrong in ("Large calculation takes", "Simulation takes",
+                  "Large scenario is unsupported"):
+        assert wrong in section, f"the record does not refuse the reading: {wrong}"
+    assert "operationally impractical" in section
+
+
+def test_203_the_measured_cost_reduction_is_recorded_with_its_derivation() -> None:
+    """A NUMBER WITHOUT ITS DERIVATION IS A CLAIM. The record carries both counts
+    and where each came from, so Windows can check the reduction rather than take
+    it on trust."""
+    section = " ".join(_run_evidence_section("## The fixture cost, counted").split())
+    for figure in ("1,252,725", "5,816,730", "543,760", "191,275"):
+        assert figure in section, f"the cost table omits {figure}"
+    assert "O(N^2" in section or "O(N²" in section
+    for named in ("SnapshotTable", "SyncRows", "ValidateStructure",
+                  "ProtectionBeginStructural", "RecalculateStructuralState"):
+        assert named in section, f"the derivation does not name {named}"
+
+
+def test_204_the_iteration_matrix_and_timing_semantics_did_not_move() -> None:
+    """A FIXTURE CORRECTION IS NO OCCASION TO CHANGE WHAT IS MEASURED. Large stays
+    capped at 50,000 with eight planned runs; cold is 1 and warm is 3 everywhere;
+    the median still needs every warm sample valid."""
+    plan = _plan()
+    large = [r for r in plan["runs"] if r["scenario"] == "PERF-LARGE"]
+    assert len(large) == 8, len(large)
+    assert sorted({r["iterations"] for r in large if r["iterations"]}) == [10000, 50000]
+    forbidden = [f for f in plan["forbidden"] if f["scenario"] == "PERF-LARGE"]
+    assert len(forbidden) == 1 and int(forbidden[0]["iterations"]) == 100000, forbidden
+    for scenario, count in (("PERF-SMALL", 11), ("PERF-MEDIUM", 11), ("PERF-LARGE", 8)):
+        rows = [r for r in plan["runs"] if r["scenario"] == scenario]
+        assert len(rows) == count, (scenario, len(rows))
+        assert {r["cold_runs"] for r in rows} == {1}
+        assert {r["warm_runs"] for r in rows} == {3}
+    code = _code()
+    assert "if ($validWarm.Count -eq [int]$run.warm_runs) {" in code
+
+
+def test_205_the_protection_contract_is_untouched_by_the_bulk_path() -> None:
+    """THE WINDOW IS RUNTIME PROVEN AND IS NOT REOPENED FOR THIS. The bulk builder
+    runs inside the SAME window the endpoint path uses, with no new release, no
+    Unprotect of its own, and no second protection authority."""
+    for name, body in _bulk_functions().items():
+        for banned in (".Unprotect", ".Protect(", "ProtectionRelease",
+                       "ProtectionBeginStructural", "UserInterfaceOnly:="):
+            assert banned not in body, f"{name} reaches for protection: {banned}"
+    # THE WINDOW'S OWN FUNCTIONS ARE BYTE-IDENTICAL TO THE RUN THAT PROVED THEM.
+    for name in ("Open-BenchmarkFixtureWindow", "Close-BenchmarkFixtureWindow",
+                 "Invoke-BenchmarkWindowRollback", "Assert-BenchmarkProtectionApplied",
+                 "Get-BenchmarkProtectionState", "Import-BenchmarkFixtureWindow"):
+        assert _function(_code(), name) == _function(_code_at("ce5951f"), name), (
+            f"{name} changed after the run that proved it")
+    assert not _git("diff", "--name-only", "ce5951f", "--",
+                    "pccm/bootstrap/windows/phase10_fixture_window.bas").strip()
 
 
 SHAPE_HARNESS = PCCM_ROOT / "tests" / "phase10_run_shape_flow.ps1"

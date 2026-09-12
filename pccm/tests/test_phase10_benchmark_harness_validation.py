@@ -1368,17 +1368,14 @@ def test_153_closing_the_window_after_the_timed_runs_is_rejected() -> None:
 def test_154_dropping_the_finally_that_closes_on_a_raise_is_rejected() -> None:
     """A FIXTURE THAT RAISES WOULD LEAVE THE WORKBOOK UNPROTECTED, and the next
     thing to touch it would be a timed run."""
+    # ANCHORED ON THE TWO KEYWORDS, not on the builder call between them: the
+    # region gained a branch when the bulk builder arrived, and a mutation pinned
+    # to the old body would silently stop changing anything.
     _runner_mutation(
         "test_153",
-        "    try {\n"
-        "        $null = Set-Phase5Fixture -Excel $excel -Workbook $wb -Manifest $manifest `\n"
-        "            -Inspection $inspection -Model $model\n"
-        "    } finally {\n"
-        "        $protectionAfter = Close-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest\n"
-        "    }",
-        "    $null = Set-Phase5Fixture -Excel $excel -Workbook $wb -Manifest $manifest `\n"
-        "        -Inspection $inspection -Model $model\n"
-        "    $protectionAfter = Close-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest")
+        "    $null = Open-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest\n"
+        "    try {\n",
+        "    $null = Open-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest\n")
 
 
 def test_155_trusting_the_owners_ok_without_re_verifying_is_rejected() -> None:
@@ -1852,6 +1849,301 @@ def test_190_re_wrapping_the_onedrive_roots_is_rejected() -> None:
         "test_183",
         "    $roots = Get-BenchmarkOneDriveRoots",
         "    $roots = @(Get-BenchmarkOneDriveRoots)")
+
+
+# The equivalence gate and the evidence record are neither the runner nor the
+# shim, so they need their own mutation paths. Both damage a file the conformance
+# module reads, run the named controls against the damaged text, and restore.
+def _equivalence_mutation(expected: str, before: str, after: str) -> None:
+    original = conformance._equiv_harness()
+    damaged = original.replace(before, after, 1)
+    if damaged == original:
+        raise RuntimeError(
+            f"the mutation changed nothing: {before[:60]!r} is no longer in the gate")
+    restore = _install({"equiv_harness": damaged})
+    try:
+        refused = _run_battery()
+    finally:
+        restore()
+    assert refused, "the mutation survived the whole conformance battery"
+    assert any(name.startswith(expected) for name in refused), (expected, refused)
+
+
+def _record_mutation(expected: str, before: str, after: str) -> None:
+    """Damage the Windows evidence record on disk, run the battery, restore.
+
+    ON DISK, because the record is read through `Path.read_text` at assertion
+    time rather than through the memo - there is nothing to install.
+    """
+    path = conformance.RUN_EVIDENCE
+    original = path.read_text(encoding="utf-8")
+    damaged = original.replace(before, after, 1)
+    if damaged == original:
+        raise RuntimeError(
+            f"the mutation changed nothing: {before[:60]!r} is no longer in the record")
+    path.write_text(damaged, encoding="utf-8")
+    try:
+        refused = _run_battery()
+    finally:
+        path.write_text(original, encoding="utf-8")
+    assert refused, "the mutation survived the whole conformance battery"
+    assert any(name.startswith(expected) for name in refused), (expected, refused)
+
+
+# ===========================================================================
+# P. THE BULK FIXTURE
+# ===========================================================================
+# The heaviest mutations in this file, because the bulk builder is the one place
+# where a fixture could quietly become a second business engine.
+def test_190_publishing_a_calculation_result_from_the_fixture_is_rejected() -> None:
+    """THE WORST THING A FIXTURE COULD DO. A builder that wrote into _Calc would
+    hand the benchmark a workbook with the answers already in it, and every
+    Calculate median after it would be measuring a no-op."""
+    _runner_mutation(
+        "test_191",
+        "    # --- H. THE FIXTURE ENDS COHERENT ---------------------------------------\n"
+        "    $null = Assert-Phase5StructurallyCoherent -Excel $Excel `",
+        "    Set-BenchmarkRangeBlock -Workbook $Workbook -SheetName '_Calc' `\n"
+        "        -TableName 'tblCalcAnnual' -FirstRow 1 -FirstColumn 1 -Block $block `\n"
+        "        -Description 'tblCalcAnnual'\n"
+        "    $null = Assert-Phase5StructurallyCoherent -Excel $Excel `")
+
+
+def test_191_publishing_a_simulation_result_from_the_fixture_is_rejected() -> None:
+    """_SimData IS PRODUCTION'S. A fixture that wrote a simulation row would make
+    the Simulation median a measurement of nothing."""
+    _runner_mutation(
+        "test_191",
+        "    $inflationGrid = $null\n",
+        "    Set-TableCell -Workbook $Workbook -SheetName '_SimData' -TableName 'tblSimResults' `\n"
+        "        -RowIndex 1 -ColumnIndex 1 -Value ([double]1)\n"
+        "    $inflationGrid = $null\n")
+
+
+def test_192_fabricating_a_state_label_from_the_fixture_is_rejected() -> None:
+    """CURRENT IS A CLAIM ABOUT WORK THAT WAS DONE. Writing the label without the
+    work is the one shortcut that would make every correctness gate downstream
+    pass on a lie."""
+    _runner_mutation(
+        "test_191",
+        "    # --- F. ONE REAL PCCM_ApplyTimeline -------------------------------------",
+        "    Set-NamedValue -Workbook $Workbook -DefinedName 'nmStructuralState' `\n"
+        "        -Value ([double]1)\n"
+        "    # --- F. ONE REAL PCCM_ApplyTimeline -------------------------------------")
+
+
+def test_193_invoking_a_timed_endpoint_from_the_fixture_is_rejected() -> None:
+    """THE FIXTURE MAY INVOKE ApplyTimeline AND NOTHING ELSE. A Calculate inside
+    setup would warm exactly the thing the cold sample exists to measure."""
+    _runner_mutation(
+        "test_191",
+        "    $applied = Invoke-Phase5ProductionOperation -Excel $Excel `\n"
+        "        -Operation 'PCCM_ApplyTimeline' -Stage 'the bulk fixture structural baseline'",
+        "    $applied = Invoke-Phase5ProductionOperation -Excel $Excel `\n"
+        "        -Operation 'PCCM_ApplyTimeline' -Stage 'the bulk fixture structural baseline'\n"
+        "    $null = Invoke-Phase5ProductionOperation -Excel $Excel `\n"
+        "        -Operation 'PCCM_Calculate' -Stage 'warming the calculation'")
+
+
+def test_194_reproducing_the_year_columns_in_the_fixture_is_rejected() -> None:
+    """THE GRIDS' SHAPE IS PRODUCTION'S. A builder that added year columns itself
+    would be reimplementing modProfiling.SetYearColumns, and the benchmark would
+    stop testing that production can do it."""
+    _runner_mutation(
+        "test_192",
+        "        $block = New-BenchmarkWeightBlock -Workbook $Workbook -Grid $grid `",
+        "        $null = $Workbook.Worksheets.Item($grid.sheet).ListObjects.Item(\n"
+        "            $grid.table_name).ListColumns.Add()\n"
+        "        $block = New-BenchmarkWeightBlock -Workbook $Workbook -Grid $grid `")
+
+
+def test_195_hard_coding_the_identifier_format_is_rejected() -> None:
+    """THE PREFIX AND PAD COME FROM THE MANIFEST'S COUNTER PROJECTION. A literal
+    would keep passing after the contract changed either one, and the register
+    would be written with identifiers production would never issue."""
+    _runner_mutation(
+        "test_193",
+        "    $prefix = [string]$Counter.prefix\n"
+        "    $pad = [int]$Counter.pad_width",
+        "    $prefix = 'CL-'\n"
+        "    $pad = 3")
+
+
+def test_196_not_comparing_the_issued_identifier_with_the_model_is_rejected() -> None:
+    """TWO AUTHORITIES ON THE SAME IDENTITY. The model names CL-001.. and
+    production issues in sequence; if they ever disagreed the fixture would be
+    describing a different workbook, silently."""
+    _runner_mutation(
+        "test_193",
+        "        if ($issued -cne $declared) {",
+        "        if ($false) {")
+
+
+def test_197_leaving_the_counter_at_zero_is_rejected() -> None:
+    """THE COUNTER IS THE MODEL'S RECORD OF EVERY IDENTIFIER EVER ISSUED. Left at
+    zero it disagrees with every row present, and modDrivers.HighestIssued exists
+    to catch exactly that."""
+    _runner_mutation(
+        "test_193",
+        "        CounterValue = [double]$drivers.Count",
+        "        CounterValue = [double]0")
+
+
+def test_198_writing_the_register_cell_by_cell_is_rejected() -> None:
+    """THE WHOLE POINT. A per-cell loop puts the O(N x cols) COM cost back, and on
+    LARGE that is the difference the four-hour abort measured."""
+    _runner_mutation(
+        "test_194",
+        "    $rows = [int]$Block.GetLength(0)\n"
+        "    $columns = [int]$Block.GetLength(1)",
+        "    $rows = [int]$Block.GetLength(0)\n"
+        "    $columns = [int]$Block.GetLength(1)\n"
+        "    for ($r = 1; $r -le $rows; $r++) { $null = $r }")
+
+
+def test_199_accepting_a_jagged_array_for_a_block_write_is_rejected() -> None:
+    """A JAGGED ARRAY IS SILENTLY NOT THE VARIANT SHAPE EXCEL ACCEPTS. Dropping
+    the rank check would turn a wrong-shaped block into a runtime surprise on the
+    machine rather than a refusal here."""
+    _runner_mutation(
+        "test_194",
+        "    if ($Block.Rank -ne 2) {",
+        "    if ($false) {")
+
+
+def test_200_deleting_register_rows_in_the_fixture_is_rejected() -> None:
+    """THE DESTRUCTIVE PATH THIS PROJECT ALREADY REMOVED ONCE. Shrinking a register
+    would delete the contract's reserved, validated rows - and the builder runs
+    against a fresh workbook where it can never be needed."""
+    _runner_mutation(
+        "test_195",
+        "    if ($current -gt $RowCount) {\n"
+        "        throw ($TableName + ' already holds ' + [string]$current + ' body rows where the ' +",
+        "    if ($false) {\n"
+        "        $unreachable = ($TableName + ' already holds ' + [string]$current + ' rows ' +")
+
+
+def test_201_not_proving_the_register_grew_is_rejected() -> None:
+    """A GROW THAT SILENTLY DID NOTHING leaves the one block write landing outside
+    the table, and Excel would not complain."""
+    _runner_mutation(
+        "test_195",
+        "    if ($after -ne $RowCount) {",
+        "    if ($false) {")
+
+
+def test_202_making_the_bulk_path_the_default_is_rejected() -> None:
+    """THE ACCEPTED SMALL AND MEDIUM BASELINES WERE BUILT BY THE ENDPOINT PATH. A
+    default flip would silently change what they are comparable with, and nothing
+    in the artifact would have said so."""
+    _runner_mutation(
+        "test_196",
+        "    [string]$FixtureMode = 'Endpoints'",
+        "    [string]$FixtureMode = 'Bulk'")
+
+
+def test_203_dropping_the_fixture_mode_from_the_artifact_is_rejected() -> None:
+    """TWO METHODS THAT REACH THE SAME STATE ARE STILL TWO METHODS. A baseline that
+    does not say which built it cannot be compared with one that does."""
+    _runner_mutation(
+        "test_196",
+        "$report.Add('fixture_mode', [string]$FixtureMode)\n",
+        "")
+
+
+def test_204_building_over_a_populated_register_is_rejected() -> None:
+    """IT WRITES IDENTIFIERS FROM SEQUENCE 1. Over existing rows that means
+    duplicates and a counter that disagrees with the highest identifier present."""
+    _runner_mutation(
+        "test_198",
+        "        if ($existing.Count -ne 0) {",
+        "        if ($false) {")
+
+
+def test_205_not_reading_the_register_back_before_the_sync_is_rejected() -> None:
+    """PRODUCTION IS ABOUT TO SYNCHRONISE BOTH GRIDS FROM THAT REGISTER. If the
+    block landed wrong, ApplyTimeline would faithfully key the grids to the wrong
+    rows and everything downstream would agree with itself."""
+    _runner_mutation(
+        "test_198",
+        "            if ([string]$ids[$i] -cne [string]$expected[$i]) {",
+        "            if ($false) {")
+
+
+def test_206_assuming_the_profiling_row_order_is_rejected() -> None:
+    """modProfiling.SyncRows REBUILDS THE GRID FROM THE REGISTER, and nothing binds
+    its physical order to the order the register was written in. Assuming it would
+    put each driver's weights on some other driver's row."""
+    _runner_mutation(
+        "test_199",
+        "        $driver = $byId[$rows[$r]]",
+        "        $driver = @($Drivers)[$r]")
+
+
+def test_207_writing_weights_over_a_non_contiguous_grid_is_rejected() -> None:
+    """ONE RECTANGLE CANNOT STRADDLE A GAP. A blank key inside the keyed rows means
+    the block would land on rows that belong to nobody."""
+    _runner_mutation(
+        "test_199",
+        "        if ([string]::IsNullOrWhiteSpace([string]$body[$r][0])) {",
+        "        if ($false) {")
+
+
+def test_208_a_gate_that_only_builds_one_way_is_rejected() -> None:
+    """THE COMPARISON IS THE GATE. A gate that built only the optimised path would
+    prove the optimised path runs, which is not the question."""
+    _equivalence_mutation(
+        "test_200",
+        "foreach ($mode in @('Endpoints', 'Bulk')) {",
+        "foreach ($mode in @('Bulk')) {")
+
+
+def test_209_a_gate_that_does_not_compare_the_calculation_fingerprint_is_rejected() -> None:
+    """PRODUCTION'S OWN VERDICT ON THE TWO WORKBOOKS. Field-for-field equality of
+    the inputs is necessary and not sufficient: the fingerprint is what says the
+    model calculates to the same thing."""
+    _equivalence_mutation(
+        "test_200",
+        "    $calcFingerprint = [string]$excel.Run('PCCM_CalculationFingerprint')",
+        "    $calcFingerprint = 'not-compared'")
+
+
+def test_210_a_gate_that_judges_its_own_evidence_is_rejected() -> None:
+    """THE EVIDENCE AND THE VERDICT ARE TWO AUTHORITIES. A gate that exited
+    non-zero on its own comparison would be deciding the thing the control exists
+    to decide, and a vacuous comparison would then look like a pass."""
+    _equivalence_mutation(
+        "test_200",
+        "if (($reference.CalcFingerprint -ceq $optimised.CalcFingerprint) -and",
+        "if ($false) { exit 1 }\nif (($reference.CalcFingerprint -ceq $optimised.CalcFingerprint) -and")
+
+
+def test_211_claiming_the_gate_passed_while_it_is_unrun_is_rejected() -> None:
+    """THE RECORD MAY SAY OUTSTANDING OR IT MAY SAY ALL-MATCHED. It may not say
+    neither, and it may not report a difference and still read as passing."""
+    _record_mutation(
+        "test_201",
+        "**NOT YET RUN.** It is a Windows verification",
+        "**PASSED.** It is a Windows verification")
+
+
+def test_212_softening_the_aborted_large_record_is_rejected() -> None:
+    """>4 HOURS IN SETUP IS EVIDENCE ABOUT THE FIXTURE METHOD. A record that
+    dropped the sentence refusing the wrong reading would let the next reader
+    conclude that a Large calculation takes four hours."""
+    _record_mutation(
+        "test_202",
+        "It **does NOT mean** any of the following",
+        "It could mean any of the following")
+
+
+def test_213_dropping_the_cost_derivation_from_the_record_is_rejected() -> None:
+    """A NUMBER WITHOUT ITS DERIVATION IS A CLAIM. Windows has to be able to check
+    the reduction, which means seeing where each count came from."""
+    _record_mutation(
+        "test_203",
+        "| `modProfiling.SyncRows` | every existing weight into a Dictionary",
+        "| the profiling sync | every existing weight into a Dictionary")
 
 
 def test_144_deleting_a_definition_a_dot_sourced_file_calls_is_rejected() -> None:

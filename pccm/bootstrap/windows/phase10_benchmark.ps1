@@ -96,6 +96,8 @@ param(
     [string]$BuildDir,
     [string]$WorkDir,
     [string]$OutDir,
+    [ValidateSet('Endpoints', 'Bulk')]
+    [string]$FixtureMode = 'Endpoints',
     [switch]$KeepArtifacts
 )
 
@@ -493,6 +495,491 @@ function Reset-Phase5FxTable {
             }
         }
     }
+}
+
+# ===========================================================================
+# THE BULK FIXTURE
+# ===========================================================================
+# WHY THIS EXISTS, MEASURED RATHER THAN ASSERTED. PERF-LARGE was operator-aborted
+# after more than four hours in `BUILDING PERF-LARGE`, before the first timed
+# operation. The cost is not the harness's COM chatter - it is that the fixture
+# invoked `PCCM_AddCostLine` / `PCCM_AddRisk` three hundred times, and EACH of
+# those is a full production structural operation:
+#
+#   modAppState.BeginStructuralOperation   unprotect 14 sheets, then a second
+#                                          pass over all 14 to PROVE the release
+#   modWorkbook.SnapshotTable x2           every cell of the register AND of the
+#                                          profiling grid, for the rollback
+#   modProfiling.SyncRows                  every existing weight into a
+#                                          Dictionary, then the grid rewritten
+#   modStructuralCheck.ValidateStructure   the register and the grid again
+#   modAppState.FinishOperation            re-apply protection to 14 sheets and
+#                                          verify, then .Calculate four sheets
+#
+# That is O(register rows x project years) PER ADD, so N adds is O(N^2 x years):
+#
+#   PERF-SMALL     20 adds      46,580 in-VBA cell visits,    80 recalcs
+#   PERF-MEDIUM   100 adds     543,760 in-VBA cell visits,   400 recalcs
+#   PERF-LARGE    300 adds   5,816,730 in-VBA cell visits, 1,200 recalcs
+#
+# ALL OF THAT IS PRODUCTION BEHAVING CORRECTLY. One user adding one cost line
+# SHOULD snapshot for rollback, re-sync the grid, validate and re-protect. It is
+# right per click and catastrophic as a bulk loader, and production is not
+# changed to make a benchmark convenient.
+#
+# WHAT THIS BUILDER MAY AND MAY NOT WRITE
+# ---------------------------------------
+# PRODUCTION STILL PRODUCES, and this builder never writes:
+#
+#   the year columns on all three grids ...... modProfiling.SetYearColumns and
+#                                              modInflation.SetYearColumns
+#   the profiling ROWS and their ID keying ... modProfiling.SyncRows, which keys
+#                                              a grid row to a register row by
+#                                              permanent ID
+#   the applied timeline defined names ....... PCCM_ApplyTimeline
+#   structural validation .................... modStructuralCheck.ValidateStructure
+#   EVERY calculation, simulation, sensitivity
+#   and annual result ........................ the timed endpoints, untouched
+#
+# All of the first four arrive from ONE real `PCCM_ApplyTimeline`, which does
+# exactly them and nothing else this fixture needs.
+#
+# THIS BUILDER WRITES ONLY WHAT A USER TYPES, plus the two identity artifacts
+# production would have issued:
+#
+#   the register business columns, the FX rates, the Config profile names, the
+#   profiling weights and the Setup scalars ... all user input
+#   the permanent IDs and the two counters .... deterministic: modDrivers.AllocateId
+#                                              increments the counter and formats
+#                                              prefix + zero-padded sequence, so
+#                                              N adds always yield CL-001..CL-00N
+#                                              with the counter left at N. The
+#                                              prefix and pad width are read from
+#                                              the manifest's counter projection,
+#                                              never from a literal here.
+#
+# The identity artifacts are the ONE thing here that is not a plain user input,
+# and they are what the semantic-equivalence gate exists to prove - see
+# `tests/phase10_fixture_equivalence.ps1`, which builds PERF-SMALL BOTH ways in
+# two disposable workbooks and compares them field for field and by production's
+# own calculation fingerprint.
+#
+# IT PUBLISHES NOTHING. There is no write to _Calc, no write to _SimData, no
+# fingerprint, no state label, and no result of any kind. Controls ban each by
+# name.
+
+# ONE RECTANGULAR ASSIGNMENT. This is the whole performance argument: a
+# 300 x 11 block is ONE cross-process call instead of 3,300 of them.
+#
+# PowerShell hands a 2-D object[,] to Value2 as a VARIANT array, which is the
+# only shape Excel accepts for a block write. A jagged array of arrays is NOT
+# that shape and Excel rejects it, so the array is built with New-Object
+# 'object[,]' rather than by nesting @() literals.
+function Set-BenchmarkRangeBlock {
+    param($Workbook, [string]$SheetName, [string]$TableName,
+          [int]$FirstRow, [int]$FirstColumn, $Block, [string]$Description)
+    if ($Block -isnot [System.Array]) {
+        throw ('the bulk write for ' + $Description + ' was handed a ' +
+               $Block.GetType().FullName + ', not an array')
+    }
+    if ($Block.Rank -ne 2) {
+        throw ('the bulk write for ' + $Description + ' was handed a rank-' +
+               [string]$Block.Rank + ' array; Excel accepts only a rectangular ' +
+               'two-dimensional block')
+    }
+    $rows = [int]$Block.GetLength(0)
+    $columns = [int]$Block.GetLength(1)
+    if (($rows -lt 1) -or ($columns -lt 1)) {
+        throw ('the bulk write for ' + $Description + ' is empty (' + [string]$rows +
+               'x' + [string]$columns + ')')
+    }
+    $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null
+    $body = $null; $anchor = $null; $target = $null
+    try {
+        $localWorksheets = $Workbook.Worksheets
+        $ws = $localWorksheets.Item($SheetName)
+        $los = $ws.ListObjects
+        $lo = $los.Item($TableName)
+        $body = $lo.DataBodyRange
+        if ($null -eq $body) {
+            throw ('the bulk write for ' + $Description + ' found no body in ' + $TableName)
+        }
+        $anchor = $body.Cells($FirstRow, $FirstColumn)
+        $target = $anchor.Resize($rows, $columns)
+        # RANGE.RESIZE, NOT A LISTOBJECT OPERATION. Resizing a Range selects a
+        # different rectangle of the same sheet; it does not add or remove table
+        # rows or columns, so it is not the structural class protection refuses.
+        $target.Value2 = $Block
+    } finally {
+        if ($null -ne $target)          { Release-Transient $target          'Range(block)'; $target          = $null }
+        if ($null -ne $anchor)          { Release-Transient $anchor          'Range(anchor)'; $anchor         = $null }
+        if ($null -ne $body)            { Release-Transient $body            'Range(body)';  $body            = $null }
+        if ($null -ne $lo)              { Release-Transient $lo              'ListObject';   $lo              = $null }
+        if ($null -ne $los)             { Release-Transient $los             'ListObjects';  $los             = $null }
+        if ($null -ne $ws)              { Release-Transient $ws              'Worksheet';    $ws              = $null }
+        if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';   $localWorksheets = $null }
+    }
+}
+
+# GROW THE REGISTER ONCE, NOT ONCE PER DRIVER.
+#
+# `ListRows.Add()` IS a ListObject structural operation, so this is only legal
+# inside the fixture maintenance window - which is exactly where the builder
+# runs. It is one COM call per row rather than a whole production operation per
+# row: three hundred calls, not three hundred snapshot-sync-validate-reprotect
+# cycles.
+#
+# A TABLE THAT IS ALREADY LARGE ENOUGH IS LEFT ALONE, and one that is too large
+# is REFUSED rather than shrunk: deleting rows here would be the destructive
+# path this project removed from the FX reset, and the benchmark builds into a
+# fresh disposable workbook where it cannot arise.
+function Set-BenchmarkRegisterRowCount {
+    param($Workbook, [string]$SheetName, [string]$TableName, [int]$RowCount)
+    $current = Get-TableRowCount -Workbook $Workbook -SheetName $SheetName -TableName $TableName
+    if ($current -gt $RowCount) {
+        throw ($TableName + ' already holds ' + [string]$current + ' body rows where the ' +
+               'fixture needs ' + [string]$RowCount + '. This builder never deletes rows; ' +
+               'it runs against a fresh disposable workbook.')
+    }
+    if ($current -eq $RowCount) { return $RowCount }
+    $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null; $rows = $null
+    try {
+        $localWorksheets = $Workbook.Worksheets
+        $ws = $localWorksheets.Item($SheetName)
+        $los = $ws.ListObjects
+        $lo = $los.Item($TableName)
+        $rows = $lo.ListRows
+        for ($i = $current; $i -lt $RowCount; $i++) {
+            $added = $null
+            try { $added = $rows.Add() }
+            finally { if ($null -ne $added) { Release-Transient $added 'ListRow'; $added = $null } }
+        }
+    } finally {
+        if ($null -ne $rows)            { Release-Transient $rows            'ListRows';    $rows            = $null }
+        if ($null -ne $lo)              { Release-Transient $lo              'ListObject';  $lo              = $null }
+        if ($null -ne $los)             { Release-Transient $los             'ListObjects'; $los             = $null }
+        if ($null -ne $ws)              { Release-Transient $ws              'Worksheet';   $ws              = $null }
+        if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';  $localWorksheets = $null }
+    }
+    # PROVED, NOT ASSUMED. A grow that silently did nothing would leave the bulk
+    # write landing outside the table.
+    $after = Get-TableRowCount -Workbook $Workbook -SheetName $SheetName -TableName $TableName
+    if ($after -ne $RowCount) {
+        throw ($TableName + ' holds ' + [string]$after + ' body rows after growing it to ' +
+               [string]$RowCount + '. ListRows.Add is a structural operation and is only ' +
+               'permitted inside the fixture maintenance window.')
+    }
+    return $after
+}
+
+# THE IDENTIFIER PRODUCTION WOULD HAVE ISSUED, from the manifest's own counter
+# projection. `modDrivers.AllocateId` reads the counter, increments it, persists
+# it and formats prefix + the sequence zero-padded to the declared width - so
+# the Nth add issues prefix + N and leaves the counter at N.
+function Get-BenchmarkPermanentId {
+    param($Counter, [int]$Sequence)
+    $prefix = [string]$Counter.prefix
+    $pad = [int]$Counter.pad_width
+    if ([string]::IsNullOrEmpty($prefix)) {
+        throw ('the manifest counter ' + [string]$Counter.defined_name + ' declares no prefix')
+    }
+    if ($pad -lt 1) {
+        throw ('the manifest counter ' + [string]$Counter.defined_name +
+               ' declares a pad width of ' + [string]$pad)
+    }
+    return ($prefix + ([string]$Sequence).PadLeft($pad, [char]48))
+}
+
+# THE REGISTER BODY AS ONE BLOCK, in the manifest's declared column order.
+#
+# COLUMN ORDINALS COME FROM THE MANIFEST, never from a count here - the same
+# rule `Write-Phase5Driver` follows, and the reason a register column can be
+# added to the contract without this builder inventing a position for it. A
+# column no driver fills stays $null, which is a genuine blank: `category`,
+# `uom` and `risk_owner` are blank in the accepted endpoint-built fixture too,
+# and writing '' instead would make them populated.
+function New-BenchmarkRegisterBlock {
+    param($Register, $Counter, $Drivers, [bool]$IsRisk)
+    $columns = @($Register.columns | ForEach-Object { [string]$_ })
+    $drivers = @($Drivers)
+    if ($drivers.Count -lt 1) {
+        throw ('the fixture model carries no drivers for ' + [string]$Register.table_name)
+    }
+    $block = New-Object 'object[,]' $drivers.Count, $columns.Count
+    $ids = @()
+    for ($index = 0; $index -lt $drivers.Count; $index++) {
+        $driver = $drivers[$index]
+        $sequence = $index + 1
+        $issued = Get-BenchmarkPermanentId -Counter $Counter -Sequence $sequence
+        # THE MODEL'S OWN IDENTIFIER IS COMPARED, NOT TRUSTED. The emitted model
+        # names CL-001.. in order and production issues in sequence; if the two
+        # ever disagreed the fixture would be describing a different workbook.
+        $declared = [string]$driver.permanent_id
+        if ($issued -cne $declared) {
+            throw ('the fixture model declares ' + $declared + ' as driver ' +
+                   [string]$sequence + ' where production would issue ' + $issued)
+        }
+        $ids += $issued
+        # The values are the accepted endpoint fixture's, field for field.
+        $values = @{}
+        $values[$columns[0]] = $issued
+        if ($IsRisk) {
+            $values['risk_name'] = ('GateB ' + $issued)
+            $values['probability'] = [double]$driver.probability
+            $values['impact_min'] = [double]$driver.min_value
+            if ($null -ne $driver.most_likely) { $values['impact_most_likely'] = [double]$driver.most_likely }
+            $values['impact_max'] = [double]$driver.max_value
+        } else {
+            $values['description'] = ('GateB ' + $issued)
+            $values['quantity'] = [double]$driver.quantity
+            $values['unit_cost_min'] = [double]$driver.min_value
+            if ($null -ne $driver.most_likely) { $values['unit_cost_most_likely'] = [double]$driver.most_likely }
+            $values['unit_cost_max'] = [double]$driver.max_value
+        }
+        $values['currency'] = [string]$driver.currency
+        $values['inflation_profile'] = [string]$driver.inflation_profile
+        $values['distribution'] = [string]$driver.distribution
+        for ($c = 0; $c -lt $columns.Count; $c++) {
+            $key = $columns[$c]
+            if ($values.ContainsKey($key)) { $block[$index, $c] = $values[$key] }
+            else { $block[$index, $c] = $null }
+        }
+    }
+    return [pscustomobject]@{
+        Block = $block
+        Ids = $ids
+        CounterValue = [double]$drivers.Count
+        Columns = $columns
+    }
+}
+
+# THE PROFILING WEIGHTS AS ONE BLOCK PER GRID, in the order production keyed the
+# rows. The row order is READ BACK from the grid rather than assumed, because
+# `modProfiling.SyncRows` rebuilds the grid from the register and nothing binds
+# its physical order to the order this builder wrote the register in.
+function New-BenchmarkWeightBlock {
+    param($Workbook, $Grid, $Drivers, [int]$Years)
+    $drivers = @($Drivers)
+    $body = @(Get-TableBody -Workbook $Workbook -SheetName $Grid.sheet -TableName $Grid.table_name)
+    $byId = @{}
+    foreach ($driver in $drivers) { $byId[[string]$driver.permanent_id] = $driver }
+    $rows = @()
+    foreach ($row in $body) {
+        $key = [string]$row[0]
+        if ([string]::IsNullOrWhiteSpace($key)) { continue }
+        if (-not $byId.ContainsKey($key)) {
+            throw ('the profiling grid ' + [string]$Grid.table_name + ' carries a row for ' +
+                   $key + ', which the fixture model does not declare')
+        }
+        $rows += $key
+    }
+    if ($rows.Count -ne $drivers.Count) {
+        throw ('the profiling grid ' + [string]$Grid.table_name + ' carries ' +
+               [string]$rows.Count + ' keyed row(s) where the fixture model declares ' +
+               [string]$drivers.Count + '. PCCM_ApplyTimeline synchronises the grid from ' +
+               'the register, so this means the register was not written as intended.')
+    }
+    # CONTIGUOUS FROM ROW 1, or the single rectangular write would straddle a gap.
+    for ($r = 0; $r -lt $rows.Count; $r++) {
+        if ([string]::IsNullOrWhiteSpace([string]$body[$r][0])) {
+            throw ('the profiling grid ' + [string]$Grid.table_name + ' has a blank key at ' +
+                   'row ' + [string]($r + 1) + ', so its keyed rows are not contiguous and a ' +
+                   'block write would land on the wrong rows')
+        }
+    }
+    $block = New-Object 'object[,]' $rows.Count, $Years
+    for ($r = 0; $r -lt $rows.Count; $r++) {
+        $driver = $byId[$rows[$r]]
+        $weights = @($driver.profile_weights)
+        if ($weights.Count -ne $Years) {
+            throw ('driver ' + $rows[$r] + ' declares ' + [string]$weights.Count +
+                   ' weights for ' + [string]$Years + ' project years')
+        }
+        for ($c = 0; $c -lt $Years; $c++) {
+            if ($null -eq $weights[$c]) { $block[$r, $c] = $null }
+            else { $block[$r, $c] = [double]$weights[$c] }
+        }
+    }
+    return $block
+}
+
+# THE BULK FIXTURE, STEP FOR STEP AGAINST THE ACCEPTED ONE.
+#
+# The accepted `Invoke-Phase5FixtureSteps` runs A-H. This runs the same steps and
+# reaches the same end state; only step F changes, and only in HOW the register
+# rows arrive - not in what they contain.
+#
+#   A  registers empty, counters set          ASSERTED empty, then the counters
+#                                             are set to N with the register block
+#   B  the four Setup scalars                 identical, the accepted setter
+#   C  FX reset and the foreign row           identical, the accepted helpers
+#   D  the Config profile master              identical, the accepted helper
+#   E/F REGISTERS, THEN ONE ApplyTimeline     the one change: the register bodies
+#                                             are written as two blocks and ONE
+#                                             real PCCM_ApplyTimeline synchronises
+#                                             both grids, instead of N production
+#                                             Add operations each re-syncing
+#   G  rates and weights                      the same values, as blocks
+#   H  the closing coherence check            identical, production's own report
+#
+# THE ORDER DIFFERENCE IS THE POINT AND IS NOT A SEMANTIC ONE. In the accepted
+# path ApplyTimeline runs over EMPTY registers and each Add then syncs one grid
+# row; here it runs over FULL registers and syncs all of them at once.
+# `modProfiling.SyncRows` rebuilds the grid from the register by permanent ID in
+# register order either way, so both paths end with the same keyed rows in the
+# same order - which the equivalence gate checks rather than assumes.
+function Set-BenchmarkBulkFixture {
+    param($Excel, $Workbook, $Manifest, $Inspection, $Model, $ScenarioSpec)
+    $years = [int]$ScenarioSpec.years
+
+    # --- A. the registers must START empty ---------------------------------
+    # Not cleared - ASSERTED. This builder writes permanent IDs from sequence 1,
+    # so a register that already carried rows would be given duplicates, and the
+    # counter would disagree with the highest identifier present.
+    $registerByKey = @{}
+    foreach ($register in @($Manifest.registers)) {
+        $registerByKey[[string]$register.key] = $register
+        $existing = @(Get-IdColumnValues -Workbook $Workbook -Info $register)
+        if ($existing.Count -ne 0) {
+            throw ('the bulk fixture requires an empty ' + [string]$register.table_name +
+                   ' and found ' + [string]$existing.Count + ' keyed row(s). It writes ' +
+                   'identifiers from sequence 1 and runs against a fresh disposable ' +
+                   'workbook.')
+        }
+    }
+    $counterByRegister = @{}
+    foreach ($counter in @($Manifest.counters)) {
+        $counterByRegister[[string]$counter.driver_register] = $counter
+    }
+    foreach ($key in @('cost_lines', 'risk_register')) {
+        if (-not $registerByKey.ContainsKey($key)) {
+            throw ('the manifest declares no register ' + $key)
+        }
+        if (-not $counterByRegister.ContainsKey($key)) {
+            throw ('the manifest declares no identity counter for ' + $key)
+        }
+    }
+
+    # --- B. the Setup scalars, through the accepted setter ------------------
+    $inputs = $Inspection.inputs
+    Set-NamedValue -Workbook $Workbook -DefinedName $inputs.base_year.defined_name `
+        -Value ([double]$Model.timeline.base_year)
+    Set-NamedValue -Workbook $Workbook -DefinedName $inputs.project_start_year.defined_name `
+        -Value ([double]$Model.timeline.start_year)
+    Set-NamedValue -Workbook $Workbook -DefinedName $inputs.duration_years.defined_name `
+        -Value ([double]$Model.timeline.duration)
+    Set-NamedValue -Workbook $Workbook -DefinedName $inputs.discount_rate.defined_name `
+        -Value ([double]$Model.discount_rate)
+
+    # --- C. FX, through the accepted reset and append ----------------------
+    # TWENTY-FOUR CELLS. Left cell-by-cell on purpose: it is already bounded by
+    # the contract's twelve reserved rows, the reset is a settled control over a
+    # defective build, and replacing it would put that control at risk for no
+    # measurable gain.
+    $fx = $Inspection.input_tables.fx_rates
+    Reset-Phase5FxTable -Workbook $Workbook -Inspection $Inspection `
+        -Seed (Get-Phase5LockedFxSeed)
+    $reporting = [string](Get-NamedValue -Workbook $Workbook `
+        -DefinedName $inputs.reporting_currency.defined_name)
+    $fxRow = 0
+    foreach ($entry in @($Model.fx)) {
+        if ([string]$entry.currency -eq $reporting) { continue }
+        $fxRow++
+        $null = Add-BlankTableRow -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name
+        $target = [int]$fx.locked_seed_rows + $fxRow
+        Set-TableCell -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name `
+            -RowIndex $target -ColumnIndex 1 -Value ([string]$entry.currency)
+        if ($null -ne $entry.rate) {
+            Set-TableCell -Workbook $Workbook -SheetName $fx.sheet -TableName $fx.table_name `
+                -RowIndex $target -ColumnIndex 2 -Value ([double]$entry.rate)
+        }
+    }
+
+    # --- D. the Config profile master, through the accepted helper ----------
+    Set-Phase5InflationProfileMaster -Workbook $Workbook -Inspection $Inspection `
+        -Profiles @($Model.inflation.PSObject.Properties.Name)
+
+    # --- E. THE REGISTERS, AS TWO BLOCKS ------------------------------------
+    $blocks = @{}
+    foreach ($pair in @(
+            @{ key = 'cost_lines'; drivers = @($Model.cost_lines); risk = $false },
+            @{ key = 'risk_register'; drivers = @($Model.risks); risk = $true })) {
+        $register = $registerByKey[$pair.key]
+        $counter = $counterByRegister[$pair.key]
+        $prepared = New-BenchmarkRegisterBlock -Register $register -Counter $counter `
+            -Drivers $pair.drivers -IsRisk ([bool]$pair.risk)
+        $null = Set-BenchmarkRegisterRowCount -Workbook $Workbook -SheetName $register.sheet `
+            -TableName $register.table_name -RowCount @($pair.drivers).Count
+        Set-BenchmarkRangeBlock -Workbook $Workbook -SheetName $register.sheet `
+            -TableName $register.table_name -FirstRow 1 -FirstColumn 1 -Block $prepared.Block `
+            -Description ([string]$register.table_name)
+        # THE COUNTER IS THE MODEL'S RECORD OF EVERY IDENTIFIER EVER ISSUED, and
+        # after N adds it holds N. modDrivers.TryReadCounter refuses anything that
+        # is not a whole number, so a counter that landed as text would make the
+        # very next production mutation refuse.
+        Set-NamedValue -Workbook $Workbook -DefinedName ([string]$counter.defined_name) `
+            -Value ([double]$prepared.CounterValue)
+        $blocks[$pair.key] = $prepared
+    }
+    # AND THE REGISTERS REALLY CARRY WHAT WAS WRITTEN, before a production command
+    # is asked to synchronise anything from them.
+    foreach ($pair in @(
+            @{ key = 'cost_lines'; drivers = @($Model.cost_lines) },
+            @{ key = 'risk_register'; drivers = @($Model.risks) })) {
+        $register = $registerByKey[$pair.key]
+        $ids = @(Get-IdColumnValues -Workbook $Workbook -Info $register)
+        $expected = @($blocks[$pair.key].Ids)
+        if ($ids.Count -ne $expected.Count) {
+            throw ([string]$register.table_name + ' carries ' + [string]$ids.Count +
+                   ' keyed row(s) after the block write, not ' + [string]$expected.Count)
+        }
+        for ($i = 0; $i -lt $expected.Count; $i++) {
+            if ([string]$ids[$i] -cne [string]$expected[$i]) {
+                throw ([string]$register.table_name + ' row ' + [string]($i + 1) + ' carries ' +
+                       [string]$ids[$i] + ' where the fixture wrote ' + [string]$expected[$i])
+            }
+        }
+    }
+
+    # --- F. ONE REAL PCCM_ApplyTimeline -------------------------------------
+    # This is where every structural thing the fixture needs comes from
+    # production: the year columns on all three grids, one profiling row per
+    # register row keyed by permanent ID, the applied-timeline defined names, and
+    # modStructuralCheck.ValidateStructure. Nothing here reproduces any of it.
+    $applied = Invoke-Phase5ProductionOperation -Excel $Excel `
+        -Operation 'PCCM_ApplyTimeline' -Stage 'the bulk fixture structural baseline'
+    $null = Assert-Phase5StructurallyCoherent -Excel $Excel `
+        -Stage 'after the bulk fixture applied the timeline'
+
+    # --- G. the rates and the weights, as blocks ----------------------------
+    $inflationGrid = $null
+    $gridByKey = @{}
+    foreach ($grid in @($Manifest.grids)) {
+        $gridByKey[[string]$grid.key] = $grid
+        if ([string]$grid.key -eq 'inflation') { $inflationGrid = $grid }
+    }
+    if ($null -eq $inflationGrid) { throw 'the manifest declares no inflation grid' }
+    Write-Phase5InflationRates -Workbook $Workbook -Manifest $Manifest -Model $Model
+
+    foreach ($pair in @(
+            @{ key = 'cost_profiling'; drivers = @($Model.cost_lines) },
+            @{ key = 'risk_profiling'; drivers = @($Model.risks) })) {
+        if (-not $gridByKey.ContainsKey($pair.key)) {
+            throw ('the manifest declares no grid ' + $pair.key)
+        }
+        $grid = $gridByKey[$pair.key]
+        $fixed = @($grid.fixed_columns).Count
+        $block = New-BenchmarkWeightBlock -Workbook $Workbook -Grid $grid `
+            -Drivers $pair.drivers -Years $years
+        Set-BenchmarkRangeBlock -Workbook $Workbook -SheetName $grid.sheet `
+            -TableName $grid.table_name -FirstRow 1 -FirstColumn ($fixed + 1) -Block $block `
+            -Description ([string]$grid.table_name)
+    }
+
+    # --- H. THE FIXTURE ENDS COHERENT ---------------------------------------
+    $null = Assert-Phase5StructurallyCoherent -Excel $Excel `
+        -Stage 'at the end of bulk fixture establishment'
+    return $applied
 }
 
 # ===========================================================================
@@ -1846,8 +2333,16 @@ try {
     # unprotected workbook is the worse fact.
     $null = Open-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest
     try {
-        $null = Set-Phase5Fixture -Excel $excel -Workbook $wb -Manifest $manifest `
-            -Inspection $inspection -Model $model
+        # WHICH BUILDER, RECORDED IN THE ARTIFACT. Two fixture methods that reach
+        # the same state are still two methods, and a baseline must never be
+        # compared across them without someone seeing that it was.
+        if ($FixtureMode -eq 'Bulk') {
+            $null = Set-BenchmarkBulkFixture -Excel $excel -Workbook $wb -Manifest $manifest `
+                -Inspection $inspection -Model $model -ScenarioSpec $scenarioSpec
+        } else {
+            $null = Set-Phase5Fixture -Excel $excel -Workbook $wb -Manifest $manifest `
+                -Inspection $inspection -Model $model
+        }
     } finally {
         $protectionAfter = Close-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest
     }
@@ -1880,6 +2375,10 @@ try {
     Write-BenchmarkLine ('  project years        : ' + [string]$actual['years'])
     Write-BenchmarkLine ('  seed                 : FIXED ' + [string](Get-BenchmarkSeed) +
                          '  (the same work every run, so a difference is the machine)')
+    Write-BenchmarkLine ('  fixture method       : ' + [string]$FixtureMode +
+                         $(if ($FixtureMode -eq 'Bulk') {
+                             '  [bulk inputs + ONE real PCCM_ApplyTimeline; every result still from production]'
+                           } else { '  [one production Add per driver]' }))
     Write-BenchmarkLine ('  fixture build time   : ' +
                          (Format-BenchmarkSeconds $fixtureWatch.Elapsed.TotalMilliseconds) +
                          '  [SETUP, part of no measurement]')
@@ -2128,6 +2627,10 @@ $report.Add('baseline_id', [string]$plan.baseline_id)
 $report.Add('harness_version', [string]$plan.harness_version)
 $report.Add('kind', 'pccm-phase10-performance-baseline')
 $report.Add('baseline_status', $baselineStatus)
+# WHICH FIXTURE BUILT THE WORKBOOK THAT WAS MEASURED. Two methods that reach the
+# same state are still two methods; a reader comparing baselines must be able to
+# see which one produced each.
+$report.Add('fixture_mode', [string]$FixtureMode)
 $report.Add('baseline_established', $baselineEstablished)
 $report.Add('run_complete', $runComplete)
 $report.Add('scoped', $scoped)
