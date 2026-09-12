@@ -863,15 +863,150 @@ function New-BenchmarkWeightBlock {
 # `modProfiling.SyncRows` rebuilds the grid from the register by permanent ID in
 # register order either way, so both paths end with the same keyed rows in the
 # same order - which the equivalence gate checks rather than assumes.
+# ===========================================================================
+# WHICH BULK FIXTURE CALL WAS REFUSED
+# ===========================================================================
+# TWO CONSECUTIVE WINDOWS RUNS GOT ALL THE WAY THROUGH STAGE-B - readiness, SaveAs,
+# the build, the reopen verification - and then Bulk fixture construction raised
+#
+#     FAIL|Bulk|RAISED|Call was rejected by callee. 0x80010001 RPC_E_CALL_REJECTED
+#
+# and nothing said WHICH of the fixture's several dozen COM and VBA calls it was.
+# That is the Stage-B build's original defect, one stage later: one try/catch
+# around a region, reporting the region.
+#
+# SO THE FIXTURE NAMES WHAT IT IS DOING, the same way the build does. One label,
+# set immediately before the call it describes, from a CLOSED vocabulary - a label
+# off the list throws where it is written. It retries nothing, waits for nothing and
+# changes no fixture semantics. Its only job is that the NEXT run says which call,
+# because whether a retry is even permissible depends entirely on which call it was.
+#
+# EVERYTHING IS FUNCTIONS, NOT SCRIPT VARIABLES. The equivalence gate lifts this
+# builder out of the runner by AST, function by function, and a top-level assignment
+# would not travel with it. Get-BulkOp therefore tolerates never having been set.
+function Get-BulkOpVocabulary {
+    return @(
+        'bulk.window.open'
+        'bulk.registers.assert-empty'
+        'bulk.inputs.write'
+        'bulk.fx.reset'
+        'bulk.fx.write'
+        'bulk.profiles.master'
+        'bulk.cost.register.grow'
+        'bulk.cost.register.write'
+        'bulk.cost.counter.write'
+        'bulk.risk.register.grow'
+        'bulk.risk.register.write'
+        'bulk.risk.counter.write'
+        'bulk.registers.readback'
+        'bulk.timeline.apply'
+        'bulk.timeline.coherence'
+        'bulk.inflation.rates'
+        'bulk.costprofiling.acquire'
+        'bulk.costprofiling.write'
+        'bulk.riskprofiling.acquire'
+        'bulk.riskprofiling.write'
+        'bulk.final.coherence'
+        'bulk.window.close'
+    )
+}
+
+function Set-BulkOp {
+    param([string]$Operation)
+    if (@(Get-BulkOpVocabulary) -notcontains $Operation) {
+        throw ('Set-BulkOp: ' + $Operation + ' is not in the closed Bulk fixture operation ' +
+               'vocabulary (' + (@(Get-BulkOpVocabulary) -join ', ') + ').')
+    }
+    $script:BulkOp = $Operation
+}
+
+# INITIALISED HERE FOR THE RUNNER, GUARDED IN Get-BulkOp FOR THE GATE. When this
+# file runs as a script the assignment below is what the uninitialised-scope audit
+# expects; when the gate lifts these functions by AST the assignment does not travel,
+# and the guard is what stands in for it.
+$script:BulkOp = '<before the first bulk operation>'
+$script:BulkFailure = ''
+
+function Get-BulkOp {
+    if (Test-Path -Path 'variable:script:BulkOp') { return [string]$script:BulkOp }
+    return '<before the first bulk operation>'
+}
+
+# The HRESULT as hex from the first COMException in the chain, '' otherwise. The
+# same shape as the Stage-B bootstrap's, and bounded for the same reason.
+function Get-BulkComHResult {
+    param($ErrorRecord)
+    if ($null -eq $ErrorRecord) { return '' }
+    $ex = $null
+    try { $ex = $ErrorRecord.Exception } catch { return '' }
+    for ($depth = 0; $depth -lt 5; $depth++) {
+        if ($null -eq $ex) { return '' }
+        if ($ex -is [System.Runtime.InteropServices.COMException]) {
+            try { return ('0x' + ([int]$ex.ErrorCode).ToString('x8')) } catch { return '' }
+        }
+        $next = $null
+        try { $next = $ex.InnerException } catch { $next = $null }
+        $ex = $next
+    }
+    return ''
+}
+
+# ONE LINE, AND IT SAYS WHICH KIND OF FAILURE. A refused call never ran; a call
+# Excel accepted and failed describes something that happened. The classifier is the
+# accepted one in com_lifecycle.ps1 - this only formats its answer beside the label.
+function Format-BulkFailureLine {
+    param([string]$Operation, $ErrorRecord)
+    $shown = Get-BulkComHResult $ErrorRecord
+    if ($shown -eq '') { $shown = 'none' }
+    $name = Get-ComRejectionName $ErrorRecord
+    if ([string]::IsNullOrWhiteSpace($name)) {
+        return ('BULKFAIL|' + $Operation + '|hresult=' + $shown + '|not a refused call')
+    }
+    return ('BULKFAIL|' + $Operation + '|hresult=' + $shown + '|' + $name)
+}
+
+# CAPTURED AT THE THROW, NOT READ AT THE CATCH. The fixture runs inside a finally
+# that closes the protection window - and that close is itself a labelled
+# operation, so by the time an outer catch asks which operation was in flight the
+# answer would be bulk.window.close every time. The label is therefore saved in the
+# inner catch, before the finally runs, and the outer report uses the saved line.
+function Save-BulkFailure {
+    param($ErrorRecord)
+    $script:BulkFailure = Format-BulkFailureLine -Operation (Get-BulkOp) -ErrorRecord $ErrorRecord
+}
+
+function New-BulkFailureLine {
+    param($ErrorRecord)
+    if (Test-Path -Path 'variable:script:BulkFailure') {
+        if (-not [string]::IsNullOrWhiteSpace([string]$script:BulkFailure)) {
+            return [string]$script:BulkFailure
+        }
+    }
+    return (Format-BulkFailureLine -Operation (Get-BulkOp) -ErrorRecord $ErrorRecord)
+}
+
+# A pass starts with no operation and no saved failure. Called before the window
+# opens, so nothing from an earlier pass in the same process can be reported.
+function Reset-BulkOp {
+    $script:BulkOp = '<before the first bulk operation>'
+    $script:BulkFailure = ''
+}
+
 function Set-BenchmarkBulkFixture {
     param($Excel, $Workbook, $Manifest, $Inspection, $Model, $ScenarioSpec)
     $years = [int]$ScenarioSpec.years
+    # CLOSED MAPS FROM MANIFEST KEYS TO LABEL FRAGMENTS, so a register the manifest
+    # names differently produces a label the vocabulary refuses rather than a
+    # silently new one.
+    $registerLabel = @{ cost_lines = 'cost'; risk_register = 'risk' }
+    $gridLabel = @{ cost_profiling = 'costprofiling'; risk_profiling = 'riskprofiling' }
 
     # --- A. the registers must START empty ---------------------------------
     # Not cleared - ASSERTED. This builder writes permanent IDs from sequence 1,
     # so a register that already carried rows would be given duplicates, and the
     # counter would disagree with the highest identifier present.
     $registerByKey = @{}
+    Set-BulkOp 'bulk.registers.assert-empty'
     foreach ($register in @($Manifest.registers)) {
         $registerByKey[[string]$register.key] = $register
         $existing = @(Get-IdColumnValues -Workbook $Workbook -Info $register)
@@ -897,6 +1032,7 @@ function Set-BenchmarkBulkFixture {
 
     # --- B. the Setup scalars, through the accepted setter ------------------
     $inputs = $Inspection.inputs
+    Set-BulkOp 'bulk.inputs.write'
     Set-NamedValue -Workbook $Workbook -DefinedName $inputs.base_year.defined_name `
         -Value ([double]$Model.timeline.base_year)
     Set-NamedValue -Workbook $Workbook -DefinedName $inputs.project_start_year.defined_name `
@@ -912,11 +1048,13 @@ function Set-BenchmarkBulkFixture {
     # defective build, and replacing it would put that control at risk for no
     # measurable gain.
     $fx = $Inspection.input_tables.fx_rates
+    Set-BulkOp 'bulk.fx.reset'
     Reset-Phase5FxTable -Workbook $Workbook -Inspection $Inspection `
         -Seed (Get-Phase5LockedFxSeed)
     $reporting = [string](Get-NamedValue -Workbook $Workbook `
         -DefinedName $inputs.reporting_currency.defined_name)
     $fxRow = 0
+    Set-BulkOp 'bulk.fx.write'
     foreach ($entry in @($Model.fx)) {
         if ([string]$entry.currency -eq $reporting) { continue }
         $fxRow++
@@ -931,6 +1069,7 @@ function Set-BenchmarkBulkFixture {
     }
 
     # --- D. the Config profile master, through the accepted helper ----------
+    Set-BulkOp 'bulk.profiles.master'
     Set-Phase5InflationProfileMaster -Workbook $Workbook -Inspection $Inspection `
         -Profiles @($Model.inflation.PSObject.Properties.Name)
 
@@ -943,9 +1082,11 @@ function Set-BenchmarkBulkFixture {
         $counter = $counterByRegister[$pair.key]
         $prepared = New-BenchmarkRegisterBlock -Register $register -Counter $counter `
             -Drivers $pair.drivers -IsRisk ([bool]$pair.risk)
+        $fragment = [string]$registerLabel[[string]$pair.key]
         # THE DRIVER COUNT IS A FLOOR, NOT A TARGET. Stage A's reserved capacity
         # stands when it is already enough, exactly as it does after N production
         # Adds, and the blank suffix is left where the contract put it.
+        Set-BulkOp ('bulk.' + $fragment + '.register.grow')
         $physical = Set-BenchmarkRegisterRowCount -Workbook $Workbook -SheetName $register.sheet `
             -TableName $register.table_name -MinimumRows @($pair.drivers).Count
         if ($physical -lt @($pair.drivers).Count) {
@@ -966,6 +1107,7 @@ function Set-BenchmarkBulkFixture {
                    [string]$prepared.Block.GetLength(1) + ' columns where the contract ' +
                    'declares ' + [string]@($prepared.Columns).Count)
         }
+        Set-BulkOp ('bulk.' + $fragment + '.register.write')
         Set-BenchmarkRangeBlock -Workbook $Workbook -SheetName $register.sheet `
             -TableName $register.table_name -FirstRow 1 -FirstColumn 1 -Block $prepared.Block `
             -Description ([string]$register.table_name)
@@ -973,12 +1115,14 @@ function Set-BenchmarkBulkFixture {
         # after N adds it holds N. modDrivers.TryReadCounter refuses anything that
         # is not a whole number, so a counter that landed as text would make the
         # very next production mutation refuse.
+        Set-BulkOp ('bulk.' + $fragment + '.counter.write')
         Set-NamedValue -Workbook $Workbook -DefinedName ([string]$counter.defined_name) `
             -Value ([double]$prepared.CounterValue)
         $blocks[$pair.key] = $prepared
     }
     # AND THE REGISTERS REALLY CARRY WHAT WAS WRITTEN, before a production command
     # is asked to synchronise anything from them.
+    Set-BulkOp 'bulk.registers.readback'
     foreach ($pair in @(
             @{ key = 'cost_lines'; drivers = @($Model.cost_lines) },
             @{ key = 'risk_register'; drivers = @($Model.risks) })) {
@@ -1019,8 +1163,10 @@ function Set-BenchmarkBulkFixture {
     # production: the year columns on all three grids, one profiling row per
     # register row keyed by permanent ID, the applied-timeline defined names, and
     # modStructuralCheck.ValidateStructure. Nothing here reproduces any of it.
+    Set-BulkOp 'bulk.timeline.apply'
     $applied = Invoke-Phase5ProductionOperation -Excel $Excel `
         -Operation 'PCCM_ApplyTimeline' -Stage 'the bulk fixture structural baseline'
+    Set-BulkOp 'bulk.timeline.coherence'
     $null = Assert-Phase5StructurallyCoherent -Excel $Excel `
         -Stage 'after the bulk fixture applied the timeline'
 
@@ -1032,6 +1178,7 @@ function Set-BenchmarkBulkFixture {
         if ([string]$grid.key -eq 'inflation') { $inflationGrid = $grid }
     }
     if ($null -eq $inflationGrid) { throw 'the manifest declares no inflation grid' }
+    Set-BulkOp 'bulk.inflation.rates'
     Write-Phase5InflationRates -Workbook $Workbook -Manifest $Manifest -Model $Model
 
     foreach ($pair in @(
@@ -1042,6 +1189,10 @@ function Set-BenchmarkBulkFixture {
         }
         $grid = $gridByKey[$pair.key]
         $fixed = @($grid.fixed_columns).Count
+        $fragment = [string]$gridLabel[[string]$pair.key]
+        # THE BUILDER READS THE GRID BACK before it writes, so the acquisition is
+        # labelled as its own step.
+        Set-BulkOp ('bulk.' + $fragment + '.acquire')
         $prepared = New-BenchmarkWeightBlock -Workbook $Workbook -Grid $grid `
             -Drivers $pair.drivers -Years $years
         # THE GEOMETRY IS PROVED AGAINST WHAT THIS CALLER ASKED FOR, not merely
@@ -1058,12 +1209,14 @@ function Set-BenchmarkBulkFixture {
                    [string]$prepared.Columns + ' columns where the model runs for ' +
                    [string]$years + ' year(s)')
         }
+        Set-BulkOp ('bulk.' + $fragment + '.write')
         Set-BenchmarkRangeBlock -Workbook $Workbook -SheetName $grid.sheet `
             -TableName $grid.table_name -FirstRow 1 -FirstColumn ($fixed + 1) `
             -Block $prepared.Block -Description ([string]$grid.table_name)
     }
 
     # --- H. THE FIXTURE ENDS COHERENT ---------------------------------------
+    Set-BulkOp 'bulk.final.coherence'
     $null = Assert-Phase5StructurallyCoherent -Excel $Excel `
         -Stage 'at the end of bulk fixture establishment'
     return $applied
@@ -2418,19 +2571,30 @@ try {
     # the fixture throws, the window still closes; if the close then fails too,
     # its failure is the one that reaches the abandon path, because an
     # unprotected workbook is the worse fact.
+    # THE WINDOW IS LABELLED ONLY FOR THE BULK BUILDER. Endpoints is the accepted
+    # baseline and carries no diagnostic vocabulary of its own.
+    if ($FixtureMode -eq 'Bulk') { Reset-BulkOp; Set-BulkOp 'bulk.window.open' }
     $null = Open-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest
     try {
         # WHICH BUILDER, RECORDED IN THE ARTIFACT. Two fixture methods that reach
         # the same state are still two methods, and a baseline must never be
         # compared across them without someone seeing that it was.
         if ($FixtureMode -eq 'Bulk') {
-            $null = Set-BenchmarkBulkFixture -Excel $excel -Workbook $wb -Manifest $manifest `
-                -Inspection $inspection -Model $model -ScenarioSpec $scenarioSpec
+            try {
+                $null = Set-BenchmarkBulkFixture -Excel $excel -Workbook $wb -Manifest $manifest `
+                    -Inspection $inspection -Model $model -ScenarioSpec $scenarioSpec
+            } catch {
+                # SAVED HERE, before the finally below relabels the window close.
+                Save-BulkFailure -ErrorRecord $_
+                Write-BenchmarkLine ('  ' + (New-BulkFailureLine -ErrorRecord $_))
+                throw
+            }
         } else {
             $null = Set-Phase5Fixture -Excel $excel -Workbook $wb -Manifest $manifest `
                 -Inspection $inspection -Model $model
         }
     } finally {
+        if ($FixtureMode -eq 'Bulk') { Set-BulkOp 'bulk.window.close' }
         $protectionAfter = Close-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest
     }
     # OUTSIDE THE WINDOW ON PURPOSE. This is a VALUE write to a named cell, which

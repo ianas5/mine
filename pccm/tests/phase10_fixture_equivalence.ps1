@@ -98,6 +98,8 @@ $wanted = @(
     'Reset-Phase5FxTable', 'Set-TableCell', 'Get-IdColumnValues',
     'Set-BenchmarkRangeBlock', 'Set-BenchmarkRegisterRowCount',
     'Get-BenchmarkPermanentId', 'New-BenchmarkRegisterBlock', 'New-BenchmarkWeightBlock',
+    'Get-BulkOpVocabulary', 'Set-BulkOp', 'Get-BulkOp', 'Get-BulkComHResult',
+    'Format-BulkFailureLine', 'Save-BulkFailure', 'New-BulkFailureLine', 'Reset-BulkOp',
     'Set-BenchmarkBulkFixture',
     'Import-BenchmarkFixtureWindow', 'Get-BenchmarkProtectionState',
     'Assert-BenchmarkProtectionApplied', 'Open-BenchmarkFixtureWindow',
@@ -406,16 +408,27 @@ function Invoke-EquivalencePass {
 
         # THE SAME WINDOW BOTH PASSES USE. Neither builder gets a privilege the
         # other does not.
+        # THE WINDOW IS LABELLED FOR THE BULK BUILDER, so a refusal in P10FW_Begin
+        # or P10FW_End is named as that and not as the first or last fixture step.
+        if ($Mode -eq 'Bulk') { Reset-BulkOp; Set-BulkOp 'bulk.window.open' }
         $null = Open-BenchmarkFixtureWindow -Excel $excel -Manifest $Manifest
         try {
             if ($Mode -eq 'Bulk') {
-                $null = Set-BenchmarkBulkFixture -Excel $excel -Workbook $wb -Manifest $Manifest `
-                    -Inspection $Inspection -Model $model -ScenarioSpec $scenarioSpec
+                try {
+                    $null = Set-BenchmarkBulkFixture -Excel $excel -Workbook $wb -Manifest $Manifest `
+                        -Inspection $Inspection -Model $model -ScenarioSpec $scenarioSpec
+                } catch {
+                    # SAVED HERE, before the finally below relabels the window close
+                    # and the outer catch asks which operation was in flight.
+                    Save-BulkFailure -ErrorRecord $_
+                    throw
+                }
             } else {
                 $null = Set-Phase5Fixture -Excel $excel -Workbook $wb -Manifest $Manifest `
                     -Inspection $Inspection -Model $model
             }
         } finally {
+            if ($Mode -eq 'Bulk') { Set-BulkOp 'bulk.window.close' }
             $null = Close-BenchmarkFixtureWindow -Excel $excel -Manifest $Manifest
         }
         Set-NamedValue -Workbook $wb `
@@ -519,6 +532,14 @@ if (-not $setupFailed) {
             if ($detail -like 'BOOTSTRAP:*') { $stage = 'BOOTSTRAP'; $detail = $detail.Substring(10).Trim() }
             elseif ($detail -like 'RAISED:*') { $detail = $detail.Substring(7).Trim() }
             Write-Output ('FAIL|' + $mode + '|' + $stage + '|' + $detail)
+            # THE EXACT BULK OPERATION, SEPARATELY. Two runs printed the line above
+            # and nothing else, and the correction that follows depends on which
+            # call it was. Printed AFTER the FAIL line and never in place of it; a
+            # classifier that itself threw would still leave the failure recorded.
+            if (($mode -eq 'Bulk') -and ($stage -eq 'RAISED')) {
+                try   { Write-Output (New-BulkFailureLine -ErrorRecord $_) }
+                catch { Write-Output ('BULKFAIL|' + (Get-BulkOp) + '|hresult=unclassified|the error could not be classified') }
+            }
         }
     }
 }

@@ -136,6 +136,26 @@ BENCHMARK_FROZEN_FUNCTIONS = ("Set-BenchmarkRegisterRowCount", "Get-BenchmarkPer
                               "New-BenchmarkRegisterBlock", "Set-BenchmarkRangeBlock")
 
 
+# The equivalence gate is no longer byte-frozen either: the Bulk instrumentation
+# batch gave its Bulk branch a failure capture and a BULKFAIL line. What must stay
+# identical is everything that decides anything - the snapshot, the bundle contract
+# and identity proof, and the pass's own COM lifecycle - and the changed function
+# must actually have changed.
+GATE_FROZEN_FUNCTIONS = ("Get-EquivalenceSnapshot", "New-EquivalenceBundle",
+                         "Get-BundleArtifacts", "Test-BundleIdentity")
+GATE_DECLARED_CHANGES = ("Invoke-EquivalencePass",)
+
+
+def _assert_gate_freeze(commit: str) -> None:
+    now = _gate()
+    then = _at(commit, "pccm/tests/phase10_fixture_equivalence.ps1")
+    for name in GATE_FROZEN_FUNCTIONS:
+        assert _ps_function(now, name) == _ps_function(then, name), f"{name} changed since {commit}"
+    for name in GATE_DECLARED_CHANGES:
+        assert _ps_function(now, name) != _ps_function(then, name), (
+            f"{name} is declared as changed but is unchanged since {commit}")
+
+
 def _assert_benchmark_freeze(commit: str) -> None:
     """The runner's frozen functions, and the declared ones proved to have moved."""
     now = BENCHMARK_PS1.read_text(encoding="utf-8")
@@ -2108,7 +2128,7 @@ def test_112_the_freezes_this_batch_may_not_touch() -> None:
     assert done.stdout.strip() == "", done.stdout
     _assert_benchmark_freeze("cc9cf8d")
     assert _lifecycle() == _at("cc9cf8d", "pccm/bootstrap/windows/com_lifecycle.ps1")
-    assert _gate() == _at("cc9cf8d", "pccm/tests/phase10_fixture_equivalence.ps1")
+    _assert_gate_freeze("cc9cf8d")
     _assert_benchmark_freeze("cc9cf8d")
     assert _ps_function(_gate(), "Get-EquivalenceSnapshot") == \
         _ps_function(_at("99cb472", "pccm/tests/phase10_fixture_equivalence.ps1"),
@@ -2299,7 +2319,7 @@ def test_122_the_freezes_this_batch_may_not_touch() -> None:
     assert done.stdout.strip() == "", done.stdout
     assert _lifecycle() == _at("c66e752", "pccm/bootstrap/windows/com_lifecycle.ps1")
     _assert_benchmark_freeze("c66e752")
-    assert _gate() == _at("c66e752", "pccm/tests/phase10_fixture_equivalence.ps1")
+    _assert_gate_freeze("c66e752")
     _assert_benchmark_freeze("c66e752")
     assert _ps_function(_gate(), "Get-EquivalenceSnapshot") == \
         _ps_function(_at("99cb472", "pccm/tests/phase10_fixture_equivalence.ps1"),
@@ -2463,7 +2483,7 @@ def test_128_the_readiness_gate_and_saveas_settlement_did_not_move() -> None:
                  "Get-StageBNonEmptyString", "Add-StageBReadRejection"):
         assert _ps_function(now, name) == _ps_function(then, name), f"{name} changed"
     assert _lifecycle() == _at("f006ea2", "pccm/bootstrap/windows/com_lifecycle.ps1")
-    assert _gate() == _at("f006ea2", "pccm/tests/phase10_fixture_equivalence.ps1")
+    _assert_gate_freeze("f006ea2")
     done = subprocess.run(["git", "diff", "--name-only", "f006ea2", "--", "pccm/src/vba"],
                           cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE, text=True)
     assert done.stdout.strip() == "", done.stdout

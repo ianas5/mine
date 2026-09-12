@@ -2906,3 +2906,145 @@ The readiness gate, the SaveAs three-state settlement, `Invoke-ComRetryRead`,
 `New-BenchmarkRegisterBlock`, `Set-BenchmarkRangeBlock`, the equivalence gate,
 `Get-EquivalenceSnapshot`, the protection window, the timed path and production VBA.
 No inter-pass drain, no sleep between sessions, no merged sessions.
+
+---
+
+## Equivalence runs 8 and 9 — INVALID / NOT EVALUATED — REFUSED INSIDE BULK FIXTURE CONSTRUCTION
+
+**Harness commits:** run 8 at `6672b75` (the two harness corrections), run 9 at
+`6672b75` again — the same command, run twice, failing at the same stage. Windows
+PowerShell 5.1. Stage A immediately before each: 351 passed, 0 failed.
+
+### The latest run, step for step
+
+```
+BUNDLE|identical|5 artifact(s)
+```
+
+**Endpoints:** post-open readiness on attempt 1 with 0 ms wait; `SaveAs` on
+attempt 1; Stage-B build; reopen verification; fixture; **real `PCCM_Calculate`
+ran**.
+
+```
+PASS|Endpoints|COMPLETED
+```
+
+**Bulk:**
+
+```
+READY|open|attempt=2|fullname=True|fileformat=51|waited=250
+```
+
+**The readiness gate absorbed the post-open no-answer gap** it was built for: the
+first observation returned nothing, the gate waited 250 ms once, the second
+observation answered, and the run continued. `SaveAs` on attempt 1. Stage-B build.
+32 modules, 11 buttons and protection persisted. Reopen verification. Clean COM
+lifecycle.
+
+Then, **after Stage-B completed**, Bulk fixture construction raised:
+
+```
+FAIL|Bulk|RAISED|Call was rejected by callee. HRESULT 0x80010001 RPC_E_CALL_REJECTED
+EQUIV|<not evaluated>|invalid|comparison was not executed: only the Endpoints pass completed
+```
+
+### What is proved, and what is not
+
+Proved on Windows: the readiness architecture works; the SaveAs settlement path
+works; Stage-B works for **both** passes; reopened verification works for **both**
+passes. The repeated unresolved failure is now **inside Bulk fixture construction**.
+
+**This is the SECOND consecutive rejection at the Bulk-fixture stage**, and the two
+are identical.
+
+**The exact Bulk fixture operation was NOT identified by the logging in place.** The
+fixture ran inside one try/finally reporting one line for the whole region — the
+Stage-B build's original defect, one stage later. **No claim is made here about
+which fixture call was refused.** The instrumentation added in this batch exists so
+the next run says so.
+
+No Bulk snapshot. No semantic comparison. No `CALCEQUIV`. This record
+**must not be read as a fixture DIFFER**.
+**Bulk remains NOT authorised.**
+It is **INVALID / NOT EVALUATED**. It is **not** a production failure, **not** a
+Stage-B failure, **not** a readiness failure and **not** a SaveAs failure.
+
+### The instrumentation, observational only
+
+Bulk fixture construction now labels every COM and VBA call from a **closed
+22-word vocabulary**, set immediately before the call it names. The gate prints the
+label beside the failure, **separately** from and **after** the top-level line:
+
+```
+FAIL|Bulk|RAISED|Call was rejected by callee. ...
+BULKFAIL|bulk.costprofiling.write|hresult=0x80010001|RPC_E_CALL_REJECTED (0x80010001)
+```
+
+A call Excel accepted and that then failed is a different finding and says so:
+
+```
+BULKFAIL|bulk.timeline.apply|hresult=0x800a03ec|not a refused call
+```
+
+**Captured at the throw, not read at the catch.** The fixture runs inside a
+`finally` that closes the protection window, and that close is itself a labelled
+operation — so an outer catch asking "which operation was in flight" would have been
+told `bulk.window.close` every time. The label is saved in an inner catch before the
+`finally` runs. This defect was found and closed while building the harness, before
+any Windows run could have printed the wrong name.
+
+**Nothing is retried, nothing sleeps, nothing about the fixture window changed.**
+The window is opened and closed exactly where it was, by the same shim, with the
+same rollback. Labels sit around calls; they are never inside the frozen functions
+(`Set-BenchmarkRangeBlock`, `Set-BenchmarkRegisterRowCount`) and never inside
+helpers the Endpoints fixture shares.
+
+### Every Bulk fixture COM/VBA operation, in order, classified
+
+A = read / property get / Item acquisition · B = idempotent value write ·
+C = structural or non-idempotent mutation · D = `Application.Run` production endpoint
+
+| # | label | what it does | class |
+|---|---|---|---|
+| 1 | `bulk.window.open` | `Run('P10FW_Begin')`, `Run('P10FW_State')` — the accepted shim | D |
+| 2 | `bulk.registers.assert-empty` | `Get-TableBody` on both registers | A |
+| 3 | `bulk.inputs.write` | four `Names.Item → RefersToRange → Value2 =` | A + B |
+| 4 | `bulk.fx.reset` | `Set-TableCell` clears/seeds; `Get-NamedValue` reporting currency | A + B |
+| 5 | `bulk.fx.write` | `Add-BlankTableRow` (a **search** of reserved rows, no `Add`) + `Set-TableCell` | A + B |
+| 6 | `bulk.profiles.master` | `Set-TableCell` / reserved-row search | A + B |
+| 7 | `bulk.cost.register.grow` | `Get-TableRowCount`; **`ListRows.Add()` only on shortfall** (0 for SMALL, 155 for LARGE) | A, then **C** if it grows |
+| 8 | `bulk.cost.register.write` | `Worksheets/ListObjects/DataBodyRange/Cells/Resize` then **one rectangular `Value2 =`** | A + B |
+| 9 | `bulk.cost.counter.write` | `Names.Item → RefersToRange → Value2 =` | A + B |
+| 10–12 | `bulk.risk.register.grow` / `.write`, `bulk.risk.counter.write` | as 7–9, for `tblRiskRegister` | as 7–9 |
+| 13 | `bulk.registers.readback` | `Get-TableBody` on both registers, reserved suffix proved blank | A |
+| 14 | `bulk.timeline.apply` | `Run('PCCM_AutomationBegin')`, `Run('PCCM_ApplyTimeline')`, `Run('PCCM_AutomationResult')` | **D** |
+| 15 | `bulk.timeline.coherence` | `Run('PCCM_StructuralReport')` | D (read-only report) |
+| 16 | `bulk.inflation.rates` | `Set-TableCell` per rate | A + B |
+| 17 | `bulk.costprofiling.acquire` | `Get-TableBody` on the grid production just keyed | A |
+| 18 | `bulk.costprofiling.write` | range acquisition then **one rectangular `Value2 =`** | A + B |
+| 19–20 | `bulk.riskprofiling.acquire` / `.write` | as 17–18 | as 17–18 |
+| 21 | `bulk.final.coherence` | `Run('PCCM_StructuralReport')` | D |
+| 22 | `bulk.window.close` | `Run('P10FW_End')` | D |
+
+**If the next run names a class-A operation**, a bounded read retry may later be
+considered. **If it names B, C or D — the block writes, the counter writes, the
+register growth, or `PCCM_ApplyTimeline` — the evidence is returned and nothing is
+retried** without a separate decision. No pre-authorisation exists.
+
+### Executed, not asserted
+
+`tests/phase10_bulk_ops_flow.ps1` lifts the real orchestrator and the real model,
+identifier and block builders by AST, replaces each Excel-touching helper with a
+recording stand-in, feeds it the **real** manifest, inspection and plan, and drives
+it.
+
+| case | result |
+|---|---|
+| PERF-SMALL, complete | all 22 labels in order; 32 helper calls; 0 grows; four blocks rank 2 |
+| PERF-LARGE, complete | same 22 labels; **155 and 95 `ListRows.Add`**; 180×11, 120×12, 180×40, 120×40 |
+| refused at each of 8 chosen operations | `BULKFAIL` names **that** operation, `hresult=0x80010001`, **no label touched after it**, each touched **once**, window still closed |
+| accepted-and-failed at `bulk.timeline.apply` | `BULKFAIL\|bulk.timeline.apply\|hresult=0x800a03ec\|not a refused call` |
+| misspelt label | **refused** where written; the label in effect unchanged |
+
+Excel is never started. Nothing is retried: every helper under a failing label is
+touched exactly once.

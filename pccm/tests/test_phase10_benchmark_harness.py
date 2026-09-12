@@ -923,10 +923,22 @@ def test_63_the_first_run_carries_no_absolute_pass_mark() -> None:
 
     code = _code()
     assert "This run RECORDS a baseline. It does not judge one" in code
-    # AND NO SECOND-COUNT ANYWHERE IS A BAR TO CLEAR.
+    # AND NO SECOND-COUNT ANYWHERE IS A BAR TO CLEAR. `FAIL|` was a substring proxy
+    # for a verdict line, and the Bulk instrumentation's `BULKFAIL|` diagnostic now
+    # contains it. Declared rather than loosened: each declared prefix must exist,
+    # must carry an HRESULT field, and must carry no seconds - which is what makes
+    # it a diagnostic and not a pass mark.
+    scrubbed = code
+    for prefix in DECLARED_DIAGNOSTIC_PREFIXES:
+        assert prefix in code, f"{prefix} is declared but absent - a stale exemption"
+        for line in code.splitlines():
+            if prefix in line:
+                assert "Seconds" not in line and "threshold" not in line.lower(), line
+        scrubbed = scrubbed.replace(prefix, "")
+    assert "'|hresult=' +" in _function(code, "Format-BulkFailureLine")
     for banned in ("BudgetSeconds", "MaxSeconds", "-gt $threshold", "TooSlow",
                    "PASS", "FAIL|", "-le $limit"):
-        assert banned not in code, f"the runner carries a pass mark: {banned}"
+        assert banned not in scrubbed, f"the runner carries a pass mark: {banned}"
 
 
 def test_64_the_future_regression_ratios_are_recorded_exactly() -> None:
@@ -1991,12 +2003,29 @@ def test_153_a_fixture_that_raises_still_closes_the_window() -> None:
     code = _code()
     region = code[code.index("$null = Open-BenchmarkFixtureWindow"):
                   code.index("$fixtureWatch.Stop()")]
-    assert "    try {" in region and "} finally {" in region, region
-    body = region[region.index("try {"):region.index("} finally {")]
-    trailer = region[region.index("} finally {"):]
+    # THE OUTER TRY, AT ITS OWN INDENTATION, ON THE LINE AFTER THE OPEN. The Bulk
+    # branch carries an inner try/catch of its own (it saves the failing label at
+    # the throw); a substring match would let that inner `try {` stand in for the
+    # guard that actually reaches the finally, and dropping the outer keyword
+    # would then survive. Restated when the inner catch arrived.
+    opener = "$null = Open-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest\n    try {\n"
+    assert region.startswith(opener), region[: len(opener) + 40]
+    assert region.count("\n    try {\n") == 1, "more than one guard at the window's level"
+    assert region.count("\n    } finally {\n") == 1, "the window's finally is not exactly once"
+    body = region[len(opener):region.index("\n    } finally {\n")]
+    trailer = region[region.index("\n    } finally {\n"):]
     assert "Set-Phase5Fixture" in body, "the fixture is not inside the guarded region"
+    assert "Set-BenchmarkBulkFixture" in body, "the bulk fixture is not inside the guarded region"
     assert "Close-BenchmarkFixtureWindow" in trailer, "the close is not in the finally"
     assert "Close-BenchmarkFixtureWindow" not in body
+    # THE INNER CATCH RETHROWS. A save-and-continue would hand the timed runs a
+    # half-built fixture behind a closed window.
+    inner = body[body.index("Save-BulkFailure -ErrorRecord $_"):]
+    inner = inner[: inner.index("}")]
+    statements = [line.strip() for line in inner.splitlines() if line.strip()]
+    assert statements == ["Save-BulkFailure -ErrorRecord $_",
+                          "Write-BenchmarkLine ('  ' + (New-BulkFailureLine -ErrorRecord $_))",
+                          "throw"], statements
 
 
 def test_154_the_close_is_verified_against_the_declared_sheet_count() -> None:
@@ -2623,7 +2652,305 @@ def test_260_production_is_byte_identical_and_the_timed_path_did_not_move() -> N
     assert len([r for r in plan["runs"] if r["scenario"] == "PERF-LARGE"]) == 8
 
 
-RANK_HARNESS = PCCM_ROOT / "tests" / "phase10_block_rank_flow.ps1"
+# Diagnostic line prefixes the runner emits that contain a verdict-looking word.
+# Named, so test_63 can scrub them and still refuse a real pass mark.
+DECLARED_DIAGNOSTIC_PREFIXES = ("BULKFAIL|",)
+
+BULK_HARNESS = PCCM_ROOT / "tests" / "phase10_bulk_ops_flow.ps1"
+
+# The closed Bulk fixture vocabulary, in the order the fixture performs them.
+# Restated here so a label quietly dropped from the runner fails a control.
+BULK_OPS = (
+    "bulk.window.open",
+    "bulk.registers.assert-empty",
+    "bulk.inputs.write",
+    "bulk.fx.reset",
+    "bulk.fx.write",
+    "bulk.profiles.master",
+    "bulk.cost.register.grow",
+    "bulk.cost.register.write",
+    "bulk.cost.counter.write",
+    "bulk.risk.register.grow",
+    "bulk.risk.register.write",
+    "bulk.risk.counter.write",
+    "bulk.registers.readback",
+    "bulk.timeline.apply",
+    "bulk.timeline.coherence",
+    "bulk.inflation.rates",
+    "bulk.costprofiling.acquire",
+    "bulk.costprofiling.write",
+    "bulk.riskprofiling.acquire",
+    "bulk.riskprofiling.write",
+    "bulk.final.coherence",
+    "bulk.window.close",
+)
+
+# The operations nothing may retry until Windows names the refused one. Every
+# structural mutation and every production endpoint the fixture reaches.
+BULK_NEVER_RETRIED = (".Add()", "ListRows.Add", ".Run(", "Value2 =", "P10FW_Begin",
+                      "P10FW_End", "PCCM_ApplyTimeline")
+
+
+def _bulk_rows() -> dict:
+    """RUN the Bulk-operation harness and group its tagged lines.
+
+    "Which label was in flight at each call", "does a failure name THAT call", and
+    "was anything touched twice" are behaviour. They are observed, against the real
+    orchestrator lifted by AST and the real contracts from the build directory.
+    """
+    if "bulk" not in _MEMO_ANY:
+        done = subprocess.run(
+            [PWSH, "-NoProfile", "-File", str(BULK_HARNESS), "-Runner", str(RUNNER),
+             "-BuildDir", str(PCCM_ROOT / "build")],
+            capture_output=True, text=True, timeout=300)
+        assert done.returncode == 0, done.stdout + done.stderr
+        rows: dict = {"ops": [], "label": {}, "order": {}, "calls": {}, "grow": {},
+                      "rank": {}, "result": {}, "failat": {}, "unmet": []}
+        for raw in done.stdout.splitlines():
+            if raw.startswith(("PARSE|", "MISSING|")):
+                rows["unmet"].append(raw)
+            elif raw.startswith("BULKOPS|"):
+                count, joined = raw[len("BULKOPS|"):].split("|", 1)
+                rows["ops"] = joined.split(",")
+                assert int(count) == len(rows["ops"]), raw
+            elif raw.startswith("LABELCHECK|"):
+                case, outcome, effect = raw[len("LABELCHECK|"):].split("|", 2)
+                rows["label"][case] = (outcome, effect)
+            elif raw.startswith("ORDER|"):
+                scenario, joined = raw[len("ORDER|"):].split("|", 1)
+                rows["order"][scenario] = joined.split(",")
+            elif raw.startswith("CALLS|"):
+                scenario, label, count = raw[len("CALLS|"):].split("|", 2)
+                rows["calls"].setdefault(scenario, {})[label] = int(count)
+            elif raw.startswith("GROW|"):
+                scenario, table, adds = raw[len("GROW|"):].split("|", 2)
+                rows["grow"].setdefault(scenario, {})[table] = int(adds)
+            elif raw.startswith("RANK|"):
+                scenario, table, rank, r, c = raw[len("RANK|"):].split("|", 4)
+                rows["rank"].setdefault(scenario, {})[table] = (int(rank), int(r), int(c))
+            elif raw.startswith("RESULT|"):
+                scenario, outcome, detail = raw[len("RESULT|"):].split("|", 2)
+                rows["result"][scenario] = (outcome, detail)
+            elif raw.startswith("FAILAT|"):
+                parts = raw[len("FAILAT|"):].split("|")
+                at, kind = parts[0], parts[1]
+                rest = "|".join(parts[2:])
+                line_end = rest.index("|after=")
+                line = rest[:line_end]
+                tail = rest[line_end + 1:]
+                fields = dict(part.split("=", 1) for part in tail.split("|"))
+                rows["failat"][(at, kind)] = {"line": line, "after": fields["after"],
+                                              "touches": int(fields["touches"]),
+                                              "closed": fields["closed"] == "True"}
+        _MEMO_ANY["bulk"] = rows
+    return _MEMO_ANY["bulk"]
+
+
+# ===========================================================================
+# T. WHICH BULK FIXTURE CALL WAS REFUSED
+# ===========================================================================
+# TWO CONSECUTIVE WINDOWS RUNS GOT THROUGH STAGE-B AND THEN BULK FIXTURE
+# CONSTRUCTION RAISED RPC_E_CALL_REJECTED, and nothing said which of its calls it
+# was. The fixture now labels each call; these controls keep the labels honest.
+def test_270_every_bulk_operation_is_labelled_and_the_vocabulary_is_closed() -> None:
+    """REQUIRED CONTROLS 1-2, IN SOURCE AND EXECUTED. Every label in the vocabulary
+    is set somewhere real, no label outside it is set anywhere, and a misspelling is
+    refused where it is written rather than surfacing in a diagnostic."""
+    code = _code()
+    vocab = _function(code, "Get-BulkOpVocabulary")
+    for label in BULK_OPS:
+        assert f"'{label}'" in vocab, f"{label} is not in the vocabulary"
+    orchestrator = _function(code, "Set-BenchmarkBulkFixture")
+    gate = _ps_code(EQUIV_HARNESS.read_text(encoding="utf-8"))
+    runner_bulk = code[code.index("if ($FixtureMode -eq 'Bulk') { Reset-BulkOp; Set-BulkOp 'bulk.window.open' }"):]
+    scope = orchestrator + "\n" + gate + "\n" + runner_bulk[:3000]
+    literal = set(re.findall(r"Set-BulkOp '([^']+)'", scope))
+    # Composed labels: the register and grid fragments are closed maps.
+    assert "$registerLabel = @{ cost_lines = 'cost'; risk_register = 'risk' }" in orchestrator
+    assert "$gridLabel = @{ cost_profiling = 'costprofiling'; risk_profiling = 'riskprofiling' }" in orchestrator
+    composed = set()
+    for fragment in ("cost", "risk"):
+        for suffix in ("register.grow", "register.write", "counter.write"):
+            composed.add(f"bulk.{fragment}.{suffix}")
+    for fragment in ("costprofiling", "riskprofiling"):
+        for suffix in ("acquire", "write"):
+            composed.add(f"bulk.{fragment}.{suffix}")
+    for pattern in ("'bulk.' + $fragment + '.register.grow'", "'bulk.' + $fragment + '.register.write'",
+                    "'bulk.' + $fragment + '.counter.write'", "'bulk.' + $fragment + '.acquire'",
+                    "'bulk.' + $fragment + '.write'"):
+        assert pattern in orchestrator, f"the composed label {pattern} is gone"
+    assert (literal | composed) == set(BULK_OPS), sorted((literal | composed) ^ set(BULK_OPS))
+    # THE VALIDATOR IS THE VOCABULARY, and nothing else assigns the label.
+    setter = _function(code, "Set-BulkOp")
+    assert "if (@(Get-BulkOpVocabulary) -notcontains $Operation) {" in setter
+    # ONLY Set-BulkOp ASSIGNS A CALLER-SUPPLIED VALUE. The other two assignments are
+    # the sentinel: the runner's top-level initialiser and Reset-BulkOp. A third way
+    # to put a string into the label would be a way past the vocabulary.
+    assert code.count("$script:BulkOp = $Operation") == 1, "a second path assigns the label"
+    others = [line.strip() for line in code.splitlines()
+              if "$script:BulkOp = " in line and "$Operation" not in line]
+    assert others == ["$script:BulkOp = '<before the first bulk operation>'"] * 2, others
+    rows = _bulk_rows()
+    assert not rows["unmet"], rows["unmet"]
+    assert tuple(rows["ops"]) == BULK_OPS, rows["ops"]
+    outcome, effect = rows["label"]["typo"]
+    assert outcome == "REFUSED", rows["label"]["typo"]
+    assert effect == "<before the first bulk operation>", "a refused label took effect"
+
+
+def test_271_the_label_is_set_immediately_before_the_call_it_names() -> None:
+    """REQUIRED CONTROL 3. Between a Set-BulkOp and the call it names there may be
+    local preparation, but never another Excel-touching call - otherwise that call
+    would carry the wrong name. Checked in source; the executed order is test_272."""
+    orchestrator = _function(_code(), "Set-BenchmarkBulkFixture")
+    touching = ("Get-IdColumnValues", "Set-NamedValue", "Get-NamedValue", "Set-TableCell",
+                "Add-BlankTableRow", "Reset-Phase5FxTable", "Set-Phase5InflationProfileMaster",
+                "Set-BenchmarkRegisterRowCount", "Set-BenchmarkRangeBlock", "Get-TableBody",
+                "Invoke-Phase5ProductionOperation", "Assert-Phase5StructurallyCoherent",
+                "Write-Phase5InflationRates", "New-BenchmarkWeightBlock")
+    lines = [line for line in orchestrator.splitlines() if line.strip()]
+    last_label_at = None
+    for index, line in enumerate(lines):
+        if "Set-BulkOp" in line:
+            last_label_at = index
+            continue
+        if any(helper in line for helper in touching):
+            assert last_label_at is not None, f"an Excel-touching call precedes every label: {line.strip()}"
+    # EVERY label is followed by a touching call before the next label, so no
+    # label is decorative.
+    labels_at = [i for i, line in enumerate(lines) if "Set-BulkOp" in line]
+    for start, nxt in zip(labels_at, labels_at[1:] + [len(lines)]):
+        between = "\n".join(lines[start + 1 : nxt])
+        assert any(helper in between for helper in touching), (
+            f"a label names nothing: {lines[start].strip()}")
+
+
+def test_272_the_executed_order_matches_the_vocabulary_for_small_and_growth() -> None:
+    """EXECUTED. All 22 labels, in vocabulary order, for PERF-SMALL and for the
+    PERF-LARGE growth case - which grows the registers by 155 and 95 ListRows.Add
+    calls under bulk.<register>.register.grow and nowhere else."""
+    rows = _bulk_rows()
+    for scenario in ("PERF-SMALL", "PERF-LARGE"):
+        assert tuple(rows["order"][scenario]) == BULK_OPS, (scenario, rows["order"][scenario])
+        outcome, detail = rows["result"][scenario]
+        assert outcome == "completed", (scenario, outcome, detail)
+    assert rows["grow"]["PERF-SMALL"] == {"tblCostLines": 0, "tblRiskRegister": 0}
+    assert rows["grow"]["PERF-LARGE"] == {"tblCostLines": 155, "tblRiskRegister": 95}
+
+
+def test_273_a_failure_names_that_operation_and_no_later_one() -> None:
+    """REQUIRED CONTROLS 4-6, EXECUTED AT EIGHT OPERATIONS. The BULKFAIL line names
+    the operation that was in flight, carries the HRESULT, distinguishes a refusal
+    from an accepted-and-failed call, and NO later label is ever touched - including
+    across the window close that runs in the finally."""
+    rows = _bulk_rows()
+    refused = [(at, kind) for (at, kind) in rows["failat"] if kind == "refused"]
+    assert len(refused) >= 8, refused
+    for (at, kind), row in rows["failat"].items():
+        expected_hex = "0x80010001" if kind == "refused" else "0x800a03ec"
+        assert row["line"].startswith(f"BULKFAIL|{at}|hresult={expected_hex}|"), (at, kind, row)
+        if kind == "refused":
+            assert row["line"].endswith("RPC_E_CALL_REJECTED (0x80010001)"), row
+        else:
+            assert row["line"].endswith("not a refused call"), row
+        assert row["after"] == "", f"a later operation ran after {at} failed: {row}"
+        assert row["closed"] is True, f"the window did not close after {at} failed"
+    # THE CAPTURE HAPPENS AT THE THROW. bulk.timeline.apply sits well inside the
+    # finally-relabelled region; without the inner save it would read window.close.
+    assert ("bulk.timeline.apply", "refused") in rows["failat"]
+    assert ("bulk.timeline.apply", "accepted") in rows["failat"]
+    code = _code()
+    assert "function Save-BulkFailure" in code
+    for source_name, source in (("runner", code), ("gate", _ps_code(EQUIV_HARNESS.read_text(encoding="utf-8")))):
+        assert "Save-BulkFailure -ErrorRecord $_" in source, f"the {source_name} does not save at the throw"
+        at_save = source.index("Save-BulkFailure -ErrorRecord $_")
+        at_close = source.index("Set-BulkOp 'bulk.window.close'")
+        assert at_save < at_close, f"the {source_name} saves after the window relabel"
+    gate = _ps_code(EQUIV_HARNESS.read_text(encoding="utf-8"))
+    # THE INNER CATCH SAVES AND RETHROWS, NOTHING ELSE. A diagnostic may not replace
+    # the failure it describes: a catch that saved and then continued would hand the
+    # snapshot a half-built fixture. The harness mirrors this catch rather than
+    # running it, so the rethrow is asserted in source - the mutation battery found
+    # that gap.
+    inner = gate[gate.index("Save-BulkFailure -ErrorRecord $_") :]
+    inner = inner[: inner.index("}")]
+    statements = [line.strip() for line in inner.splitlines() if line.strip()]
+    assert statements == ["Save-BulkFailure -ErrorRecord $_", "throw"], statements
+    assert "Write-Output (New-BulkFailureLine -ErrorRecord $_)" in gate
+    assert gate.index("Write-Output ('FAIL|' + $mode + '|' + $stage + '|' + $detail)") < \
+        gate.index("Write-Output (New-BulkFailureLine -ErrorRecord $_)"), "BULKFAIL replaces the FAIL line"
+
+
+def test_274_nothing_is_retried_and_nothing_sleeps() -> None:
+    """REQUIRED CONTROLS 7-9. Every helper under a failing label is touched exactly
+    once; no retry, no sleep and no drain was introduced anywhere in the fixture,
+    the labelling functions, or the gate."""
+    rows = _bulk_rows()
+    for (at, kind), row in rows["failat"].items():
+        assert row["touches"] == 1, f"{at} was reissued: {row}"
+    code = _code()
+    for name in ("Set-BenchmarkBulkFixture", "Get-BulkOpVocabulary", "Set-BulkOp", "Get-BulkOp",
+                 "Get-BulkComHResult", "Format-BulkFailureLine", "Save-BulkFailure",
+                 "New-BulkFailureLine", "Reset-BulkOp"):
+        body = _function(code, name)
+        for banned in ("Start-Sleep", "while (", "do {", "MaxAttempts", "Invoke-ComRetryRead",
+                       "Get-Process", "Wait-"):
+            assert banned not in body, f"{name} contains {banned}"
+    gate = _ps_code(EQUIV_HARNESS.read_text(encoding="utf-8"))
+    for banned in ("Start-Sleep", "Get-Process", "Stop-Process", "Wait-Process", "WaitForExit"):
+        assert banned not in gate, f"the gate waits: {banned}"
+    # AND NONE OF THE NEVER-RETRIED CALLS IS INSIDE A LOOP THAT COULD REISSUE IT.
+    orchestrator = _function(code, "Set-BenchmarkBulkFixture")
+    assert "catch" not in orchestrator, "the orchestrator catches - which is where a retry would hide"
+
+
+def test_275_the_window_the_settlements_and_the_blocks_did_not_move() -> None:
+    """REQUIRED CONTROLS 10-19. Observational instrumentation touches none of the
+    contracts it observes."""
+    code = _code()
+    then = _code_at("6672b75")
+    for name in ("Open-BenchmarkFixtureWindow", "Close-BenchmarkFixtureWindow",
+                 "Invoke-BenchmarkWindowRollback", "Get-BenchmarkProtectionState",
+                 "Import-BenchmarkFixtureWindow", "Assert-BenchmarkProtectionApplied",
+                 "Set-BenchmarkRegisterRowCount", "Set-BenchmarkRangeBlock",
+                 "New-BenchmarkRegisterBlock", "New-BenchmarkWeightBlock",
+                 "Get-BenchmarkPermanentId", "Invoke-BenchmarkExecution",
+                 "Test-BenchmarkSample", "Assert-BenchmarkProblemList"):
+        assert _function(code, name) == _function(then, name), f"{name} changed"
+    rows = _bulk_rows()
+    assert rows["rank"]["PERF-SMALL"] == {"tblCostLines": (2, 12, 11), "tblRiskRegister": (2, 8, 12),
+                                          "tblCostProfiling": (2, 12, 10), "tblRiskProfiling": (2, 8, 10)}
+    assert rows["rank"]["PERF-LARGE"] == {"tblCostLines": (2, 180, 11), "tblRiskRegister": (2, 120, 12),
+                                          "tblCostProfiling": (2, 180, 40), "tblRiskProfiling": (2, 120, 40)}
+    gate_now = EQUIV_HARNESS.read_text(encoding="utf-8")
+    gate_then = _git("show", "6672b75:pccm/tests/phase10_fixture_equivalence.ps1")
+    for name in ("Get-EquivalenceSnapshot", "New-EquivalenceBundle", "Get-BundleArtifacts",
+                 "Test-BundleIdentity"):
+        assert _function(gate_now, name) == _function(gate_then, name), f"{name} changed"
+    assert _production_changed_since("6672b75") == []
+
+
+def test_276_the_record_names_no_bulk_operation_for_the_two_historical_runs() -> None:
+    """REQUIRED CONTROL 20. Static work cannot say which fixture call runs 8 and 9
+    were refused on; the log that would say so did not exist."""
+    section = _run_evidence_section("## Equivalence runs 8 and 9")
+    # MARKUP AND LINE WRAPS ARE NOT MEANING: backticks, bold and newlines are
+    # collapsed so a sentence cannot fail a control for being wrapped at 80 columns.
+    plain = " ".join(section.replace("`", "").replace("**", "").split())
+    for required in ("SECOND consecutive rejection", "was NOT identified",
+                     "READY|open|attempt=2|fullname=True|fileformat=51|waited=250",
+                     "INVALID / NOT EVALUATED", "must not be read as a fixture DIFFER",
+                     "Bulk remains NOT authorised", "No claim is made here about which"):
+        assert required in plain, required
+    # THE MAP IS CLASSIFIED, and nothing is pre-authorised.
+    for klass in ("A + B", "D", "**C**"):
+        assert klass in section, klass
+    assert "No pre-authorisation exists" in plain
+    # AND NOT ONE LABEL IS ASSERTED AS THE CAUSE.
+    head, _sep, _tail = plain.partition("### The instrumentation, observational only")
+    for label in BULK_OPS:
+        assert label not in head, f"the historical record names {label}"
+
 
 # Every rectangular fixture block, and the geometry each must have. Restated here so
 # a builder that quietly changes shape fails a control rather than Excel.
@@ -2635,6 +2962,9 @@ RANK_EXPECTED = {
     "weights SMALL risk profiling": (8, 5),
     "weights LARGE cost profiling": (180, 30),
 }
+
+
+RANK_HARNESS = PCCM_ROOT / "tests" / "phase10_block_rank_flow.ps1"
 
 
 def _rank_rows() -> dict:

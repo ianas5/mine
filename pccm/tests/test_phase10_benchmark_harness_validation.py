@@ -1383,7 +1383,9 @@ def test_154_dropping_the_finally_that_closes_on_a_raise_is_rejected() -> None:
     thing to touch it would be a timed run."""
     # ANCHORED ON THE TWO KEYWORDS, not on the builder call between them: the
     # region gained a branch when the bulk builder arrived, and a mutation pinned
-    # to the old body would silently stop changing anything.
+    # to the old body would silently stop changing anything. When that branch
+    # gained its own inner try, this mutation SURVIVED test_153's substring match;
+    # test_153 now requires the guard at the window's own indentation.
     _runner_mutation(
         "test_153",
         "    $null = Open-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest\n"
@@ -1479,13 +1481,17 @@ def test_163_wrapping_the_whole_run_in_the_window_is_rejected() -> None:
     """THE WINDOW IS SETUP ONLY. Widening it to cover work that does not need it -
     here the seed write, which Run 3 proved an external COM caller can make on a
     protected sheet - is how a maintenance window becomes an unprotected run."""
+    # RE-ANCHORED when the finally gained the Bulk relabel line; the seed write is
+    # still inserted as the last statement of the guarded body.
     _runner_mutation(
         "test_158",
         "    } finally {\n"
+        "        if ($FixtureMode -eq 'Bulk') { Set-BulkOp 'bulk.window.close' }\n"
         "        $protectionAfter = Close-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest\n"
         "    }",
         "        Set-NamedValue -Workbook $wb -DefinedName 'nmSeed' -Value ([double]1)\n"
         "    } finally {\n"
+        "        if ($FixtureMode -eq 'Bulk') { Set-BulkOp 'bulk.window.close' }\n"
         "        $protectionAfter = Close-BenchmarkFixtureWindow -Excel $excel -Manifest $manifest\n"
         "    }")
 
@@ -1915,10 +1921,12 @@ def test_190_publishing_a_calculation_result_from_the_fixture_is_rejected() -> N
     _runner_mutation(
         "test_191",
         "    # --- H. THE FIXTURE ENDS COHERENT ---------------------------------------\n"
+        "    Set-BulkOp 'bulk.final.coherence'\n"
         "    $null = Assert-Phase5StructurallyCoherent -Excel $Excel `",
         "    Set-BenchmarkRangeBlock -Workbook $Workbook -SheetName '_Calc' `\n"
         "        -TableName 'tblCalcAnnual' -FirstRow 1 -FirstColumn 1 -Block $block `\n"
         "        -Description 'tblCalcAnnual'\n"
+        "    Set-BulkOp 'bulk.final.coherence'\n"
         "    $null = Assert-Phase5StructurallyCoherent -Excel $Excel `")
 
 
@@ -2717,6 +2725,187 @@ def test_269_flattening_the_register_block_is_refused() -> None:
         "    $unreachable = [pscustomobject]@{\n"
         "        Block = $block\n"
         "        Ids = $ids")
+
+
+# ===========================================================================
+# T. WHICH BULK FIXTURE CALL WAS REFUSED
+# ===========================================================================
+# THE BULK CONTROLS RUN A HARNESS AGAINST THE RUNNER ON DISK and read the gate and
+# the record from disk, so each mutation writes the real file, re-runs the Bulk
+# controls, and restores it in a finally.
+BULK_CONTROLS = (
+    "test_270_every_bulk_operation_is_labelled_and_the_vocabulary_is_closed",
+    "test_271_the_label_is_set_immediately_before_the_call_it_names",
+    "test_272_the_executed_order_matches_the_vocabulary_for_small_and_growth",
+    "test_273_a_failure_names_that_operation_and_no_later_one",
+    "test_274_nothing_is_retried_and_nothing_sleeps",
+    "test_275_the_window_the_settlements_and_the_blocks_did_not_move",
+    "test_276_the_record_names_no_bulk_operation_for_the_two_historical_runs",
+    "test_63_the_first_run_carries_no_absolute_pass_mark",
+    "test_261_every_fixture_block_is_a_rank_two_array_of_the_right_shape",
+)
+_BULK_ON_DISK = {
+    "runner": conformance.RUNNER,
+    "gate": conformance.EQUIV_HARNESS,
+    "evidence": conformance.PCCM_ROOT / "docs" / "phase10_windows_run_evidence.md",
+}
+
+
+def _bulk_mutation(key: str, expected: str, before: str, after: str) -> None:
+    path = _BULK_ON_DISK[key]
+    with path.open(encoding="utf-8", newline="") as handle:
+        original = handle.read()
+    crlf = "\r\n" in original
+    damaged = original.replace(before.replace("\n", "\r\n") if crlf else before,
+                               after.replace("\n", "\r\n") if crlf else after, 1)
+    if damaged == original:
+        raise RuntimeError(f"the mutation changed nothing: {before[:70]!r} is no longer in {key}")
+    refused = []
+    try:
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(damaged)
+        conformance._MEMO.clear()
+        conformance._MEMO_ANY.pop("bulk", None)
+        conformance._MEMO_ANY.pop("rank", None)
+        for name in BULK_CONTROLS:
+            try:
+                getattr(conformance, name)()
+            except BaseException:  # noqa: BLE001 - any refusal counts
+                refused.append(name)
+    finally:
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(original)
+        conformance._MEMO.clear()
+        conformance._MEMO_ANY.pop("bulk", None)
+        conformance._MEMO_ANY.pop("rank", None)
+    assert refused, "the mutation survived every Bulk control"
+    assert any(name.startswith(expected) for name in refused), (expected, refused)
+
+
+def test_270_omitting_a_label_before_a_com_call_is_refused() -> None:
+    """A CALL WITH NO LABEL OF ITS OWN CARRIES THE PREVIOUS ONE. That is the
+    confidently-wrong diagnostic, which is worse than none."""
+    _bulk_mutation("runner", "test_27",
+        "    Set-BulkOp 'bulk.timeline.apply'\n    $applied = Invoke-Phase5ProductionOperation",
+        "    $applied = Invoke-Phase5ProductionOperation")
+
+
+def test_271_an_unknown_label_is_refused() -> None:
+    """A CLOSED VOCABULARY IS WHAT MAKES A LABEL TRACEABLE."""
+    _bulk_mutation("runner", "test_270",
+        "    if (@(Get-BulkOpVocabulary) -notcontains $Operation) {",
+        "    if ($false) {")
+
+
+def test_272_reporting_the_prior_operation_is_refused() -> None:
+    """THE DEFECT THE HARNESS FOUND BEFORE WINDOWS COULD. Reading the label at the
+    outer catch, after the finally relabelled the window close, names the close for
+    every failure. The save at the throw is what prevents it."""
+    _bulk_mutation("gate", "test_273",
+        "                    Save-BulkFailure -ErrorRecord $_\n                    throw",
+        "                    throw")
+
+
+def test_273_dropping_the_hresult_from_bulkfail_is_refused() -> None:
+    """WITHOUT THE HRESULT, A REFUSAL AND A VBA ERROR READ ALIKE."""
+    _bulk_mutation("runner", "test_273",
+        "        return ('BULKFAIL|' + $Operation + '|hresult=' + $shown + '|not a refused call')\n"
+        "    }\n"
+        "    return ('BULKFAIL|' + $Operation + '|hresult=' + $shown + '|' + $name)",
+        "        return ('BULKFAIL|' + $Operation + '|not a refused call')\n"
+        "    }\n"
+        "    return ('BULKFAIL|' + $Operation + '|' + $name)")
+
+
+def test_274_swallowing_the_exception_after_logging_is_refused() -> None:
+    """A DIAGNOSTIC MAY NOT REPLACE THE FAILURE IT DESCRIBES. Logging and then
+    continuing would hand the comparison a half-built fixture."""
+    _bulk_mutation("gate", "test_27",
+        "                    Save-BulkFailure -ErrorRecord $_\n                    throw",
+        "                    Save-BulkFailure -ErrorRecord $_")
+
+
+def test_275_a_blind_retry_around_the_fixture_is_refused() -> None:
+    """DIAGNOSTIC ONLY. Nothing may be reissued until Windows names the refused
+    call, because whether that is even safe depends on which call it was."""
+    _bulk_mutation("runner", "test_274",
+        "    Set-BulkOp 'bulk.timeline.apply'\n"
+        "    $applied = Invoke-Phase5ProductionOperation -Excel $Excel `\n"
+        "        -Operation 'PCCM_ApplyTimeline' -Stage 'the bulk fixture structural baseline'",
+        "    Set-BulkOp 'bulk.timeline.apply'\n"
+        "    $applied = $null\n"
+        "    for ($try = 0; $try -lt 3; $try++) {\n"
+        "        try {\n"
+        "            $applied = Invoke-Phase5ProductionOperation -Excel $Excel `\n"
+        "                -Operation 'PCCM_ApplyTimeline' -Stage 'the bulk fixture structural baseline'\n"
+        "            break\n"
+        "        } catch { if ($try -eq 2) { throw } }\n"
+        "    }")
+
+
+def test_276_a_sleep_in_the_fixture_is_refused() -> None:
+    """NOT A WAIT. The instrumentation observes; it does not pace."""
+    _bulk_mutation("runner", "test_274",
+        "    Set-BulkOp 'bulk.inputs.write'",
+        "    Start-Sleep -Milliseconds 500\n    Set-BulkOp 'bulk.inputs.write'")
+
+
+def test_277_a_retry_around_application_run_is_refused() -> None:
+    """PCCM_ApplyTimeline IS A PRODUCTION ENDPOINT. Reissuing it repeats a real
+    mutation nobody has proved did not happen."""
+    _bulk_mutation("runner", "test_274",
+        "    Set-BulkOp 'bulk.final.coherence'\n"
+        "    $null = Assert-Phase5StructurallyCoherent -Excel $Excel `",
+        "    Set-BulkOp 'bulk.final.coherence'\n"
+        "    try { $null = Assert-Phase5StructurallyCoherent -Excel $Excel -Stage 'first try' }\n"
+        "    catch { $null = 'try again' }\n"
+        "    $null = Assert-Phase5StructurallyCoherent -Excel $Excel `")
+
+
+def test_278_a_retry_around_listrows_add_is_refused() -> None:
+    """A REISSUED ListRows.Add ADDS A SECOND ROW."""
+    _bulk_mutation("runner", "test_274",
+        "        $physical = Set-BenchmarkRegisterRowCount -Workbook $Workbook -SheetName $register.sheet `\n"
+        "            -TableName $register.table_name -MinimumRows @($pair.drivers).Count",
+        "        $physical = 0\n"
+        "        foreach ($try in 1..2) {\n"
+        "            try {\n"
+        "                $physical = Set-BenchmarkRegisterRowCount -Workbook $Workbook -SheetName $register.sheet `\n"
+        "                    -TableName $register.table_name -MinimumRows @($pair.drivers).Count\n"
+        "                break\n"
+        "            } catch { if ($try -eq 2) { throw } }\n"
+        "        }")
+
+
+def test_279_changing_the_rank_two_block_path_while_instrumenting_is_refused() -> None:
+    """THE RANK=2 FIX IS FROZEN. A label may sit beside the block write; the block
+    must still travel as a record property."""
+    _bulk_mutation("runner", "test_26",
+        "    return [pscustomobject]@{\n"
+        "        Block   = $block\n"
+        "        Rows    = $rows.Count\n"
+        "        Columns = $Years\n"
+        "        Keys    = $rows\n"
+        "    }",
+        "    return $block")
+
+
+def test_280_claiming_a_historical_bulk_operation_is_refused() -> None:
+    """THE EVIDENCE RULE. The log that would name the refused call did not exist for
+    runs 8 and 9; a record that named one anyway would send the next batch after a
+    guess."""
+    _bulk_mutation("evidence", "test_276",
+        "**The exact Bulk fixture operation was NOT identified by the logging in place.**",
+        "**The refused operation was bulk.costprofiling.write.**")
+
+
+def test_281_a_verdict_style_pass_mark_still_cannot_hide_behind_the_declared_prefix() -> None:
+    """THE DECLARATION IS NARROW. Scrubbing BULKFAIL| must not let a real FAIL|
+    verdict line through beside it."""
+    _bulk_mutation("runner", "test_63",
+        "    Set-BulkOp 'bulk.final.coherence'",
+        "    if ($years -gt 30) { Write-BenchmarkLine ('FAIL|' + $ScenarioSpec.id + '|too slow') }\n"
+        "    Set-BulkOp 'bulk.final.coherence'")
 
 
 if __name__ == "__main__":
