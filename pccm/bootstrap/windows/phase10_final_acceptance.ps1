@@ -878,6 +878,8 @@ $calcValueColumn = [string]$calcStateBlock.value_column
 $calcStatusRange = ($calcValueColumn + [string]$calcStateBlock.rows.calculation_status + ':' +
                     $calcValueColumn + [string]$calcStateBlock.rows.status_evaluated_at)
 $calcAttemptCell = ($calcValueColumn + [string]$calcStateBlock.rows.last_attempt_result)
+$calcPersistedStatusCell = ($calcValueColumn + [string]$calcStateBlock.rows.calculation_status)
+$calcFingerprintCell = ($calcValueColumn + [string]$calcStateBlock.rows.last_successful_fingerprint)
 
 # THE METADATA BLOCK, from the methodology projection: label column, text column,
 # and the rows the emitter wrote. The Source Revision row is required to exist.
@@ -962,6 +964,23 @@ try {
     $comAcquired = $comAcquired + 1
     $wb = $workbooks.Open($stageBPath)
     $comAcquired = $comAcquired + 1
+
+    # 6a. THE PERSISTED CALCULATION HISTORY, read from the model's own persisted
+    # cells BEFORE any accessor evaluates: no calculation has ever been
+    # committed, so the last-evaluated status is NOT CALCULATED, the attempt
+    # result is NONE and the last successful fingerprint is blank. Phase 9
+    # settled the distinction: the LIVE state of the untouched workbook is
+    # INVALID (6b below); the persisted history is not, and the two are asserted
+    # separately. The compile check that follows evaluates and persists the live
+    # status, which is why this read comes first.
+    $persistedStatus = Format-FaCell ((Get-FaBlock -Workbook $wb -SheetName $calcSheet -Address $calcPersistedStatusCell).Rect)
+    $persistedAttempt = Format-FaCell ((Get-FaBlock -Workbook $wb -SheetName $calcSheet -Address $calcAttemptCell).Rect)
+    $persistedFingerprint = Format-FaCell ((Get-FaBlock -Workbook $wb -SheetName $calcSheet -Address $calcFingerprintCell).Rect)
+    $null = Add-FaCheck 'state.initial.persisted' `
+        (($persistedStatus -ceq $statusNotCalculated) -and ($persistedAttempt -ceq $attemptNone) -and
+         ($persistedFingerprint -ceq '<blank>')) `
+        ('persisted status ' + $persistedStatus + '; last attempt ' + $persistedAttempt +
+         '; last successful fingerprint ' + $persistedFingerprint)
 
     # 3. THE ACCEPTED COMPILE CHECK: the first Application.Run compiles the project.
     $compileFailure = ''
@@ -1060,9 +1079,14 @@ try {
     Import-FaFixtureWindow -Excel $excel -Workbook $wb -Manifest $manifest -ScriptDir $scriptDir
     $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'protection.initial'
 
-    # 6. INITIAL STATE.
+    # 6b. THE LIVE, DERIVED STATE of the untouched workbook, as Phase 9 accepted
+    # it: required inputs are unresolved, so the calculation is INVALID, the
+    # simulation is INVALID as its consequence, and nothing annual was produced.
     $states0 = Get-FaStates -Excel $excel
-    $null = Add-FaCheck 'state.initial' ($states0.Calculation -ceq $statusNotCalculated) (Format-FaStates $states0)
+    $null = Add-FaCheck 'state.initial.live' `
+        (($states0.Calculation -ceq $statusInvalid) -and ($states0.Simulation -ceq $statusInvalid) -and
+         ($states0.Annual -like 'NOT PRODUCED*') -and ($states0.Profile -like 'NOT PRODUCED*')) `
+        (Format-FaStates $states0)
 
     # 7. THE ACCEPTED W4 FIXTURE, inside the setup window, exactly as the benchmark
     # builds it: the fixture writes ClearContents on locked tables and needs it.

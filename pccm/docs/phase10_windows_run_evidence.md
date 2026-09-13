@@ -3829,3 +3829,62 @@ inventories, Reset preservation, Repair assertions, protection after every path,
 fail-fast, clean lifecycle, no UI automation, production byte-identical to
 `2d32f35`, the command-resolution and uninitialised-variable audits CLEAN.
 
+## Final acceptance run 1 — 6770cb8 — FAILED AT state.initial — RUNNER EXPECTATION DEFECT
+
+**Executed on Windows at `6770cb8`.** Stage A 351 passed, 0 failed. The final
+acceptance runner reached real Excel and recorded, in order:
+
+```
+PASS|bootstrap
+PASS|compile
+PASS|sheets
+PASS|modules
+PASS|metadata.rows
+PASS|metadata.model-version
+PASS|metadata.builder-version
+PASS|metadata.build-phase
+PASS|metadata.source-revision
+PASS|protection.initial
+FAIL|state.initial|calc=INVALID sim=INVALID annual=NOT PRODUCED profile=NOT PRODUCED
+```
+
+**Source Revision matched literally:** expected `6770cb8 (clean)`, observed
+`6770cb8 (clean)`. The release workbook carries the builder's stamp of the
+commit it was built from.
+
+**Why it failed, and why that is the runner's fault.** The assertion expected the
+LIVE calculation state of the untouched workbook to read `NOT CALCULATED`. Phase 9
+had already settled, on Windows evidence, that the untouched Stage-A / Stage-B
+workbook has unresolved required inputs: its LIVE derived state is `INVALID`,
+the simulation is `INVALID` as a consequence, and annual and profile are
+`NOT PRODUCED`. `NOT CALCULATED` is the PERSISTED calculation-history fact — no
+calculation has ever been committed — and the runner had conflated the two. The
+observed live state is exactly the accepted Phase-9 behaviour. **This is a runner
+expectation defect, NOT a production defect.** Production VBA, spec and builder
+are unchanged.
+
+**Shutdown was clean:** Workbook.Close True; Application.Quit True; natural PID
+exit True; no emergency cleanup; every transient COM object released.
+
+**FINAL ACCEPTANCE IS NOT PASSED.** Nothing after `protection.initial` was
+executed, and no later scenario is claimed.
+
+### Corrected in this round (source only — no Windows)
+
+The one assertion is split into two, asserted apart and in the order the model
+makes them observable:
+
+- `state.initial.persisted` — read from the model's own persisted `_Calc` state
+  block, through the addresses the Phase-5 inspection projects, BEFORE the
+  accepted compile check evaluates anything: last-evaluated status
+  `NOT CALCULATED`, last attempt result `NONE`, last successful fingerprint blank.
+- `state.initial.live` — through the read-only derivations, after the compile
+  check: calculation `INVALID`, simulation `INVALID`, annual and profile
+  `NOT PRODUCED`.
+
+No accessor was invented, no production module moved, and every scenario from
+the fixture to the exit code is byte-identical to the runner Windows executed at
+`6770cb8`; a control pins that. The runner reads no Model Check on the untouched
+workbook — its first Model Check read follows the first Calculate — so no PASS is
+forced on an invalid model.
+

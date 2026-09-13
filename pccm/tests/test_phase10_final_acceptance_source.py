@@ -62,7 +62,7 @@ STRUCTURAL_COMMANDS = ("PCCM_ApplyTimeline", "PCCM_AddCostLine", "PCCM_DeleteCos
 REQUIRED_SCENARIOS = (
     "bootstrap", "compile", "sheets", "modules", "metadata.rows", "metadata.model-version",
     "metadata.builder-version", "metadata.build-phase", "metadata.source-revision",
-    "protection.initial", "state.initial", "fixture", "structural.add-delete.",
+    "protection.initial", "state.initial.persisted", "state.initial.live", "fixture", "structural.add-delete.",
     "structural.apply-timeline", "calculate.current", "modelcheck.calculated",
     "modelcheck.worksheet-safety", "simulation.current", "sensitivity", "annual",
     "modelcheck.simulated", "state.stale", "state.invalid", "refused.outcome.calculate",
@@ -471,13 +471,74 @@ def test_60_the_state_vocabulary_is_projected_and_the_four_states_are_observed()
     assert "$statusStale         = [string]$p7.model_states.derived_status[2]" in code
     assert "$statusInvalid       = [string]$p7.model_states.derived_status[3]" in code
     assert "$attemptRefused      = [string]$p7.model_states.attempt_result[2]" in code
-    for check, word in (("state.initial", "$statusNotCalculated"), ("calculate.current", "$statusCurrent"),
+    for check, word in (("state.initial.persisted", "$statusNotCalculated"), ("state.initial.live", "$statusInvalid"),
+                        ("calculate.current", "$statusCurrent"),
                         ("state.stale", "$statusStale"), ("state.invalid", "$statusInvalid")):
         tail = code[code.index(f"Add-FaCheck '{check}'"): code.index(f"Add-FaCheck '{check}'") + 400]
         assert word in tail, check
     assert "for literal in" not in code
     for word in ("'NOT CALCULATED'", "'CURRENT'", "'STALE'", "'INVALID'", "'REFUSED'"):
         assert word not in code, word
+
+
+def test_60b_the_untouched_workbook_is_asserted_as_phase_9_accepted_it_live_and_persisted_apart() -> None:
+    """RUN 1 AT 6770cb8 FAILED HERE. The runner expected the LIVE calculation
+    state of the untouched workbook to read NOT CALCULATED; Phase 9 had already
+    settled that the untouched workbook's required inputs are unresolved, so its
+    LIVE state is INVALID, the simulation INVALID as its consequence, and annual
+    and profile NOT PRODUCED, while NOT CALCULATED is a PERSISTED history fact:
+    no calculation has ever been committed. The two are now asserted apart."""
+    code = _code()
+    live = code[code.index("Add-FaCheck 'state.initial.live'"):]
+    live = live[: live.index("Save-Phase5LockedFxSeed")]
+    assert "($states0.Calculation -ceq $statusInvalid)" in live
+    assert "($states0.Simulation -ceq $statusInvalid)" in live
+    assert "($states0.Annual -like 'NOT PRODUCED*')" in live and "($states0.Profile -like 'NOT PRODUCED*')" in live
+    assert "$statusNotCalculated" not in live
+    persisted = code[code.index("$persistedStatus = Format-FaCell"):]
+    persisted = persisted[: persisted.index("$compileFailure = ''")]
+    assert "($persistedStatus -ceq $statusNotCalculated)" in persisted
+    assert "($persistedAttempt -ceq $attemptNone)" in persisted
+    assert "($persistedFingerprint -ceq '<blank>')" in persisted
+    assert "$statusInvalid" not in persisted
+    # THE PERSISTED CELLS ARE THE MODEL'S OWN, from the Phase-5 block, read with
+    # no accessor - and read BEFORE the compile check, which evaluates and
+    # persists the live status.
+    assert "$calcPersistedStatusCell = ($calcValueColumn + [string]$calcStateBlock.rows.calculation_status)" in code
+    assert "$calcFingerprintCell = ($calcValueColumn + [string]$calcStateBlock.rows.last_successful_fingerprint)" in code
+    assert "-Address $calcPersistedStatusCell" in persisted and "-Address $calcAttemptCell" in persisted \
+        and "-Address $calcFingerprintCell" in persisted
+    assert "$excel.Run(" not in persisted
+    assert code.index("$wb = $workbooks.Open($stageBPath)") < code.index("Add-FaCheck 'state.initial.persisted'") \
+        < code.index("$excel.Run('PCCM_CalculationStatus')") < code.index("Add-FaCheck 'state.initial.live'")
+    # AND NO MODEL CHECK IS READ ON THE UNTOUCHED WORKBOOK: the first Model Check
+    # read follows the first Calculate, so no PASS is forced on an invalid model.
+    assert code.index("Add-FaCheck 'calculate.current'") < code.index("Get-FaModelCheckSummary -Workbook $wb")
+
+
+def test_60c_every_scenario_from_the_fixture_onward_is_byte_identical_to_the_windows_tested_runner() -> None:
+    """ONLY THE INITIAL-STATE ASSERTION MOVED. From the fixture to the exit
+    code, the runner is the one Windows executed at 6770cb8."""
+    tested = _git("show", "6770cb8:pccm/bootstrap/windows/phase10_final_acceptance.ps1").replace("\r\n", "\n")
+    now = _runner().replace("\r\n", "\n")
+    marker = "    # 7. THE ACCEPTED W4 FIXTURE"
+    assert now[now.index(marker):] == tested[tested.index(marker):]
+    # And everything before the session, except the two persisted-cell addresses.
+    head_marker = "$calcAttemptCell = ($calcValueColumn + [string]$calcStateBlock.rows.last_attempt_result)\n"
+    assert now[: now.index(head_marker)] == tested[: tested.index(head_marker)]
+
+
+def test_60d_the_record_states_run_1_as_a_runner_expectation_defect() -> None:
+    record = (PCCM_ROOT / "docs" / "phase10_windows_run_evidence.md").read_text(encoding="utf-8")
+    start = record.index("## Final acceptance run 1 — 6770cb8 — FAILED AT state.initial — RUNNER EXPECTATION DEFECT")
+    section = record[start:]
+    plain = " ".join(section.replace("`", "").replace("**", "").split())
+    for fact in ("PASS|protection.initial", "expected 6770cb8 (clean)", "observed 6770cb8 (clean)",
+                 "FAIL|state.initial|calc=INVALID sim=INVALID annual=NOT PRODUCED profile=NOT PRODUCED",
+                 "runner expectation defect, NOT a production defect", "Phase 9",
+                 "Workbook.Close True", "Application.Quit True", "natural PID exit True",
+                 "FINAL ACCEPTANCE IS NOT PASSED"):
+        assert fact in plain, fact
 
 
 def test_61_refused_is_observed_only_as_an_attempt_outcome() -> None:

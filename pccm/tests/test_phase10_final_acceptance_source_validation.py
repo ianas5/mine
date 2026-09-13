@@ -127,6 +127,26 @@ def test_11_a_state_word_typed_as_a_literal_is_refused() -> None:
             "$statusStale         = 'STALE'")
 
 
+def test_12_expecting_the_live_untouched_state_to_read_not_calculated_is_refused() -> None:
+    """THE RUN-1 DEFECT, PUT BACK."""
+    _mutate("test_60b",
+            "(($states0.Calculation -ceq $statusInvalid) -and ($states0.Simulation -ceq $statusInvalid) -and",
+            "(($states0.Calculation -ceq $statusNotCalculated) -and ($states0.Simulation -ceq $statusInvalid) -and")
+
+
+def test_13_reading_the_persisted_history_after_the_compile_check_is_refused() -> None:
+    """THE COMPILE CHECK EVALUATES AND PERSISTS THE LIVE STATUS; a persisted read
+    after it would read INVALID and the assertion would be wrong for a second reason."""
+    original = conformance._runner()
+    start = original.index("    # 6a. THE PERSISTED CALCULATION HISTORY")
+    end = original.index("    # 3. THE ACCEPTED COMPILE CHECK")
+    block = original[start:end]
+    moved = original[:start] + original[end:]
+    anchor = "    # 2b. SHEETS AND CODENAMES"
+    moved = moved.replace(anchor, block + anchor, 1)
+    _mutate("test_60b", original, moved)
+
+
 if __name__ == "__main__":
     failures = 0
     for name in sorted(n for n in dir() if n.startswith("test_")):
