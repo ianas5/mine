@@ -3736,6 +3736,56 @@ def test_307_perf_large_is_ready_on_the_authorised_bulk_path() -> None:
     assert _production_changed_since("8caffb0") == []
 
 
+# ===========================================================================
+# X. THE PERF-LARGE BASELINE, AND THE MATRIX STATUS
+# ===========================================================================
+LARGE_MEDIANS = (("Calculate", "15.141 s"), ("Workbook recalculation", "11.444 s"),
+                 ("Simulation | 10,000", "123.344 s"), ("Sensitivity | 10,000", "120.872 s"),
+                 ("Annual Cash Flow | 10,000", "1,395.994 s"), ("Simulation | 50,000", "482.965 s"),
+                 ("Sensitivity | 50,000", "497.638 s"), ("Annual Cash Flow | 50,000", "7,031.311 s"))
+
+
+def test_308_the_large_baseline_is_recorded_exactly_and_judged_by_the_contract() -> None:
+    """RECORDED, NOT JUDGED. Eight warm medians exactly as measured, 8 of 8 valid,
+    no 100k, the Bulk fixture time, a clean shutdown, the environment - and the
+    contract's reading: no retrospective threshold, Annual 50k is a fact and not a
+    failure, later runs judged at 1.5x / 2.0x against this baseline."""
+    section = _run_evidence_section("## PERF-LARGE baseline")
+    plain = " ".join(section.replace("`", "").replace("**", "").split())
+    for fact in ("d060da9", "351 passed, 0 failed", "300 drivers", "180 Cost Lines and 120 Risks",
+                 "40 project years", "-FixtureMode Bulk", "10,000 and 50,000 only", "325.338 s",
+                 "8 of 8", "BASELINE STATUS: BASELINE RECORDED", "valid warm medians: 8 of 8 planned runs",
+                 "39,164.125 s", "Workbook.Close = True", "Application.Quit = True",
+                 "Windows 11 Pro", "7800X3D", "Excel 16.0 build 20326", "64-bit",
+                 "no absolute pass/fail threshold", "NOT a failure", "1.5×", "2.0×",
+                 "RECORDED / ACCEPTED AS BASELINE EVIDENCE"):
+        assert fact in plain, fact
+    assert "No 100,000-iteration Large run was scheduled or executed" in plain
+    for operation, median in LARGE_MEDIANS:
+        assert median in section, (operation, median)
+        assert section.index(operation) < section.index(median), operation
+    assert "Nothing in production is changed or optimised" in plain
+    assert _production_changed_since("d060da9") == []
+
+
+def test_309_the_matrix_status_states_what_the_record_holds_and_closes_nothing_early() -> None:
+    """THE MATRIX IS NOT COMPLETE IN THE RECORD. LARGE is recorded; no completed
+    PERF-SMALL or PERF-MEDIUM baseline has been appended; the subsection stays
+    open until those artifacts are appended - never rerun, never reconstructed."""
+    text = RUN_EVIDENCE.read_text(encoding="utf-8")
+    section = " ".join(_run_evidence_section("## Phase-10 performance matrix").replace("`", "").replace("**", "").split())
+    for fact in ("NOT complete in this record", "NOT closed", "NOT IN THIS RECORD",
+                 "phase10_benchmark_<scenario>_<stamp>.json", "never rerun and never reconstructed from memory"):
+        assert fact in section, fact
+    assert "PERF-LARGE | 10,000 · 50,000 | RECORDED" in section
+    # AND THE RECORD REALLY HOLDS NO SMALL OR MEDIUM BASELINE: the only BASELINE
+    # RECORDED status in the whole record is the Large one.
+    assert text.count("BASELINE STATUS: BASELINE RECORDED") == 1
+    assert "## Benchmark Run 5 — PERF-SMALL — REACHED THE TIMED SECTION — ABORTED" in text
+    assert not re.search(r"^## .*PERF-MEDIUM", text, re.M), "a PERF-MEDIUM run is recorded after all"
+    assert not re.search(r"^## .*PERF-SMALL.*BASELINE", text, re.M), "a PERF-SMALL baseline is recorded after all"
+
+
 # Every rectangular fixture block, and the geometry each must have. Restated here so
 # a builder that quietly changes shape fails a control rather than Excel.
 RANK_EXPECTED = {

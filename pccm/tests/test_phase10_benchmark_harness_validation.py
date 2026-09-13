@@ -3204,3 +3204,18 @@ def test_304_emitting_a_line_from_inside_the_pass_is_refused() -> None:
     _simple_mutation("gate", "test_306", [
         (READY_CALL,
          READY_CALL + "        Write-Output ('READY|' + $Mode + '|attempt=' + [string]$ready.Attempt)\n")])
+
+
+def test_305_labelling_annual_50k_a_failure_is_refused() -> None:
+    """NO RETROSPECTIVE THRESHOLD. The first baseline records; it does not judge."""
+    _record_mutation(
+        "test_308",
+        "is NOT a failure; it is the measured fact.",
+        "is a failure against the expected budget.")
+
+
+def test_306_claiming_the_matrix_complete_without_small_and_medium_is_refused() -> None:
+    _record_mutation(
+        "test_309",
+        "**The performance matrix is therefore NOT complete in this record, and the\nPhase-10 performance subsection is NOT closed.**",
+        "**The performance matrix is therefore complete in this record, and the\nPhase-10 performance subsection is closed.**")

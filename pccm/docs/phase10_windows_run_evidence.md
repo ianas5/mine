@@ -3513,3 +3513,88 @@ three warm runs each, median of the warm three: Calculate; workbook recalculatio
 (`Application.CalculateFull`); Simulation @ 10,000; Sensitivity @ 10,000; Annual
 @ 10,000; Simulation @ 50,000; Sensitivity @ 50,000; Annual @ 50,000 — eight runs,
 thirty-two timed executions.
+
+## PERF-LARGE baseline — RECORDED / ACCEPTED AS BASELINE EVIDENCE
+
+**Harness commit:** `d060da9`. Stage A immediately before: **351 passed, 0 failed**.
+Windows PowerShell 5.1.
+
+### Scenario, as run
+
+PERF-LARGE: **300 drivers** — 180 Cost Lines and 120 Risks — over **40 project
+years**; `-FixtureMode Bulk`; iterations **10,000 and 50,000 only**; 8 planned
+timed runs; 1 cold + 3 warm executions each; comparison statistic the median of
+the three warm runs. **No 100,000-iteration Large run was scheduled or executed**,
+as the plan forbids and the runner refuses.
+
+### Fixture construction
+
+The Bulk fixture built PERF-LARGE in **325.338 s** (setup, outside every timed
+region). *PERF-LARGE attempt 1* above — the endpoint-by-endpoint fixture,
+operator-aborted after more than four hours — is obsolete as a method; Bulk
+construction is proven practical on Windows.
+
+### The official PERF-LARGE warm medians
+
+All **8 of 8** planned timed runs completed with three valid warm samples each.
+
+| operation | iterations | warm median |
+|---|---|---|
+| Calculate | — | **15.141 s** |
+| Workbook recalculation (`Application.CalculateFull`) | — | **11.444 s** |
+| Simulation | 10,000 | **123.344 s** |
+| Sensitivity | 10,000 | **120.872 s** |
+| Annual Cash Flow | 10,000 | **1,395.994 s** |
+| Simulation | 50,000 | **482.965 s** |
+| Sensitivity | 50,000 | **497.638 s** |
+| Annual Cash Flow | 50,000 | **7,031.311 s** |
+
+Whole session: **39,164.125 s**.
+
+```
+BASELINE STATUS: BASELINE RECORDED
+valid warm medians: 8 of 8 planned runs
+```
+
+### Shutdown and environment
+
+`Workbook.Close = True`; `Application.Quit = True`; natural PID exit `True`;
+emergency required `False`; every transient COM object released cleanly.
+
+Windows 11 Pro; AMD Ryzen 7 7800X3D, 16 logical processors, 31.2 GB RAM; Excel
+16.0 build 20326, 64-bit; automatic calculation mode.
+
+### Reading this baseline — the contract, stated plainly
+
+This is the **first accepted LARGE delivery baseline**. Per the Phase-10 contract
+(§10.3), **no absolute pass/fail threshold existed before this baseline**, and
+none is invented retrospectively here. **Annual Cash Flow @ 50,000 at 7,031.311 s
+is NOT a failure; it is the measured fact.** Every number above is recorded
+exactly as measured. Future comparable runs — same plan, same scenario, same
+operation, same iteration count, warm median against warm median — are judged
+against this baseline: **at or below 1.5× no automatic regression finding; above
+1.5× investigate; above 2.0× blocking unless explained and explicitly accepted.**
+Nothing in production is changed or optimised on account of these numbers.
+
+**PERF-LARGE BASELINE = RECORDED / ACCEPTED AS BASELINE EVIDENCE.**
+
+## Phase-10 performance matrix — status after the LARGE baseline
+
+The contracted practical matrix is PERF-SMALL, PERF-MEDIUM and PERF-LARGE, each
+with its accepted iteration counts. What this record holds:
+
+| scenario | contracted iterations | accepted baseline in this record |
+|---|---|---|
+| PERF-LARGE | 10,000 · 50,000 | **RECORDED** — the section immediately above, commit `d060da9` |
+| PERF-SMALL | 10,000 · 50,000 · 100,000 | **NOT IN THIS RECORD.** The last PERF-SMALL benchmark recorded here is *Benchmark Run 5 — REACHED THE TIMED SECTION — ABORTED*. No completed PERF-SMALL `BASELINE RECORDED` evidence has been appended. |
+| PERF-MEDIUM | 10,000 · 50,000 · 100,000 | **NOT IN THIS RECORD.** No PERF-MEDIUM benchmark run of any outcome is recorded here. |
+
+**The performance matrix is therefore NOT complete in this record, and the
+Phase-10 performance subsection is NOT closed.** The runner writes each completed
+run to `phase10_benchmark_<scenario>_<stamp>.json`, `.md` and `.log` in its
+`-OutDir` (by default its temporary work directory, unless `-OutDir` or
+`-KeepArtifacts` was given). If accepted PERF-SMALL and PERF-MEDIUM baselines were
+produced on Windows, those artifacts — or their `BASELINE STATUS` transcripts with
+the eleven warm medians each — are what closes the matrix; they are appended here,
+never rerun and never reconstructed from memory. Nothing is rerun for this: not
+Small, not Medium, not Large, and no 100,000-iteration Large run.
