@@ -157,8 +157,8 @@ def test_14_expecting_pass_after_calculate_at_the_business_minimum_is_refused() 
 def test_15_dropping_the_calculation_error_from_the_invalid_checkpoint_is_refused() -> None:
     _mutate("test_60f",
             "-Expected @(@{ Id = [string]$calcErrorChecks[0].check_id; Severity = $severityError; Subject = $victimId },\n"
-            "                    $advisoryExpected)\n",
-            "-Expected @($advisoryExpected)\n")
+            "                    $advisoryExpected, $annualHistoricalExpected, $annualHistoricalExpected)\n",
+            "-Expected @($advisoryExpected, $annualHistoricalExpected, $annualHistoricalExpected)\n")
 
 
 def test_16_dropping_the_not_calculated_warning_after_reset_is_refused() -> None:
@@ -207,6 +207,20 @@ def test_20_dropping_a_malformed_definition_refusal_is_refused() -> None:
     _mutate("test_60n",
             "    if ($hasId -and $hasAnyOf) { throw ($where + 'names both Id and AnyOf; exactly one selector is allowed') }\n",
             "")
+
+
+def test_21_omitting_one_historical_annual_warning_from_the_invalid_checkpoint_is_refused() -> None:
+    """THE RUN-5 CLASS, PUT BACK BY HALF."""
+    _mutate("test_60",
+            "                    $advisoryExpected, $annualHistoricalExpected, $annualHistoricalExpected)\n",
+            "                    $advisoryExpected, $annualHistoricalExpected)\n")
+
+
+def test_22_omitting_both_historical_annual_warnings_is_refused() -> None:
+    """THE RUN-5 DEFECT, PUT BACK."""
+    _mutate("test_60",
+            "                    $advisoryExpected, $annualHistoricalExpected, $annualHistoricalExpected)\n",
+            "                    $advisoryExpected)\n")
 
 
 if __name__ == "__main__":

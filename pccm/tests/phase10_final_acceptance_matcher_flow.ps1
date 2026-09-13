@@ -104,6 +104,24 @@ Invoke-Case -Case 'E.missing' -Expected @($advisory) `
 Invoke-Case -Case 'F.wrong-subject' -Expected @($calcError, $advisory) `
     -Surface (New-Surface -Overall 'ERROR' -Errors 1 -Warnings 1 -Rows @(
         (New-Row -Id 'CAL-010' -Group 'Calculation' -Severity 'ERROR' -Subject 'CL-002' -Message 'refused'), $advisoryRow))
+# G. THE ACTUAL INVALID SEQUENCE (run 5): the error, the advisory and the two
+# historical Annual WARNINGs, expected as two AnyOf entries over the projected
+# Annual WARNING population.
+$annualWarningIds = @($inspection.evaluation.declared_checks | Where-Object {
+    ([string]$_.group -ceq [string]$inspection.vocabulary.group_order[4]) -and ([string]$_.severity -ceq 'WARNING') } |
+    ForEach-Object { [string]$_.check_id })
+$annualHistorical = @{ AnyOf = $annualWarningIds; Severity = 'WARNING'; Subject = '<blank>' }
+$run5Rows = @(
+    (New-Row -Id 'CAL-010' -Group 'Calculation' -Severity 'ERROR' -Subject 'CL-001' -Message 'refused'),
+    $advisoryRow,
+    (New-Row -Id 'ANN-010' -Group 'Annual' -Severity 'WARNING' -Subject $null -Message 'historical profile'),
+    (New-Row -Id 'ANN-050' -Group 'Annual' -Severity 'WARNING' -Subject $null -Message 'historical distributions'),
+    (New-Row -Id 'SIM-020' -Group 'Simulation' -Severity 'INFO' -Subject $null -Message 'context'))
+Invoke-Case -Case 'G.invalid-after-annual' -Expected @($calcError, $advisory, $annualHistorical, $annualHistorical) `
+    -Surface (New-Surface -Overall 'ERROR' -Errors 1 -Warnings 3 -Rows $run5Rows)
+# H. ONE HISTORICAL ANNUAL WARNING OMITTED from the expectation is refused.
+Invoke-Case -Case 'H.one-annual-omitted' -Expected @($calcError, $advisory, $annualHistorical) `
+    -Surface (New-Surface -Overall 'ERROR' -Errors 1 -Warnings 3 -Rows $run5Rows)
 # MALFORMED DEFINITIONS are refused before any row is read.
 $plain = New-Surface -Overall 'WARNING' -Errors 0 -Warnings 1 -Rows @($advisoryRow)
 Invoke-Case -Case 'M1.both-selectors' -Surface $plain -Expected @(@{ Id = 'INP-010'; AnyOf = @('INP-010'); Severity = 'WARNING' })

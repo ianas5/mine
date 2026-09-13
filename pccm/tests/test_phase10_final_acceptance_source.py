@@ -66,7 +66,7 @@ REQUIRED_SCENARIOS = (
     "structural.apply-timeline", "calculate.current", "modelcheck.calculated",
     "modelcheck.worksheet-safety", "simulation.current", "sensitivity", "annual",
     "modelcheck.simulated", "state.stale", "state.invalid", "refused.outcome.calculate",
-    "modelcheck.invalid", "modelcheck.invalid.subject", "state.current-restored", "repair.noop", "repair.missing-row",
+    "modelcheck.invalid", "modelcheck.invalid.subject", "state.invalid.annual-historical", "state.current-restored", "repair.noop", "repair.missing-row",
     "repair.order", "repair.duplicate-refused", "repair.restored", "repair.fingerprint",
     "reset.precondition", "reset.declined", "reset.confirmed", "reset.preserved",
     "reset.states", "modelcheck.after-reset", "modelcheck.after-reset.adapter", "reset.idempotent", "refused.outcome.annual",
@@ -565,9 +565,13 @@ MODEL_CHECK_CORRECTIONS = (
      "    $refusalSubject = Get-FaRunText -Excel $excel -Procedure 'PCCM_ModelCheckRefusalSubject'\n"
      "    $null = Add-FaCheck 'modelcheck.invalid.subject' ($refusalSubject -ceq $victimId) `\n"
      "        ('the refusal subject is ' + $refusalSubject + '; the invalidated driver is ' + $victimId)\n"
+     "    # THE ANNUAL OUTPUTS PUBLISHED BEFORE THE INVALIDATION ARE NOW HISTORICAL.\n"
+     "    $null = Add-FaCheck 'state.invalid.annual-historical' `\n"
+     "        (($statesInvalid.Annual -ceq $annualHistorical) -and ($statesInvalid.Profile -ceq $profileHistorical)) `\n"
+     "        ('annual=' + $statesInvalid.Annual + ' profile=' + $statesInvalid.Profile)\n"
      "    $null = Assert-FaModelCheck -Workbook $wb -Projection $projection -Scenario 'modelcheck.invalid' `\n"
      "        -Expected @(@{ Id = [string]$calcErrorChecks[0].check_id; Severity = $severityError; Subject = $victimId },\n"
-     "                    $advisoryExpected)\n"),
+     "                    $advisoryExpected, $annualHistoricalExpected, $annualHistoricalExpected)\n"),
     ("    $summaryReset = Get-FaModelCheckSummary -Workbook $wb -Projection $projection\n"
      "    $modelCheckReset = Get-FaRunText -Excel $excel -Procedure 'PCCM_ModelCheckCalculationState'\n"
      "    $null = Add-FaCheck 'modelcheck.after-reset' ($modelCheckReset -ceq $statusNotCalculated) `\n"
@@ -608,31 +612,56 @@ def test_60e_a_valid_model_at_the_business_minimum_expects_the_advisory_warning_
     assert "$overallPass" not in code and "overall_states[0]" not in code.replace("$states[0]", "")
 
 
-def test_60f_the_invalid_checkpoint_expects_the_one_calculation_error_and_the_advisory_and_nothing_else() -> None:
-    """THE PHASE-9 CONTRACT, KEPT: the genuine driver refusal is the one declared
-    Calculation ERROR with the refused driver as its subject; the simulation's
-    invalidity under a non-CURRENT calculation is context, never a second
-    actionable row; the advisory is still shown at the business minimum."""
+def test_60f_the_invalid_checkpoint_expects_the_calculation_error_the_advisory_and_both_historical_annual_warnings() -> None:
+    """THE ACTUAL SEQUENCE, NOT AN ABSTRACT INVALID MODEL. Run 5 at 46100b0 showed
+    what the runner's own order produces: Calculate, Simulation, Sensitivity and
+    Annual all succeed, THEN a driver is invalidated, so the annual outputs
+    published for the earlier run are HISTORICAL and the Phase-9 contract raises
+    the historical-profile and historical-distribution Annual WARNINGs beside the
+    one Calculation ERROR and the advisory. The runner expected only the error and
+    the advisory; it now expects the exact four. The simulation's invalidity under
+    a non-CURRENT calculation is still context, never a second actionable row."""
     code = _code()
     assert "$calcErrorChecks = @($projection.evaluation.declared_checks | Where-Object {" in code
     assert "if ($calcErrorChecks.Count -ne 1) { throw" in code
+    assert "$groupAnnual = [string]$projection.vocabulary.group_order[4]" in code
+    assert "$annualWarningIds = @($projection.evaluation.declared_checks | Where-Object {" in code
+    assert "([string]$_.group -ceq $groupAnnual) -and ([string]$_.severity -ceq $severityWarning) } |" in code
+    assert "$annualHistoricalExpected = @{ AnyOf = $annualWarningIds; Severity = $severityWarning; Subject = '<blank>' }" in code
+    assert "$annualHistorical  = [string]$p7.handoff.distribution_states[2]" in code
+    assert "$profileHistorical = [string]$p7.handoff.profile_states[3]" in code
     invalid = code[code.index("$refusalSubject = Get-FaRunText -Excel $excel -Procedure 'PCCM_ModelCheckRefusalSubject'"):]
     invalid = invalid[: invalid.index("Set-TableCell -Workbook $wb")]
     assert "Add-FaCheck 'modelcheck.invalid.subject' ($refusalSubject -ceq $victimId)" in invalid
+    assert "(($statesInvalid.Annual -ceq $annualHistorical) -and ($statesInvalid.Profile -ceq $profileHistorical))" in invalid
     assert "-Expected @(@{ Id = [string]$calcErrorChecks[0].check_id; Severity = $severityError; Subject = $victimId }," in invalid
-    assert "$advisoryExpected)" in invalid
-    # FROM THE SPEC: exactly one Calculation ERROR, fired by INVALID with the
-    # refusal subject; the Simulation ERROR needs a CURRENT calculation, so it
-    # cannot fire beside it; the INVALID-under-non-CURRENT row is INFO.
-    checks = _spec_checks()
-    by_id = {c["check_id"]: c for c in checks}
-    calc_errors = [c for c in checks if c["group"] == "Calculation" and c["severity"] == "ERROR"]
+    assert "$advisoryExpected, $annualHistoricalExpected, $annualHistoricalExpected)" in invalid
+    # NO ANNUAL CHECK ID IS A LITERAL.
+    assert "ANN-" not in _runner()
+    # FROM THE PROJECTION AND THE SPEC: the projection's Annual WARNING population
+    # is three; the spec fires two of them at HISTORICAL profile and HISTORICAL
+    # distributions, both without a subject; the third needs a profile state of
+    # OTHER Px, which a HISTORICAL profile cannot be, and carries a subject.
+    import json
+    projection = _projection()
+    assert projection["vocabulary"]["group_order"][4] == "Annual"
+    annual_warnings = [c["check_id"] for c in projection["evaluation"]["declared_checks"]
+                       if c["group"] == "Annual" and c["severity"] == "WARNING"]
+    assert annual_warnings == ["ANN-010", "ANN-020", "ANN-050"]
+    checks = {c["check_id"]: c for c in _spec_checks()}
+    assert checks["ANN-010"]["condition"] == '{annual_profile_state}="HISTORICAL"' and not checks["ANN-010"].get("subject")
+    assert checks["ANN-050"]["condition"] == '{annual_distribution_state}="HISTORICAL"' and not checks["ANN-050"].get("subject")
+    assert checks["ANN-020"]["condition"] == '{annual_profile_state}="OTHER Px"' and checks["ANN-020"]["subject"] == "{annual_profile_px}"
+    p7 = json.loads((PCCM_ROOT / "build" / "phase7_acceptance_inspection.json").read_text(encoding="utf-8"))
+    assert p7["handoff"]["distribution_states"][2] == "HISTORICAL" and p7["handoff"]["profile_states"][3] == "HISTORICAL"
+    # The Calculation ERROR and the simulation context, as before.
+    calc_errors = [c for c in checks.values() if c["group"] == "Calculation" and c["severity"] == "ERROR"]
     assert [c["check_id"] for c in calc_errors] == ["CAL-010"]
     assert calc_errors[0]["condition"] == '{calculation_state}="INVALID"'
     assert calc_errors[0]["subject"] == "{calculation_refusal_subject}"
-    assert by_id["SIM-010"]["condition"] == 'AND({simulation_state}="INVALID",{calculation_state}="CURRENT")'
-    assert by_id["SIM-020"]["severity"] == "INFO"
-    assert by_id["SIM-020"]["condition"] == 'AND({simulation_state}="INVALID",{calculation_state}<>"CURRENT")'
+    assert checks["SIM-010"]["condition"] == 'AND({simulation_state}="INVALID",{calculation_state}="CURRENT")'
+    assert checks["SIM-020"]["severity"] == "INFO"
+    assert checks["SIM-020"]["condition"] == 'AND({simulation_state}="INVALID",{calculation_state}<>"CURRENT")'
 
 
 def test_60g_the_after_reset_checkpoint_expects_the_not_calculated_warning_and_the_advisory() -> None:
@@ -701,12 +730,24 @@ def test_60i_the_accepted_phase_9_formulas_produce_exactly_the_runner_expectatio
                        "calculation_attempt_result": "SUCCESS", "calculation_attempt_detail": "Calculation committed.",
                        "simulation_publication": "stamp", "published_run_id": "run", "published_iterations_run": minimum,
                        "simulation_status_last_evaluated": "CURRENT", "sensitivity_availability": "Available"}) == ("WARNING", [advisory])
-    assert actionable({"calculation_state": "INVALID", "simulation_state": "INVALID", "annual_distribution_state": "CURRENT",
-                       "annual_profile_state": "CURRENT", "annual_profile_px": "P80", "annual_year_count": 4,
-                       "calculation_refusal_detail": "maximum below minimum", "calculation_refusal_subject": "CL-001",
-                       "calculation_attempt_result": "REFUSED", "calculation_attempt_detail": "refused",
-                       "simulation_publication": "stamp", "published_run_id": "run", "published_iterations_run": minimum,
-                       "simulation_status_last_evaluated": "CURRENT", "sensitivity_availability": "Available"}) \
+    # THE ACTUAL SEQUENCE: annual outputs were published before the driver was
+    # invalidated, so annual and profile are HISTORICAL (run 5 observed exactly
+    # this), and the two historical Annual WARNINGs fire beside the error and the
+    # advisory - four actionable rows, ERROR 1/3.
+    invalid_after_annual = {"calculation_state": "INVALID", "simulation_state": "INVALID",
+                            "annual_distribution_state": "HISTORICAL", "annual_profile_state": "HISTORICAL",
+                            "annual_profile_px": "P50", "annual_year_count": 4,
+                            "calculation_refusal_detail": "maximum below minimum", "calculation_refusal_subject": "CL-001",
+                            "calculation_attempt_result": "REFUSED", "calculation_attempt_detail": "refused",
+                            "simulation_publication": "stamp", "published_run_id": "run", "published_iterations_run": minimum,
+                            "simulation_status_last_evaluated": "CURRENT", "sensitivity_availability": "Available"}
+    assert actionable(invalid_after_annual) == ("ERROR", sorted([("CAL-010", "ERROR", "CL-001"), advisory,
+                                                                  ("ANN-010", "WARNING", ""), ("ANN-050", "WARNING", "")]))
+    result = p9._evaluate(plan, dict({"requested_iterations": minimum, "structural_report": ""}, **invalid_after_annual))
+    assert (int(result["summary"]["error_count"]), int(result["summary"]["warning_count"])) == (1, 3)
+    # And an abstract INVALID model with CURRENT annual outputs is a different
+    # state the runner never reaches: it shows no Annual WARNING at all.
+    assert actionable(dict(invalid_after_annual, annual_distribution_state="CURRENT", annual_profile_state="CURRENT")) \
         == ("ERROR", sorted([("CAL-010", "ERROR", "CL-001"), advisory]))
     assert actionable({"calculation_state": "NOT CALCULATED", "simulation_state": "", "calculation_attempt_result": "NONE"}) \
         == ("WARNING", sorted([("CAL-020", "WARNING", ""), advisory]))
@@ -824,6 +865,37 @@ def test_60n_no_optional_expected_field_is_read_before_its_presence_is_establish
     assert "$advisoryExpected = @{ Id = [string]$projection.advisory.check_id; Severity = [string]$projection.advisory.severity" in code
     assert "$notCalculatedExpected = @{ AnyOf = $calcWarningIds; Severity = $severityWarning; Subject = '<blank>' }" in code
     assert "@{ Id = [string]$calcErrorChecks[0].check_id; Severity = $severityError; Subject = $victimId }" in code
+
+
+def test_60p_omitting_either_historical_annual_warning_from_the_invalid_expectation_is_refused() -> None:
+    """THE REGRESSION CONTROL: with annual and profile HISTORICAL the exact set
+    has two Annual WARNING entries, and the matcher's set equality refuses a
+    runner that expects one or none. Proved on the runner's own text and on the
+    executed matcher: the two-entry expectation matches run 5's rows; a
+    one-entry expectation leaves an unexpected row."""
+    code = _code()
+    invalid = code[code.index("-Scenario 'modelcheck.invalid' `"):]
+    invalid = invalid[: invalid.index("Set-TableCell -Workbook $wb")]
+    assert invalid.count("$annualHistoricalExpected") == 2
+    if not Path(PWSH).exists():
+        return
+    lines = _matcher_lines()
+    assert lines["G.invalid-after-annual"].startswith("MATCH|G.invalid-after-annual|ok=True|"), lines["G.invalid-after-annual"]
+    assert "overall=ERROR errors=1 warnings=3" in lines["G.invalid-after-annual"]
+    assert lines["H.one-annual-omitted"].startswith("MATCH|H.one-annual-omitted|ok=False|"), lines["H.one-annual-omitted"]
+    assert "warnings 3, expected 2" in lines["H.one-annual-omitted"] and "unexpected actionable row(s): ANN-0" in lines["H.one-annual-omitted"]
+
+
+def test_60q_the_record_states_run_5_as_a_runner_expectation_defect() -> None:
+    record = (PCCM_ROOT / "docs" / "phase10_windows_run_evidence.md").read_text(encoding="utf-8")
+    start = record.index("## Final acceptance run 5 — 46100b0 — FAILED AT modelcheck.invalid — RUNNER EXPECTATION DEFECT")
+    plain = " ".join(record[start:].replace("`", "").replace("**", "").split())
+    for fact in ("351 passed", "expected 46100b0 (clean)", "observed 46100b0 (clean)", "modelcheck.calculated", "modelcheck.simulated",
+                 "5 ranked of 5", "4 project years", "P50", "STALE", "calc INVALID", "sim INVALID", "annual HISTORICAL", "profile HISTORICAL",
+                 "REFUSED", "CL-001", "1 ERROR and 3 WARNINGS", "ANN-010", "ANN-050", "The runner expected only one warning",
+                 "runner expectation defect, NOT a production defect", "FINAL ACCEPTANCE IS NOT PASSED",
+                 "Workbook.Close True", "Application.Quit True", "natural PID exit True"):
+        assert fact in plain, fact
 
 
 def test_60o_the_record_states_run_4_as_a_runner_matcher_defect() -> None:

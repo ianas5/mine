@@ -4055,3 +4055,73 @@ suite decides from its tagged lines, and one mutation restores the direct
 optional access and requires the executed advisory case to die with exactly
 run 4's `PropertyNotFoundException`.
 
+## Final acceptance run 5 — 46100b0 — FAILED AT modelcheck.invalid — RUNNER EXPECTATION DEFECT
+
+**Executed on Windows at `46100b0`.** Stage A 351 passed, 0 failed. **Source
+Revision expected `46100b0 (clean)`, observed `46100b0 (clean)`.** Every check
+through the refusal subject passed: the Stage-B bootstrap; compile; sheets and
+CodeNames; the manifest-set modules; every release metadata row; protection;
+the fixture; the structural workflow; Calculate; **`modelcheck.calculated`
+passed its exact expected advisory set**; worksheet safety; Simulation, 1,000
+iterations published CURRENT; Sensitivity, 5 ranked of 5 over 1,000 iterations;
+Annual, 4 project years over 1,000 iterations, selected-Px profile P50, annual
+CURRENT, profile CURRENT; **`modelcheck.simulated` passed its exact expected
+advisory set**; protection after the commands; the state drift to STALE and
+back behaved correctly; invalidating `CL-001` produced calc INVALID, sim
+INVALID, annual HISTORICAL, profile HISTORICAL; the refusal outcome was REFUSED
+while the derived state remained INVALID; the refusal subject was `CL-001`.
+
+Model Check then showed **1 ERROR and 3 WARNINGS**:
+
+```
+CAL-010 ERROR [CL-001]
+INP-010 WARNING [Monte Carlo Iterations]
+ANN-010 WARNING [<blank>]
+ANN-050 WARNING [<blank>]
+```
+
+The runner expected only one warning — the advisory — and failed with
+`warnings 3, expected 1`, naming `ANN-010` and `ANN-050` as unexpected.
+
+**Why the two warnings are correct.** The runner's own sequence publishes the
+annual outputs BEFORE it invalidates the driver, so the stored annual profile
+and the stored annual distributions belong to an earlier run: annual HISTORICAL,
+profile HISTORICAL. The Phase-9 manifest declares `ANN-010` (Annual, WARNING, no
+subject, fires when the annual profile state is HISTORICAL) and `ANN-050`
+(Annual, WARNING, no subject, fires when the annual distribution state is
+HISTORICAL). Both MUST fire in that state. The previous expectation had been
+derived from an abstract INVALID model whose annual outputs were still CURRENT,
+a state this runner never reaches. **This is a final-runner expectation defect,
+NOT a production defect.** Production is not changed and the warnings are not
+suppressed.
+
+**Shutdown was clean:** Workbook.Close True; Application.Quit True; natural PID
+exit True; no emergency cleanup; every transient COM object released.
+
+**FINAL ACCEPTANCE IS NOT PASSED.** Nothing after `modelcheck.invalid` was
+executed, and no later scenario is claimed.
+
+### Corrected in this round (source only — no Windows)
+
+The INVALID checkpoint now expects exactly four actionable rows: the one
+Calculation ERROR for the refused driver, the advisory, and two Annual WARNINGs
+with no subject drawn from the projection's Annual WARNING population —
+overall ERROR, 1 error, 3 warnings — and first asserts that annual and profile
+read HISTORICAL through the Phase-7 projection's state words. No Annual check
+id is a literal in the runner: the population comes from
+`evaluation.declared_checks` by the projected Annual group and WARNING severity,
+and the spec's conditions prove that at HISTORICAL profile and distributions
+exactly `ANN-010` and `ANN-050` fire, both without a subject, while the third
+Annual WARNING requires a profile state of OTHER Px and carries a subject. The
+Phase-9 evaluator over the sheet's own formulas proves the four-row set and the
+counts for this exact sequence. The executed matcher harness carries run 5's
+rows and proves that omitting one Annual WARNING is refused; two mutations
+omit one and both and are refused.
+
+`modelcheck.calculated` and `modelcheck.simulated` are Windows-proven and
+unchanged. `modelcheck.after-reset` was re-derived for this sequence: the reset
+follows fresh Calculate, Simulation, Sensitivity and Annual runs, so it clears
+CURRENT publications and leaves calc NOT CALCULATED, sim blank, annual and
+profile NOT PRODUCED; the evaluator gives the NOT CALCULATED warning and the
+advisory, overall WARNING, 0 errors, 2 warnings, exactly as already expected.
+

@@ -1019,6 +1019,22 @@ $calcWarningIds = @($projection.evaluation.declared_checks | Where-Object {
     ForEach-Object { [string]$_.check_id })
 if ($calcWarningIds.Count -lt 1) { throw 'the projection declares no Calculation WARNING check' }
 $notCalculatedExpected = @{ AnyOf = $calcWarningIds; Severity = $severityWarning; Subject = '<blank>' }
+# THE ANNUAL OUTPUTS BECOME HISTORICAL when the model they were produced for is
+# invalidated after they were published - which is this runner's sequence - and
+# the Phase-9 contract raises one Annual WARNING for the historical profile and
+# one for the historical distributions, both without a subject. The Annual
+# WARNING population comes from the projection; the two shown at the INVALID
+# checkpoint are the two with no subject, and the third declared Annual WARNING
+# names a profile confidence level as its subject and cannot fire beside a
+# HISTORICAL profile.
+$groupAnnual = [string]$projection.vocabulary.group_order[4]
+$annualWarningIds = @($projection.evaluation.declared_checks | Where-Object {
+    ([string]$_.group -ceq $groupAnnual) -and ([string]$_.severity -ceq $severityWarning) } |
+    ForEach-Object { [string]$_.check_id })
+if ($annualWarningIds.Count -lt 2) { throw ('the projection declares ' + [string]$annualWarningIds.Count + ' Annual WARNING checks; at least two are expected') }
+$annualHistoricalExpected = @{ AnyOf = $annualWarningIds; Severity = $severityWarning; Subject = '<blank>' }
+$annualHistorical  = [string]$p7.handoff.distribution_states[2]
+$profileHistorical = [string]$p7.handoff.profile_states[3]
 
 # THE CALCULATION STATE BLOCK, from the Phase-5 inspection.
 $calcSheet = [string]$inspection.calc.sheet
@@ -1346,9 +1362,13 @@ try {
     $refusalSubject = Get-FaRunText -Excel $excel -Procedure 'PCCM_ModelCheckRefusalSubject'
     $null = Add-FaCheck 'modelcheck.invalid.subject' ($refusalSubject -ceq $victimId) `
         ('the refusal subject is ' + $refusalSubject + '; the invalidated driver is ' + $victimId)
+    # THE ANNUAL OUTPUTS PUBLISHED BEFORE THE INVALIDATION ARE NOW HISTORICAL.
+    $null = Add-FaCheck 'state.invalid.annual-historical' `
+        (($statesInvalid.Annual -ceq $annualHistorical) -and ($statesInvalid.Profile -ceq $profileHistorical)) `
+        ('annual=' + $statesInvalid.Annual + ' profile=' + $statesInvalid.Profile)
     $null = Assert-FaModelCheck -Workbook $wb -Projection $projection -Scenario 'modelcheck.invalid' `
         -Expected @(@{ Id = [string]$calcErrorChecks[0].check_id; Severity = $severityError; Subject = $victimId },
-                    $advisoryExpected)
+                    $advisoryExpected, $annualHistoricalExpected, $annualHistoricalExpected)
     Set-TableCell -Workbook $wb -SheetName ([string]$costRegister.sheet) -TableName ([string]$costRegister.table_name) `
         -RowIndex $victimRow -ColumnIndex $maxOrdinal -Value $originalMax
     $recalcResult = [string](Invoke-Phase5ProductionOperation -Excel $excel -Operation 'PCCM_Calculate' -Stage 'calculate after restore')
