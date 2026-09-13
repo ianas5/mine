@@ -1018,7 +1018,15 @@ $calcWarningIds = @($projection.evaluation.declared_checks | Where-Object {
     ([string]$_.group -ceq $groupCalculation) -and ([string]$_.severity -ceq $severityWarning) } |
     ForEach-Object { [string]$_.check_id })
 if ($calcWarningIds.Count -lt 1) { throw 'the projection declares no Calculation WARNING check' }
-$notCalculatedExpected = @{ AnyOf = $calcWarningIds; Severity = $severityWarning; Subject = '<blank>' }
+# A MODEL-WIDE BLANK SUBJECT IS THE EMPTY STRING, NOT A BLANK CELL. The Phase-9
+# builder writes a check with no subject as `=""` - an empty STRING, which INDEX
+# returns as one - precisely so that Excel does not read an empty cell back as a
+# hard 0. The register therefore answers '' for these rows, and run 6 showed it:
+# both historical Annual rows carried an empty subject. The expectation is the worksheet's
+# representation, never the '<blank>' token Format-FaCell reserves for a $null
+# cell read. The Subject constraint stays: it is what excludes the Annual
+# WARNING whose subject is a profile confidence level.
+$notCalculatedExpected = @{ AnyOf = $calcWarningIds; Severity = $severityWarning; Subject = '' }
 # THE ANNUAL OUTPUTS BECOME HISTORICAL when the model they were produced for is
 # invalidated after they were published - which is this runner's sequence - and
 # the Phase-9 contract raises one Annual WARNING for the historical profile and
@@ -1032,7 +1040,7 @@ $annualWarningIds = @($projection.evaluation.declared_checks | Where-Object {
     ([string]$_.group -ceq $groupAnnual) -and ([string]$_.severity -ceq $severityWarning) } |
     ForEach-Object { [string]$_.check_id })
 if ($annualWarningIds.Count -lt 2) { throw ('the projection declares ' + [string]$annualWarningIds.Count + ' Annual WARNING checks; at least two are expected') }
-$annualHistoricalExpected = @{ AnyOf = $annualWarningIds; Severity = $severityWarning; Subject = '<blank>' }
+$annualHistoricalExpected = @{ AnyOf = $annualWarningIds; Severity = $severityWarning; Subject = '' }
 $annualHistorical  = [string]$p7.handoff.distribution_states[2]
 $profileHistorical = [string]$p7.handoff.profile_states[3]
 

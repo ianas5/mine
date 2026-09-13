@@ -4125,3 +4125,69 @@ CURRENT publications and leaves calc NOT CALCULATED, sim blank, annual and
 profile NOT PRODUCED; the evaluator gives the NOT CALCULATED warning and the
 advisory, overall WARNING, 0 errors, 2 warnings, exactly as already expected.
 
+## Final acceptance run 6 — 2be9761 — FAILED AT modelcheck.invalid — RUNNER REPRESENTATION DEFECT
+
+**Two executions at the same commit.** The first completed the Stage-B bootstrap
+and then terminated very early in the acceptance session with
+`You cannot call a method on a null-valued expression`; no scenario beyond the
+bootstrap was recorded. With NO code change the same commit was rerun and the
+failure did not recur, so it is recorded as a non-repeatable startup
+observation, not as a code defect; startup readiness is not changed on the
+strength of one non-repeatable event, and it will be classified only if it
+recurs.
+
+**The second execution at `2be9761`.** Stage A 351 passed, 0 failed. **Source
+Revision expected `2be9761 (clean)`, observed `2be9761 (clean)`.** Every check
+through `state.invalid.annual-historical` passed: bootstrap; the persisted
+initial state; compile; sheets and CodeNames; the module set; every metadata
+row; the initial and live states; the fixture; the structural commands;
+Calculate; **`modelcheck.calculated` passed**; worksheet safety; Simulation,
+Sensitivity and Annual all succeeded; **`modelcheck.simulated` passed**;
+protection; the STALE transition and restore; the INVALID transition; the
+REFUSED attempt semantics; the refusal subject; and the invalid state read calc
+INVALID, sim INVALID, annual HISTORICAL, profile HISTORICAL.
+
+Model Check then showed exactly:
+
+```
+CAL-010(ERROR)[CL-001]
+INP-010(WARNING)[Monte Carlo Iterations]
+ANN-010(WARNING)[]
+ANN-050(WARNING)[]
+```
+
+and the runner failed with both historical Annual expectations "not shown as
+expected" and the same two rows "unexpected".
+
+**Why.** The runner expected the two Annual subjects as the literal `'<blank>'`
+token, which `Format-FaCell` reserves for a `$null` cell read. The Phase-9
+builder writes a model-wide subject as `=""` — an empty STRING, which INDEX
+returns as one, precisely so an empty cell is never read back as a hard 0 —
+and Excel returned empty strings, shown above as `[]`. The matcher compared `''`
+with `'<blank>'`, rejected both correct rows, and then reported them again as
+unexpected. The ids, severities and Model Check behaviour are correct. **This is
+a runner representation defect, NOT a production defect** and not a Model Check
+defect.
+
+**Shutdown was clean:** Workbook.Close True; Application.Quit True; natural PID
+exit True; no emergency cleanup; every transient COM object released.
+
+**FINAL ACCEPTANCE IS NOT PASSED.**
+
+### Corrected in this round (source only — no Windows)
+
+Every Model Check expectation whose contract means "no subject" — the NOT
+CALCULATED warning at `modelcheck.after-reset` and the two historical Annual
+warnings at `modelcheck.invalid` — now expects the worksheet's representation,
+the empty string, and keeps the Subject constraint, which is what excludes the
+Annual WARNING whose subject is a profile confidence level. `Format-FaCell` is
+unchanged, so `'<blank>'` still names a `$null` read for the persisted-cell
+evidence. The matcher is unchanged: a matched row leaves the pool, so the two
+identical historical entries consume two distinct rows. The executed matcher
+harness now carries `''` for model-wide rows, never `$null`, and proves the
+`'<blank>'` token fails against the real rows exactly as run 6 did, that a
+Px-subject Annual WARNING cannot satisfy the historical expectation, and that
+two identical entries consume two distinct rows; four mutations — the token
+restored on either expectation, the Subject constraint dropped, and the matched
+row left in the pool — are refused. The semantic expected sets are unchanged.
+

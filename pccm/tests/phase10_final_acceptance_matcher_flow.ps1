@@ -74,7 +74,7 @@ function Invoke-Case {
 $advisoryMessage = [string]$inspection.advisory.message
 $advisory = @{ Id = [string]$inspection.advisory.check_id; Severity = [string]$inspection.advisory.severity; Message = $advisoryMessage }
 $advisoryRow = New-Row -Id ([string]$inspection.advisory.check_id) -Group 'Inputs' -Severity 'WARNING' -Subject 'Monte Carlo Iterations' -Message $advisoryMessage
-$infoRow = New-Row -Id 'CAL-040' -Group 'Calculation' -Severity 'INFO' -Subject $null -Message 'current'
+$infoRow = New-Row -Id 'CAL-040' -Group 'Calculation' -Severity 'INFO' -Subject '' -Message 'current'
 
 # A. THE ADVISORY: Id + Severity + Message, NO Subject - the run-4 shape.
 Invoke-Case -Case 'A.advisory' -Expected @($advisory) `
@@ -85,21 +85,24 @@ Invoke-Case -Case 'B.invalid' -Expected @($calcError, $advisory) `
     -Surface (New-Surface -Overall 'ERROR' -Errors 1 -Warnings 1 -Rows @(
         (New-Row -Id 'CAL-010' -Group 'Calculation' -Severity 'ERROR' -Subject 'CL-001' -Message 'refused'),
         $advisoryRow,
-        (New-Row -Id 'SIM-020' -Group 'Simulation' -Severity 'INFO' -Subject $null -Message 'context')))
+        (New-Row -Id 'SIM-020' -Group 'Simulation' -Severity 'INFO' -Subject '' -Message 'context')))
 # C. NOT CALCULATED: AnyOf + Severity + Subject, NO Id, NO Message, beside the advisory.
-$notCalculated = @{ AnyOf = @('CAL-020', 'CAL-030'); Severity = 'WARNING'; Subject = '<blank>' }
+# THE MODEL-WIDE BLANK SUBJECT IS EXCEL'S EMPTY STRING - the builder writes `=""` -
+# and the rows above carry '' for it, never $null: a $null would format as the
+# '<blank>' token and would not model the real surface (run 6 at 2be9761).
+$notCalculated = @{ AnyOf = @('CAL-020', 'CAL-030'); Severity = 'WARNING'; Subject = '' }
 Invoke-Case -Case 'C.after-reset' -Expected @($advisory, $notCalculated) `
     -Surface (New-Surface -Overall 'WARNING' -Errors 0 -Warnings 2 -Rows @(
         $advisoryRow,
-        (New-Row -Id 'CAL-020' -Group 'Calculation' -Severity 'WARNING' -Subject $null -Message 'not calculated')))
+        (New-Row -Id 'CAL-020' -Group 'Calculation' -Severity 'WARNING' -Subject '' -Message 'not calculated')))
 # D. AN UNRELATED ACTIONABLE ROW must not satisfy the checkpoint.
 Invoke-Case -Case 'D.unrelated' -Expected @($advisory) `
     -Surface (New-Surface -Overall 'WARNING' -Errors 0 -Warnings 2 -Rows @(
-        $advisoryRow, (New-Row -Id 'ANN-050' -Group 'Annual' -Severity 'WARNING' -Subject $null -Message 'historical')))
+        $advisoryRow, (New-Row -Id 'ANN-050' -Group 'Annual' -Severity 'WARNING' -Subject '' -Message 'historical')))
 # E. THE ADVISORY MISSING behind a matching overall word.
 Invoke-Case -Case 'E.missing' -Expected @($advisory) `
     -Surface (New-Surface -Overall 'WARNING' -Errors 0 -Warnings 1 -Rows @(
-        (New-Row -Id 'ANN-050' -Group 'Annual' -Severity 'WARNING' -Subject $null -Message 'historical')))
+        (New-Row -Id 'ANN-050' -Group 'Annual' -Severity 'WARNING' -Subject '' -Message 'historical')))
 # F. A SUBJECT THAT DIFFERS is not a match.
 Invoke-Case -Case 'F.wrong-subject' -Expected @($calcError, $advisory) `
     -Surface (New-Surface -Overall 'ERROR' -Errors 1 -Warnings 1 -Rows @(
@@ -110,18 +113,36 @@ Invoke-Case -Case 'F.wrong-subject' -Expected @($calcError, $advisory) `
 $annualWarningIds = @($inspection.evaluation.declared_checks | Where-Object {
     ([string]$_.group -ceq [string]$inspection.vocabulary.group_order[4]) -and ([string]$_.severity -ceq 'WARNING') } |
     ForEach-Object { [string]$_.check_id })
-$annualHistorical = @{ AnyOf = $annualWarningIds; Severity = 'WARNING'; Subject = '<blank>' }
+$annualHistorical = @{ AnyOf = $annualWarningIds; Severity = 'WARNING'; Subject = '' }
 $run5Rows = @(
     (New-Row -Id 'CAL-010' -Group 'Calculation' -Severity 'ERROR' -Subject 'CL-001' -Message 'refused'),
     $advisoryRow,
-    (New-Row -Id 'ANN-010' -Group 'Annual' -Severity 'WARNING' -Subject $null -Message 'historical profile'),
-    (New-Row -Id 'ANN-050' -Group 'Annual' -Severity 'WARNING' -Subject $null -Message 'historical distributions'),
-    (New-Row -Id 'SIM-020' -Group 'Simulation' -Severity 'INFO' -Subject $null -Message 'context'))
+    (New-Row -Id 'ANN-010' -Group 'Annual' -Severity 'WARNING' -Subject '' -Message 'historical profile'),
+    (New-Row -Id 'ANN-050' -Group 'Annual' -Severity 'WARNING' -Subject '' -Message 'historical distributions'),
+    (New-Row -Id 'SIM-020' -Group 'Simulation' -Severity 'INFO' -Subject '' -Message 'context'))
 Invoke-Case -Case 'G.invalid-after-annual' -Expected @($calcError, $advisory, $annualHistorical, $annualHistorical) `
     -Surface (New-Surface -Overall 'ERROR' -Errors 1 -Warnings 3 -Rows $run5Rows)
 # H. ONE HISTORICAL ANNUAL WARNING OMITTED from the expectation is refused.
 Invoke-Case -Case 'H.one-annual-omitted' -Expected @($calcError, $advisory, $annualHistorical) `
     -Surface (New-Surface -Overall 'ERROR' -Errors 1 -Warnings 3 -Rows $run5Rows)
+# I. THE RUN-6 DEFECT: the '<blank>' token expected against real empty-string
+# subjects must FAIL - both entries unmatched, both rows then unexpected.
+$blankToken = @{ AnyOf = $annualWarningIds; Severity = 'WARNING'; Subject = '<blank>' }
+Invoke-Case -Case 'I.blank-token' -Expected @($calcError, $advisory, $blankToken, $blankToken) `
+    -Surface (New-Surface -Overall 'ERROR' -Errors 1 -Warnings 3 -Rows $run5Rows)
+# J. THE ANNUAL WARNING WITH A CONFIDENCE-LEVEL SUBJECT cannot satisfy a
+# historical expectation: one historical row present, the OTHER Px row beside it.
+Invoke-Case -Case 'J.px-subject' -Expected @($calcError, $advisory, $annualHistorical, $annualHistorical) `
+    -Surface (New-Surface -Overall 'ERROR' -Errors 1 -Warnings 3 -Rows @(
+        (New-Row -Id 'CAL-010' -Group 'Calculation' -Severity 'ERROR' -Subject 'CL-001' -Message 'refused'),
+        $advisoryRow,
+        (New-Row -Id 'ANN-010' -Group 'Annual' -Severity 'WARNING' -Subject '' -Message 'historical profile'),
+        (New-Row -Id 'ANN-020' -Group 'Annual' -Severity 'WARNING' -Subject 'P50' -Message 'other px')))
+# K. TWO IDENTICAL AnyOf ENTRIES CONSUME TWO DISTINCT ROWS, and nothing else.
+Invoke-Case -Case 'K.distinct-rows' -Expected @($annualHistorical, $annualHistorical) `
+    -Surface (New-Surface -Overall 'WARNING' -Errors 0 -Warnings 2 -Rows @(
+        (New-Row -Id 'ANN-010' -Group 'Annual' -Severity 'WARNING' -Subject '' -Message 'historical profile'),
+        (New-Row -Id 'ANN-050' -Group 'Annual' -Severity 'WARNING' -Subject '' -Message 'historical distributions')))
 # MALFORMED DEFINITIONS are refused before any row is read.
 $plain = New-Surface -Overall 'WARNING' -Errors 0 -Warnings 1 -Rows @($advisoryRow)
 Invoke-Case -Case 'M1.both-selectors' -Surface $plain -Expected @(@{ Id = 'INP-010'; AnyOf = @('INP-010'); Severity = 'WARNING' })

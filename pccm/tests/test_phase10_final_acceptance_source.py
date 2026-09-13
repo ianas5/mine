@@ -627,7 +627,7 @@ def test_60f_the_invalid_checkpoint_expects_the_calculation_error_the_advisory_a
     assert "$groupAnnual = [string]$projection.vocabulary.group_order[4]" in code
     assert "$annualWarningIds = @($projection.evaluation.declared_checks | Where-Object {" in code
     assert "([string]$_.group -ceq $groupAnnual) -and ([string]$_.severity -ceq $severityWarning) } |" in code
-    assert "$annualHistoricalExpected = @{ AnyOf = $annualWarningIds; Severity = $severityWarning; Subject = '<blank>' }" in code
+    assert "$annualHistoricalExpected = @{ AnyOf = $annualWarningIds; Severity = $severityWarning; Subject = '' }" in code
     assert "$annualHistorical  = [string]$p7.handoff.distribution_states[2]" in code
     assert "$profileHistorical = [string]$p7.handoff.profile_states[3]" in code
     invalid = code[code.index("$refusalSubject = Get-FaRunText -Excel $excel -Procedure 'PCCM_ModelCheckRefusalSubject'"):]
@@ -672,7 +672,7 @@ def test_60g_the_after_reset_checkpoint_expects_the_not_calculated_warning_and_t
     the advisory still fires because the request is still the business minimum."""
     code = _code()
     assert "$calcWarningIds = @($projection.evaluation.declared_checks | Where-Object {" in code
-    assert "$notCalculatedExpected = @{ AnyOf = $calcWarningIds; Severity = $severityWarning; Subject = '<blank>' }" in code
+    assert "$notCalculatedExpected = @{ AnyOf = $calcWarningIds; Severity = $severityWarning; Subject = '' }" in code
     after = code[code.index("Add-FaCheck 'modelcheck.after-reset.adapter'"):]
     after = after[: after.index("Assert-FaProtectionApplied")]
     assert "($modelCheckReset -ceq $statusNotCalculated)" in after
@@ -695,6 +695,9 @@ def test_60h_the_model_check_assertion_derives_everything_from_the_expected_set_
     assert "$actionable = @($Projection.vocabulary.actionable_severities | ForEach-Object { [string]$_ })" in fn
     assert "if ($expectedWarnings -gt 0) { $expectedOverall = $states[1] }" in fn
     assert "if ($expectedErrors -gt 0) { $expectedOverall = $states[2] }" in fn
+    # A MATCHED ROW LEAVES THE POOL, so two identical AnyOf entries consume two
+    # DISTINCT rows and the same row can never satisfy both.
+    assert "$unmatched = @($unmatched | Where-Object { -not [object]::ReferenceEquals($_, $found) })" in fn
     for required in ("if ($overall -cne $expectedOverall)", "if ($errors -ne $expectedErrors)", "if ($warnings -ne $expectedWarnings)",
                      "if ($unmatched.Count -gt 0) { $problems += ('unexpected actionable row(s): '",
                      "is not shown as expected", "($entry.HasMessage -and ((Format-FaCell $row.message) -cne $entry.Message))",
@@ -820,7 +823,7 @@ def test_60m_the_matcher_executes_every_real_expectation_shape_under_strict_mode
         assert lines[case].startswith(f"MATCH|{case}|ok=True|"), lines[case]
     assert "actionable=INP-010(WARNING)[Monte Carlo Iterations]" in lines["A.advisory"]
     assert "overall=ERROR errors=1 warnings=1 actionable=CAL-010(ERROR)[CL-001], INP-010(WARNING)" in lines["B.invalid"]
-    assert "overall=WARNING errors=0 warnings=2" in lines["C.after-reset"] and "CAL-020(WARNING)[<blank>]" in lines["C.after-reset"]
+    assert "overall=WARNING errors=0 warnings=2" in lines["C.after-reset"] and "CAL-020(WARNING)[]" in lines["C.after-reset"]
     for case, why in (("D.unrelated", "unexpected actionable row(s): ANN-050(WARNING)"),
                       ("E.missing", "expected INP-010(WARNING) is not shown as expected"),
                       ("F.wrong-subject", "expected CAL-010(ERROR) is not shown as expected")):
@@ -863,7 +866,7 @@ def test_60n_no_optional_expected_field_is_read_before_its_presence_is_establish
         assert guarded in matcher, guarded
     # THE THREE REAL SHAPES ARE STILL THE SHAPES THE RUNNER BUILDS.
     assert "$advisoryExpected = @{ Id = [string]$projection.advisory.check_id; Severity = [string]$projection.advisory.severity" in code
-    assert "$notCalculatedExpected = @{ AnyOf = $calcWarningIds; Severity = $severityWarning; Subject = '<blank>' }" in code
+    assert "$notCalculatedExpected = @{ AnyOf = $calcWarningIds; Severity = $severityWarning; Subject = '' }" in code
     assert "@{ Id = [string]$calcErrorChecks[0].check_id; Severity = $severityError; Subject = $victimId }" in code
 
 
@@ -895,6 +898,68 @@ def test_60q_the_record_states_run_5_as_a_runner_expectation_defect() -> None:
                  "REFUSED", "CL-001", "1 ERROR and 3 WARNINGS", "ANN-010", "ANN-050", "The runner expected only one warning",
                  "runner expectation defect, NOT a production defect", "FINAL ACCEPTANCE IS NOT PASSED",
                  "Workbook.Close True", "Application.Quit True", "natural PID exit True"):
+        assert fact in plain, fact
+
+
+def test_60r_every_model_wide_blank_subject_expectation_is_the_worksheets_empty_string() -> None:
+    """RUN 6 AT 2be9761 FAILED HERE. The runner expected the two historical
+    Annual subjects as the '<blank>' token, which Format-FaCell reserves for a
+    $null cell read; the Phase-9 builder writes a model-wide subject as `=""`,
+    an empty STRING, so Excel answered '' and both correct rows were rejected and
+    then reported as unexpected. Every expectation whose contract means "no
+    subject" now carries the worksheet's representation, and the constraint
+    stays so the confidence-level Annual WARNING cannot pass as historical."""
+    code = _code()
+    builder = (PCCM_ROOT / "builder" / "pccm_builder" / "phase9_model_check.py").read_text(encoding="utf-8")
+    assert "return '=\"\"'" in builder and "`=\"\"` is an empty STRING" in builder
+    blank_subject = re.findall(r"^\$(\w+) = @\{ AnyOf = \$\w+; Severity = \$severityWarning; Subject = '' \}$", code, re.M)
+    assert sorted(blank_subject) == ["annualHistoricalExpected", "notCalculatedExpected"], blank_subject
+    assert "Subject = '<blank>'" not in code
+    # Every expected entry the runner builds, and its subject stance.
+    entries = re.findall(r"@\{ (?:Id|AnyOf) = [^}]*\}", code)
+    assert len(entries) == 4, entries
+    assert sum(1 for e in entries if "Subject = ''" in e) == 2
+    assert sum(1 for e in entries if "Subject = $victimId" in e) == 1
+    assert sum(1 for e in entries if "Subject" not in e) == 1  # the advisory, matched on its message
+    # Format-FaCell is unchanged: '<blank>' still names a $null read, for the
+    # persisted-cell evidence that relies on the distinction.
+    cell = _function("Format-FaCell", code)
+    assert "if ($null -eq $Value) { return '<blank>' }" in cell and "if ($Value -is [string]) { return $Value }" in cell
+    assert "($persistedFingerprint -ceq '<blank>')" in code
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_60s_the_executed_matcher_models_excels_empty_string_subjects() -> None:
+    """THE HARNESS CARRIES '' FOR MODEL-WIDE ROWS, NEVER $null, and proves: the
+    '<blank>' token fails against real rows exactly as run 6 did; a Px-subject
+    Annual WARNING cannot satisfy the historical expectation; two identical
+    AnyOf entries consume two distinct rows."""
+    harness = (PCCM_ROOT / "tests" / "phase10_final_acceptance_matcher_flow.ps1").read_text(encoding="utf-8")
+    assert "-Subject $null" not in harness
+    assert "Subject = '<blank>' }" in harness  # only the deliberate run-6 case I
+    assert harness.count("Subject = '<blank>'") == 1
+    lines = _matcher_lines()
+    blank = lines["I.blank-token"]
+    assert blank.startswith("MATCH|I.blank-token|ok=False|"), blank
+    assert blank.count("is not shown as expected") == 2 and "unexpected actionable row(s): ANN-010(WARNING)[], ANN-050(WARNING)[]" in blank
+    px = lines["J.px-subject"]
+    assert px.startswith("MATCH|J.px-subject|ok=False|") and "unexpected actionable row(s): ANN-020(WARNING)[P50]" in px, px
+    assert px.count("is not shown as expected") == 1
+    distinct = lines["K.distinct-rows"]
+    assert distinct.startswith("MATCH|K.distinct-rows|ok=True|") and "ANN-010(WARNING)[], ANN-050(WARNING)[]" in distinct, distinct
+    assert lines["G.invalid-after-annual"].startswith("MATCH|G.invalid-after-annual|ok=True|")
+
+
+def test_60t_the_record_states_run_6_as_a_runner_representation_defect() -> None:
+    record = (PCCM_ROOT / "docs" / "phase10_windows_run_evidence.md").read_text(encoding="utf-8")
+    start = record.index("## Final acceptance run 6 — 2be9761 — FAILED AT modelcheck.invalid — RUNNER REPRESENTATION DEFECT")
+    plain = " ".join(record[start:].replace("`", "").replace("**", "").split())
+    for fact in ("351 passed", "expected 2be9761 (clean)", "observed 2be9761 (clean)", "state.invalid.annual-historical",
+                 "modelcheck.calculated", "modelcheck.simulated", "calc INVALID", "sim INVALID", "annual HISTORICAL", "profile HISTORICAL",
+                 "CAL-010(ERROR)[CL-001]", "INP-010(WARNING)[Monte Carlo Iterations]", "ANN-010(WARNING)[]", "ANN-050(WARNING)[]",
+                 "'<blank>'", "empty string", "runner representation defect, NOT a production defect",
+                 "FINAL ACCEPTANCE IS NOT PASSED", "Workbook.Close True", "Application.Quit True", "natural PID exit True",
+                 "You cannot call a method on a null-valued expression", "non-repeatable"):
         assert fact in plain, fact
 
 

@@ -223,6 +223,44 @@ def test_22_omitting_both_historical_annual_warnings_is_refused() -> None:
             "                    $advisoryExpected)\n")
 
 
+def test_23_restoring_the_blank_token_for_the_historical_annual_subject_is_refused() -> None:
+    """THE RUN-6 DEFECT, PUT BACK."""
+    _mutate("test_60r",
+            "$annualHistoricalExpected = @{ AnyOf = $annualWarningIds; Severity = $severityWarning; Subject = '' }",
+            "$annualHistoricalExpected = @{ AnyOf = $annualWarningIds; Severity = $severityWarning; Subject = '<blank>' }")
+
+
+def test_24_restoring_the_blank_token_for_the_not_calculated_subject_is_refused() -> None:
+    _mutate("test_60r",
+            "$notCalculatedExpected = @{ AnyOf = $calcWarningIds; Severity = $severityWarning; Subject = '' }",
+            "$notCalculatedExpected = @{ AnyOf = $calcWarningIds; Severity = $severityWarning; Subject = '<blank>' }")
+
+
+def test_25_dropping_the_subject_constraint_from_the_historical_annual_expectation_is_refused() -> None:
+    """WITHOUT IT THE CONFIDENCE-LEVEL ANNUAL WARNING COULD PASS AS HISTORICAL."""
+    _mutate("test_60r",
+            "$annualHistoricalExpected = @{ AnyOf = $annualWarningIds; Severity = $severityWarning; Subject = '' }",
+            "$annualHistoricalExpected = @{ AnyOf = $annualWarningIds; Severity = $severityWarning }")
+
+
+def test_26_letting_one_row_satisfy_both_historical_expectations_is_refused() -> None:
+    """THE MATCHED ROW MUST LEAVE THE POOL - proved on the runner's text and by
+    executing the damaged matcher: with the removal gone, the second historical
+    entry re-matches the first row and both rows are then reported unexpected."""
+    import pytest as _pytest
+    removal = "            $unmatched = @($unmatched | Where-Object { -not [object]::ReferenceEquals($_, $found) })\n"
+    original = conformance._runner()
+    assert original.count(removal) == 1
+    if Path(conformance.PWSH).exists():
+        import tempfile
+        scratch = Path(tempfile.mkdtemp(prefix="pccm-fa-distinct-")) / "phase10_final_acceptance.ps1"
+        scratch.write_text(original.replace(removal, "", 1), encoding="utf-8")
+        lines = conformance._matcher_lines(scratch)
+        assert lines["K.distinct-rows"].startswith("MATCH|K.distinct-rows|ok=False|"), lines["K.distinct-rows"]
+        assert lines["G.invalid-after-annual"].startswith("MATCH|G.invalid-after-annual|ok=False|"), lines["G.invalid-after-annual"]
+    _mutate("test_60h", removal, "")
+
+
 if __name__ == "__main__":
     failures = 0
     for name in sorted(n for n in dir() if n.startswith("test_")):
