@@ -268,6 +268,11 @@ def _injected(uniforms):
 # ===========================================================================
 # A. The module exists, is declared, and exposes exactly what it should
 # ===========================================================================
+# P10-2A DECLARED: modConstants carries ENTRY_RUNSIMULATION, the button entry-point
+# NAME as a string constant, so the structure contract grants the "RunSimulation"
+# token to it beside the one owner of the ability. The ability itself - the
+# PCCM_RunSimulation procedure - is still modSimReport's alone (test_53 / the
+# ownership helper keep proving that).
 def test_01_the_module_exists_and_is_explicit() -> None:
     raw = _module().raw
     assert raw.startswith('Attribute VB_Name = "modSimSample"')
@@ -394,7 +399,7 @@ def test_09_the_d6_11_algorithm_token_is_absent_and_unneeded() -> None:
     scoped = [r for r in structure.forbidden_construct_rules if r.is_scoped]
     assert [(r.construct, tuple(r.allowed_in)) for r in scoped] == [
         ("MRG32k3a", ("modSimRng",)),
-        ("RunSimulation", ("modSimReport",)),
+        ("RunSimulation", ("modSimReport", "modConstants")),
     ], scoped
     # EVERY rule, scoped or not, still refuses THIS module - which is what this
     # test has always been about. Step 11 scoped the endpoint to its own owner
@@ -404,7 +409,7 @@ def test_09_the_d6_11_algorithm_token_is_absent_and_unneeded() -> None:
         assert not contains_construct([_module()], rule.construct), rule.construct
     endpoint = next(r for r in structure.forbidden_construct_rules
                     if r.construct == "RunSimulation")
-    assert endpoint.allowed_in == ("modSimReport",)
+    assert endpoint.allowed_in == ("modSimReport", "modConstants")
     assert endpoint.forbidden_in("modSimReport") is False
     assert endpoint.forbidden_in("modSimSample") is True
 

@@ -76,6 +76,11 @@ SECTION_KEYS = tuple(f"M{number}" for number in range(1, 12))
 # comparing two clocks. What is asserted about it is its shape and its position.
 TIMESTAMP_LABEL = "Build Timestamp (UTC)"
 TIMESTAMP_SHAPE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC$")
+# P10-9. The Source Revision row is captured at build like the timestamp: the
+# short hash of the tree that was built and whether it was clean. Its VALUE
+# belongs to the build, not to whatever the working tree is when a test runs.
+SOURCE_REVISION_LABEL = "Source Revision"
+SOURCE_REVISION_SHAPE = re.compile(r"^(?:[0-9a-f]{7,40} \((?:clean|dirty)\)|unavailable)$")
 
 # The four persistent state words, and where they are owned. Methodology is
 # checked against this file rather than against a list retyped here.
@@ -679,14 +684,17 @@ def test_54_every_string_on_the_built_sheet_was_declared_somewhere() -> None:
     allowed.update({sheet_spec.title, sheet_spec.subtitle})
     for label, value in metadata.as_rows():
         allowed.add(label)
-        if label != TIMESTAMP_LABEL:
+        if label not in (TIMESTAMP_LABEL, SOURCE_REVISION_LABEL):
             allowed.add(value)
 
     found = [cell.value for row in _workbook()[SHEET].iter_rows() for cell in row
              if isinstance(cell.value, str) and cell.value.strip()]
     assert found, "the Methodology sheet is empty"
     undeclared = sorted(set(found) - allowed)
-    assert len(undeclared) == 1 and TIMESTAMP_SHAPE.match(undeclared[0]), undeclared
+    # EXACTLY THE TWO BUILD-TIME CAPTURES, each in its declared shape.
+    assert len(undeclared) == 2, undeclared
+    assert sum(1 for s in undeclared if TIMESTAMP_SHAPE.match(s)) == 1, undeclared
+    assert sum(1 for s in undeclared if SOURCE_REVISION_SHAPE.match(s)) == 1, undeclared
 
 
 @needs_build
@@ -804,7 +812,22 @@ def test_66_no_historical_document_was_touched_at_all() -> None:
     touched = [line for line in _git("diff", "--name-status", ACCEPTED, "--",
                                      "pccm/docs").splitlines() if line.strip()]
     changed = [line for line in touched if not line.startswith("A\t")]
-    assert changed == [], f"historical records changed: {changed}"
+    # DECLARED, NOT EXEMPTED. docs/phase7_closure.md is the Phase-7 declaration
+    # table, and Phase 10 Steps 2B and RP touched four Phase-7 modules under their
+    # own authorisation; the runtime-defect control requires those rows to exist.
+    # The rows were APPENDED: no line of the closure was removed or altered, and
+    # every added line is a §1.1 declaration row or its git-log subject line.
+    declared = "M\tpccm/docs/phase7_closure.md"
+    assert declared in changed, "the declared Phase-7 closure rows are absent"
+    assert [c for c in changed if c != declared] == [], f"historical records changed: {changed}"
+    diff = _git("diff", ACCEPTED, "--", "pccm/docs/phase7_closure.md")
+    removed = [l for l in diff.splitlines() if l.startswith("-") and not l.startswith("---")]
+    assert removed == [], f"the Phase-7 closure lost lines: {removed}"
+    added = [l for l in diff.splitlines() if l.startswith("+") and not l.startswith("+++")]
+    assert added, "nothing was added to the Phase-7 closure"
+    for line in added:
+        assert line.startswith("+| `pccm/src/vba/") or \
+            line.startswith("+$ git log --format='%h %s' --grep="), line
 
 
 @needs_build
@@ -828,6 +851,7 @@ def test_67_the_workbook_visible_metadata_agrees_with_the_authorities() -> None:
     assert shown["Builder Version"] == _builder_version()
     assert shown["PCCM Model Version"] == _version_file().strip()
     assert TIMESTAMP_SHAPE.match(shown[TIMESTAMP_LABEL]), shown[TIMESTAMP_LABEL]
+    assert SOURCE_REVISION_SHAPE.match(shown[SOURCE_REVISION_LABEL]), shown[SOURCE_REVISION_LABEL]
     assert set(shown) == {label for label, _ in _metadata().as_rows()}
 
 

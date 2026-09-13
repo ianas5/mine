@@ -3723,6 +3723,11 @@ def test_47_no_powershell_helper_is_defined_but_never_used() -> None:
     text = "\n".join(_ps_calls(p) for p in (LIFECYCLE_PS1, BUILD_PS1, HARNESS_PS1))
     defined = set(re.findall(r"^\s*function\s+([\w-]+)", text, re.MULTILINE))
     unused = [name for name in defined if len(re.findall(rf"\b{re.escape(name)}\b", text)) < 2]
+    # PHASE 10 DECLARED: the Stage-B build's two read accessors are invoked by the
+    # executed proof harness, which lifts them out of the script by AST - a call
+    # site that is real, just not in these three files.
+    lifted_by = _ps_calls(PCCM_ROOT / "tests" / "phase10_stage_b_build_ops_flow.ps1")
+    unused = [name for name in unused if len(re.findall(rf"\b{re.escape(name)}\b", lifted_by)) < 1]
     assert not unused, f"defined but never invoked: {sorted(unused)}"
 
 

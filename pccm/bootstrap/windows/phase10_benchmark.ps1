@@ -1589,17 +1589,22 @@ function Format-BenchmarkNumber {
 
 function Format-BenchmarkFailure {
     param($Record)
-    $lines = @('  stage                : ' + [string]$Record['stage'],
-               '  doing                : ' + [string]$Record['action'],
-               '  scenario             : ' + [string]$Record['scenario'],
-               '  operation            : ' + [string]$Record['operation'],
-               '  iterations           : ' + [string]$Record['iterations'],
-               '  execution phase      : ' + [string]$Record['execution_phase'],
-               '  exception            : ' + [string]$Record['exception_type'],
-               '  message              : ' + [string]$Record['message'],
-               '  at line              : ' + [string]$Record['script_line_number'],
-               '  statement            : ' + [string]$Record['script_line'],
-               '  command              : ' + [string]$Record['command'])
+    # EACH ELEMENT PARENTHESISED. The comma binds tighter than +, so
+    # `'a' + $x, 'b' + $y` is ONE string built from an array, not two lines;
+    # the Phase-8 detector caught exactly that here, with a proof in pwsh.
+    $lines = @(
+        ('  stage                : ' + [string]$Record['stage']),
+        ('  doing                : ' + [string]$Record['action']),
+        ('  scenario             : ' + [string]$Record['scenario']),
+        ('  operation            : ' + [string]$Record['operation']),
+        ('  iterations           : ' + [string]$Record['iterations']),
+        ('  execution phase      : ' + [string]$Record['execution_phase']),
+        ('  exception            : ' + [string]$Record['exception_type']),
+        ('  message              : ' + [string]$Record['message']),
+        ('  at line              : ' + [string]$Record['script_line_number']),
+        ('  statement            : ' + [string]$Record['script_line']),
+        ('  command              : ' + [string]$Record['command'])
+    )
     return ($lines -join "`r`n")
 }
 

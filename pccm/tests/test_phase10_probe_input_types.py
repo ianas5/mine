@@ -834,9 +834,24 @@ def test_2z_the_predicate_correction_touched_nothing_that_drives_excel() -> None
     last_excel = max(i for i, line in enumerate(lines, 1)
                      if ("Invoke-ProbeEndpoint" in line
                          or "Invoke-ProbeCalculateRound -Excel" in line))
-    assert min(hunks) > last_excel, (
+    # DECLARED, NOT EXEMPTED. The final static reconciliation corrected ONE
+    # function defined in the helper region above the Excel section:
+    # Format-ProbeFailure built one string from an array because the comma binds
+    # tighter than +. It drives nothing - it renders a failure - and its only call
+    # is in the catch after the last endpoint. The hunks inside it are declared;
+    # one must exist; every other hunk still sits after the last Excel interaction.
+    formatter_start = next(i for i, line in enumerate(lines, 1)
+                           if line.startswith("function Format-ProbeFailure "))
+    formatter_end = next(j for j in range(formatter_start, len(lines) + 1) if lines[j - 1] == "}")
+    inside = [h for h in hunks if formatter_start <= h <= formatter_end]
+    assert inside, "the declared Format-ProbeFailure correction is absent"
+    calls = [i for i, line in enumerate(lines, 1)
+             if "Format-ProbeFailure" in line and i not in range(formatter_start, formatter_end + 1)]
+    assert calls and min(calls) > last_excel, calls
+    outside = [h for h in hunks if h not in inside]
+    assert outside and min(outside) > last_excel, (
         f"a line at or before the last Excel interaction (line {last_excel}) changed: "
-        f"earliest changed line is {min(hunks)}")
+        f"earliest changed line is {min(outside) if outside else None}")
     # AND NOTHING THAT TOUCHES EXCEL APPEARS IN THE DIFF AT ALL.
     changed = [line[1:] for line in diff.splitlines()
                if line[:1] in "+-" and not line.startswith(("+++", "---"))]
@@ -977,7 +992,14 @@ def test_42_no_production_vba_or_spec_changed() -> None:
             name, (PCCM_ROOT / "src" / "vba" / name).read_bytes().decode("utf-8"))
         accepted = _git("show", f"{ACCEPTED}:{path}")
         assert current.replace("\r\n", "\n") == accepted.replace("\r\n", "\n"), path
-    assert [p for p in changed if p not in declared] == [], changed
+    # P10-9 DECLARED. The final static reconciliation added the contract's Source
+    # Revision row to the builder; lines added, none removed, and it must be there.
+    builder = "pccm/builder/pccm_builder/workbook_builder.py"
+    assert builder in changed, "the declared Source Revision change is absent"
+    diff = _git("diff", ACCEPTED, "--", builder)
+    assert [l for l in diff.splitlines() if l.startswith("-") and not l.startswith("---")] == []
+    assert "+def resolve_source_revision() -> str:" in diff
+    assert [p for p in changed if p not in declared and p != builder] == [], changed
 
 
 def test_43_strict_mode_is_still_on() -> None:

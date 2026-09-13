@@ -16,6 +16,7 @@ No business rule or calculation belongs in any of them.
 from __future__ import annotations
 
 import os
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -54,6 +55,10 @@ from .validation import apply_validation
 BUILDER_VERSION = "1.0.0"
 DEFAULT_SHEET_TITLE = "Sheet"
 TIMESTAMP_ENV_VAR = "PCCM_BUILD_TIMESTAMP"
+# P10-9. THE SOURCE REVISION ROW the Phase-10 contract adds to Build Metadata:
+# the short git hash of the tree the workbook was built from, and whether that
+# tree was clean. Overridable for reproducible builds, like the timestamp.
+SOURCE_REVISION_ENV_VAR = "PCCM_SOURCE_REVISION"
 
 
 @dataclass(frozen=True)
@@ -75,6 +80,7 @@ class BuildMetadata:
     contract_version: str
     driver_contract_version: str
     structure_contract_version: str
+    source_revision: str
 
     @classmethod
     def create(
@@ -93,6 +99,7 @@ class BuildMetadata:
             contract_version=contract.contract_version,
             driver_contract_version=drivers.version,
             structure_contract_version=structure.version,
+            source_revision=resolve_source_revision(),
         )
 
     def as_rows(self) -> list[tuple[str, str]]:
@@ -105,6 +112,7 @@ class BuildMetadata:
             ("Input Contract Version", self.contract_version),
             ("Driver Contract Version", self.driver_contract_version),
             ("Structure Contract Version", self.structure_contract_version),
+            ("Source Revision", self.source_revision),
         ]
 
 
@@ -119,6 +127,38 @@ def resolve_build_timestamp() -> str:
     if override:
         return override
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def resolve_source_revision() -> str:
+    """Short git hash of the source tree plus a clean/dirty marker.
+
+    A COMMIT ID IDENTIFIES A COMMIT, NOT BYTES: a tree with uncommitted changes
+    is stamped `(dirty)` so a workbook built from it cannot pass as one built
+    from the commit. `unavailable` when git or a repository is absent - never a
+    guess. Setting PCCM_SOURCE_REVISION overrides it, for reproducible builds.
+    """
+    override = os.environ.get(SOURCE_REVISION_ENV_VAR)
+    if override:
+        return override
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    def git(*arguments: str) -> str | None:
+        try:
+            done = subprocess.run(["git", "-C", root, *arguments], capture_output=True,
+                                  text=True, timeout=30, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if done.returncode != 0:
+            return None
+        return done.stdout
+
+    head = git("rev-parse", "--short", "HEAD")
+    if head is None or not head.strip():
+        return "unavailable"
+    status = git("status", "--porcelain", "--untracked-files=no")
+    if status is None:
+        return "unavailable"
+    return f"{head.strip()} ({'clean' if not status.strip() else 'dirty'})"
 
 
 def build_workbook(

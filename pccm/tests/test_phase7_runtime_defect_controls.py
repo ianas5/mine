@@ -497,7 +497,11 @@ def test_12_no_cell_is_written_before_publication_is_entered() -> None:
     inside the three procedures publication owns - not by trusting that the
     earlier steps happen to be read-only today.
     """
-    writers = {"Publish", "ClearRecords", "StampCell", "FillRecord"}
+    # P10-2B DECLARED: SimPostReportClearPublication is Reset Results' clear path on
+    # this owner - it blanks the two stamp cells and clears the publication blocks
+    # after capturing them for restore, and writes nothing else.
+    writers = {"Publish", "ClearRecords", "StampCell", "FillRecord",
+               "SimPostReportClearPublication", "RestoredBlock"}
     source = strip_comments(_text(SRC_VBA / "modSimPostReport.bas"))
     procedures = re.findall(
         r"^(?:Public |Private )?(?:Sub|Function) (\w+)\b.*?^End (?:Sub|Function)",

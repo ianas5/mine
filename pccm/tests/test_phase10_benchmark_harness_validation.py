@@ -3214,8 +3214,25 @@ def test_305_labelling_annual_50k_a_failure_is_refused() -> None:
         "is a failure against the expected budget.")
 
 
-def test_306_claiming_the_matrix_complete_without_small_and_medium_is_refused() -> None:
+def test_306_dropping_a_recovered_baseline_from_the_closed_matrix_is_refused() -> None:
+    """THE MATRIX IS THREE RECORDED BASELINES, NOT TWO AND A CLAIM."""
     _record_mutation(
         "test_309",
-        "**The performance matrix is therefore NOT complete in this record, and the\nPhase-10 performance subsection is NOT closed.**",
-        "**The performance matrix is therefore complete in this record, and the\nPhase-10 performance subsection is closed.**")
+        "## PERF-MEDIUM baseline — RECORDED / ACCEPTED — recovered artifact",
+        "## PERF-MEDIUM — recovered artifact")
+
+
+def test_308_calling_32_bit_office_tested_is_refused() -> None:
+    """VERIFIED AND EXPECTED STAY APART."""
+    _record_mutation(
+        "test_311",
+        "**EXPECTED, compatible by inspection, NOT tested:** 32-bit Office",
+        "**VERIFIED (tested):** 32-bit Office")
+
+
+def test_307_altering_a_recovered_median_is_refused() -> None:
+    """TRANSCRIBED EXACTLY, OR NOT AT ALL."""
+    _record_mutation(
+        "test_310",
+        "| Annual Cash Flow | 100,000 | **3,709.289 s** |",
+        "| Annual Cash Flow | 100,000 | **370.929 s** |")

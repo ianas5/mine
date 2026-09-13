@@ -3598,3 +3598,153 @@ produced on Windows, those artifacts — or their `BASELINE STATUS` transcripts 
 the eleven warm medians each — are what closes the matrix; they are appended here,
 never rerun and never reconstructed from memory. Nothing is rerun for this: not
 Small, not Medium, not Large, and no 100,000-iteration Large run.
+
+## PERF-SMALL baseline — RECORDED / ACCEPTED — recovered artifact
+
+**Artifact:** `phase10_benchmark_PERF-SMALL_20260911-154229.md`, recovered from the
+operator machine. **Harness commit:** `f3b3a33f662ccabeac2319f074e810e403a77b23`
+(the endpoint-built fixture, the method the contract accepted for Small).
+
+Scenario: **20 drivers** — 12 Cost Lines and 8 Risks — over **10 project years**;
+iterations 10,000, 50,000 and 100,000; **11 of 11** planned runs valid.
+
+```
+BASELINE STATUS: BASELINE RECORDED
+valid warm medians: 11 of 11 planned runs
+```
+
+| operation | iterations | warm median |
+|---|---|---|
+| Calculate | — | **0.363 s** |
+| Workbook recalculation | — | **0.270 s** |
+| Simulation | 10,000 | **10.459 s** |
+| Sensitivity | 10,000 | **7.858 s** |
+| Annual Cash Flow | 10,000 | **26.248 s** |
+| Simulation | 50,000 | **42.328 s** |
+| Sensitivity | 50,000 | **36.839 s** |
+| Annual Cash Flow | 50,000 | **128.356 s** |
+| Simulation | 100,000 | **80.913 s** |
+| Sensitivity | 100,000 | **63.919 s** |
+| Annual Cash Flow | 100,000 | **230.570 s** |
+
+Environment: Windows 11 Pro; AMD Ryzen 7 7800X3D; 31.2 GB RAM; Excel 16.0 build
+20326, 64-bit. Numbers are transcribed from the artifact exactly; nothing is
+reconstructed or rerun.
+
+**PERF-SMALL = BASELINE RECORDED / ACCEPTED.**
+
+## PERF-MEDIUM baseline — RECORDED / ACCEPTED — recovered artifact
+
+**Artifact:** `phase10_benchmark_PERF-MEDIUM_20260911-164419.md`, recovered from
+the operator machine. **Harness commit:**
+`f3b3a33f662ccabeac2319f074e810e403a77b23` (the endpoint-built fixture).
+
+Scenario: **100 drivers** — 60 Cost Lines and 40 Risks — over **25 project years**;
+iterations 10,000, 50,000 and 100,000; **11 of 11** planned runs valid.
+
+```
+BASELINE STATUS: BASELINE RECORDED
+valid warm medians: 11 of 11 planned runs
+```
+
+| operation | iterations | warm median |
+|---|---|---|
+| Calculate | — | **2.773 s** |
+| Workbook recalculation | — | **2.193 s** |
+| Simulation | 10,000 | **39.007 s** |
+| Sensitivity | 10,000 | **38.846 s** |
+| Annual Cash Flow | 10,000 | **325.791 s** |
+| Simulation | 50,000 | **196.681 s** |
+| Sensitivity | 50,000 | **169.701 s** |
+| Annual Cash Flow | 50,000 | **1,525.069 s** |
+| Simulation | 100,000 | **399.303 s** |
+| Sensitivity | 100,000 | **381.520 s** |
+| Annual Cash Flow | 100,000 | **3,709.289 s** |
+
+Environment: Windows 11 Pro; AMD Ryzen 7 7800X3D; 31.2 GB RAM; Excel 16.0 build
+20326, 64-bit. Numbers are transcribed from the artifact exactly; nothing is
+reconstructed or rerun.
+
+**PERF-MEDIUM = BASELINE RECORDED / ACCEPTED.**
+
+## Phase-10 performance matrix — COMPLETE — PERFORMANCE SUBSECTION CLOSED / ACCEPTED
+
+The status section written at `bff3449` stated what the record held then and is
+not rewritten; the two recovered artifacts above supersede it. The contracted
+practical matrix is now complete in this record:
+
+| scenario | drivers | years | fixture | iterations | status | commit |
+|---|---|---|---|---|---|---|
+| PERF-SMALL | 20 (12 + 8) | 10 | Endpoints | 10k · 50k · 100k | **BASELINE RECORDED / ACCEPTED** | `f3b3a33` |
+| PERF-MEDIUM | 100 (60 + 40) | 25 | Endpoints | 10k · 50k · 100k | **BASELINE RECORDED / ACCEPTED** | `f3b3a33` |
+| PERF-LARGE | 300 (180 + 120) | 40 | Bulk | 10k · 50k (100k not required / impractical by contract) | **BASELINE RECORDED / ACCEPTED** | `d060da9` |
+
+Consolidated warm medians (seconds):
+
+| operation | SMALL | MEDIUM | LARGE |
+|---|---|---|---|
+| Calculate | 0.363 | 2.773 | 15.141 |
+| Workbook recalculation | 0.270 | 2.193 | 11.444 |
+| Simulation @ 10,000 | 10.459 | 39.007 | 123.344 |
+| Sensitivity @ 10,000 | 7.858 | 38.846 | 120.872 |
+| Annual Cash Flow @ 10,000 | 26.248 | 325.791 | 1,395.994 |
+| Simulation @ 50,000 | 42.328 | 196.681 | 482.965 |
+| Sensitivity @ 50,000 | 36.839 | 169.701 | 497.638 |
+| Annual Cash Flow @ 50,000 | 128.356 | 1,525.069 | 7,031.311 |
+| Simulation @ 100,000 | 80.913 | 399.303 | — |
+| Sensitivity @ 100,000 | 63.919 | 381.520 | — |
+| Annual Cash Flow @ 100,000 | 230.570 | 3,709.289 | — |
+
+All three on the same machine and Excel: Windows 11 Pro, AMD Ryzen 7 7800X3D,
+31.2 GB RAM, Excel 16.0 build 20326, 64-bit. Small and Medium were built by the
+endpoint fixture and Large by the Bulk fixture, whose equivalence was accepted at
+`8caffb0`; the artifact of each run records its `fixture_mode`.
+
+**PHASE-10 PERFORMANCE SUBSECTION = CLOSED / ACCEPTED.** No benchmark rerun is
+required. No timing is reconstructed. No threshold is invented. Production is not
+optimised on account of the measured Large Annual times. The regression policy
+for any later comparable run stands: **at or below 1.5× the accepted baseline, no
+automatic regression finding; above 1.5×, investigate; above 2.0×, blocking unless
+explained and explicitly accepted.**
+
+## Final static reconciliation — release metadata and supported environment
+
+**Not a Windows run.** Contract §9 and §11.1, reconciled against source and
+against the Windows evidence already in this record.
+
+### Release metadata — one generated owner each
+
+| row | authority | value |
+|---|---|---|
+| PCCM Model Version | `spec/workbook.yaml → model.model_version` | `1.0.0` |
+| Build Phase | `spec/workbook.yaml → model.build_phase` | `Release 1.0 - Production` (the ASCII hyphen form the manifest control requires; the contract's "preferably" wording used a dash) |
+| Builder Version | `builder/pccm_builder/workbook_builder.py → BUILDER_VERSION` | `1.0.0` |
+| Build Timestamp (UTC) | `resolve_build_timestamp()`, overridable by `PCCM_BUILD_TIMESTAMP` | at build |
+| Source Manifest / Input / Driver / Structure Contract versions | their spec files | unchanged |
+| **Source Revision** | `resolve_source_revision()`, overridable by `PCCM_SOURCE_REVISION` | short git hash + `(clean)` / `(dirty)`, or `unavailable` |
+
+Model version and builder version remain independent authorities that happen to
+read `1.0.0` together for this release; nothing derives one from the other. The
+**Source Revision** row — contracted in §9 as *ADD* — was found absent from
+`BuildMetadata.as_rows()` by this reconciliation and is added: captured at the
+Stage-A build, a dirty tree is stamped as such, and a missing git is `unavailable`,
+never a guess.
+
+### Supported environment — from evidence, VERIFIED kept apart from EXPECTED
+
+**VERIFIED (tested):** Windows desktop Excel, macros enabled — **Excel 16.0 build
+20326, 64-bit, on Windows 11 Pro** — the family exercised by the accepted
+equivalence run (`8caffb0`) and by all three performance baselines.
+
+**EXPECTED, compatible by inspection, NOT tested:** 32-bit Office. `src/vba` has no
+`Declare` statement and no `LongLong`, so no Win32 pointer or 64-bit-only surface is
+used; this remains an inspection result and is not claimed as tested. The formula
+surface imposes no requirement beyond Excel 2007 (`IFERROR`, `COUNTIFS`), an
+inspection result about formulas, not a support claim.
+
+**UNSUPPORTED / UNVALIDATED:** Excel for Mac (no compatibility audit, no execution
+evidence). **UNSUPPORTED:** Excel Online, Excel mobile, LibreOffice, any
+environment where VBA cannot execute.
+
+The User Manual, when it is written, states these two lists separately and never
+merges them.

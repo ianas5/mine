@@ -717,7 +717,24 @@ def test_55_no_builder_owner_changed_except_the_new_plan_and_its_wiring() -> Non
     changed = {Path(line).name for line in
                _git("diff", "--name-only", ACCEPTED, "--", "pccm/builder").splitlines()
                if line.strip()}
-    assert changed <= {"benchmark.py", "__init__.py", "build_stage_a.py"}, sorted(changed)
+    # P10-9 DECLARED. The final static reconciliation added the contract's Source
+    # Revision row to workbook_builder.py - additively, and it must be there.
+    assert changed <= {"benchmark.py", "__init__.py", "build_stage_a.py",
+                       "workbook_builder.py"}, sorted(changed)
+    assert "workbook_builder.py" in changed, "the declared Source Revision change is absent"
+    _assert_only_source_revision_added(_git("diff", ACCEPTED, "--",
+                                            "pccm/builder/pccm_builder/workbook_builder.py"))
+
+
+def _assert_only_source_revision_added(diff: str) -> None:
+    """The one declared builder change: lines ADDED for the Source Revision row,
+    and nothing removed. A removal, or an addition that is not that row, fails."""
+    removed = [l for l in diff.splitlines() if l.startswith("-") and not l.startswith("---")]
+    assert removed == [], f"workbook_builder.py lost lines: {removed}"
+    added = "\n".join(l for l in diff.splitlines() if l.startswith("+") and not l.startswith("+++"))
+    for required in ("def resolve_source_revision() -> str:", '("Source Revision", self.source_revision)',
+                     "source_revision: str", 'SOURCE_REVISION_ENV_VAR = "PCCM_SOURCE_REVISION"'):
+        assert required in added, required
 
 
 # W3/W4. DECLARED, NOT EXEMPTED. Each name here was added because a batch had a
@@ -1796,7 +1813,11 @@ def test_137_the_correction_introduces_no_release_of_protection() -> None:
     changed = [line for line in _git(
         "diff", "--name-only", "0119bee", "--",
         "pccm/src", "pccm/spec", "pccm/builder").splitlines() if line.strip()]
-    assert changed == [], f"production changed for a harness correction: {changed}"
+    # P10-9 DECLARED: the builder's Source Revision row, additive, proved by test_55.
+    assert changed == ["pccm/builder/pccm_builder/workbook_builder.py"], \
+        f"production changed for a harness correction: {changed}"
+    _assert_only_source_revision_added(_git("diff", "0119bee", "--",
+                                            "pccm/builder/pccm_builder/workbook_builder.py"))
 
 
 def test_138_the_fixture_build_is_still_outside_every_measured_interval() -> None:
@@ -3603,8 +3624,17 @@ def test_304_the_snapshot_calcequiv_production_and_timed_path_are_unchanged() ->
                  "Set-BenchmarkRegisterRowCount", "Set-BenchmarkBulkFixture",
                  "Open-BenchmarkFixtureWindow", "Close-BenchmarkFixtureWindow"):
         assert _function(_code(), name) == _function(_code_at("1eb6395"), name), name
-    assert _runner() == _git("show", "1eb6395:pccm/bootstrap/windows/phase10_benchmark.ps1"), \
-        "the runner moved in a batch that retires instrumentation from the gate only"
+    # DECLARED, NOT EXEMPTED. The final static reconciliation corrected ONE runner
+    # function: Format-BenchmarkFailure built one string from an array because the
+    # comma binds tighter than +. Every other byte of the runner is 1eb6395, the
+    # corrected function differs from 1eb6395, and it differs in the declared way.
+    then_runner = _git("show", "1eb6395:pccm/bootstrap/windows/phase10_benchmark.ps1")
+    now_formatter = _function(_runner(), "Format-BenchmarkFailure")
+    then_formatter = _function(then_runner, "Format-BenchmarkFailure")
+    assert now_formatter != then_formatter, "the declared correction did not happen"
+    assert "        ('  stage" in now_formatter and "        ('  stage" not in then_formatter
+    assert _runner().replace(now_formatter, "", 1) == then_runner.replace(then_formatter, "", 1), \
+        "the runner moved outside the one declared function"
 
 
 def test_305_the_record_states_the_simplification_and_retires_the_prefix_instrumentation() -> None:
@@ -3778,12 +3808,86 @@ def test_309_the_matrix_status_states_what_the_record_holds_and_closes_nothing_e
                  "phase10_benchmark_<scenario>_<stamp>.json", "never rerun and never reconstructed from memory"):
         assert fact in section, fact
     assert "PERF-LARGE | 10,000 · 50,000 | RECORDED" in section
-    # AND THE RECORD REALLY HOLDS NO SMALL OR MEDIUM BASELINE: the only BASELINE
-    # RECORDED status in the whole record is the Large one.
-    assert text.count("BASELINE STATUS: BASELINE RECORDED") == 1
+    # RESTATED when the Small and Medium artifacts were recovered: the status
+    # section above stands as history, the two recovered baselines follow it, and
+    # the closure section supersedes it. Three BASELINE RECORDED statuses, exactly.
+    assert text.count("BASELINE STATUS: BASELINE RECORDED") == 3
     assert "## Benchmark Run 5 — PERF-SMALL — REACHED THE TIMED SECTION — ABORTED" in text
-    assert not re.search(r"^## .*PERF-MEDIUM", text, re.M), "a PERF-MEDIUM run is recorded after all"
-    assert not re.search(r"^## .*PERF-SMALL.*BASELINE", text, re.M), "a PERF-SMALL baseline is recorded after all"
+    assert "## PERF-SMALL baseline — RECORDED / ACCEPTED — recovered artifact" in text
+    assert "## PERF-MEDIUM baseline — RECORDED / ACCEPTED — recovered artifact" in text
+    assert text.index("## Phase-10 performance matrix — status") < text.index("## PERF-SMALL baseline") \
+        < text.index("## PERF-MEDIUM baseline") < text.index("## Phase-10 performance matrix — COMPLETE")
+
+
+SMALL_MEDIANS = (("Calculate", "0.363 s"), ("Workbook recalculation", "0.270 s"),
+                 ("Simulation | 10,000", "10.459 s"), ("Sensitivity | 10,000", "7.858 s"),
+                 ("Annual Cash Flow | 10,000", "26.248 s"), ("Simulation | 50,000", "42.328 s"),
+                 ("Sensitivity | 50,000", "36.839 s"), ("Annual Cash Flow | 50,000", "128.356 s"),
+                 ("Simulation | 100,000", "80.913 s"), ("Sensitivity | 100,000", "63.919 s"),
+                 ("Annual Cash Flow | 100,000", "230.570 s"))
+MEDIUM_MEDIANS = (("Calculate", "2.773 s"), ("Workbook recalculation", "2.193 s"),
+                  ("Simulation | 10,000", "39.007 s"), ("Sensitivity | 10,000", "38.846 s"),
+                  ("Annual Cash Flow | 10,000", "325.791 s"), ("Simulation | 50,000", "196.681 s"),
+                  ("Sensitivity | 50,000", "169.701 s"), ("Annual Cash Flow | 50,000", "1,525.069 s"),
+                  ("Simulation | 100,000", "399.303 s"), ("Sensitivity | 100,000", "381.520 s"),
+                  ("Annual Cash Flow | 100,000", "3,709.289 s"))
+
+
+def test_310_the_small_and_medium_baselines_are_recorded_exactly_and_the_matrix_is_closed() -> None:
+    """THE RECOVERED ARTIFACTS, TRANSCRIBED. Eleven medians each, the artifact
+    names and commit, 11 of 11 valid; and the closure section carries all three
+    scenarios with the regression policy and no rerun, reconstruction or threshold."""
+    for heading, artifact, medians in (
+            ("## PERF-SMALL baseline", "phase10_benchmark_PERF-SMALL_20260911-154229.md", SMALL_MEDIANS),
+            ("## PERF-MEDIUM baseline", "phase10_benchmark_PERF-MEDIUM_20260911-164419.md", MEDIUM_MEDIANS)):
+        section = _run_evidence_section(heading)
+        plain = " ".join(section.replace("`", "").replace("**", "").split())
+        for fact in (artifact, "f3b3a33f662ccabeac2319f074e810e403a77b23", "11 of 11",
+                     "BASELINE STATUS: BASELINE RECORDED", "Excel 16.0 build 20326, 64-bit",
+                     "BASELINE RECORDED / ACCEPTED"):
+            assert fact in plain, (heading, fact)
+        for operation, median in medians:
+            assert median in section and section.index(operation) < section.index(median), (heading, operation)
+    closure = " ".join(_run_evidence_section("## Phase-10 performance matrix — COMPLETE").replace("`", "").replace("**", "").split())
+    for fact in ("PERFORMANCE SUBSECTION = CLOSED / ACCEPTED", "| PERF-SMALL | 20 (12 + 8) | 10 | Endpoints",
+                 "| PERF-MEDIUM | 100 (60 + 40) | 25 | Endpoints", "| PERF-LARGE | 300 (180 + 120) | 40 | Bulk",
+                 "100k not required / impractical by contract", "No benchmark rerun is required",
+                 "No timing is reconstructed", "No threshold is invented", "1.5×", "2.0×",
+                 "| Annual Cash Flow @ 50,000 | 128.356 | 1,525.069 | 7,031.311 |",
+                 "| Annual Cash Flow @ 100,000 | 230.570 | 3,709.289 | — |"):
+        assert fact in closure, fact
+    assert _production_changed_since("d060da9") == []
+
+
+def test_311_release_metadata_and_supported_environment_are_reconciled_from_source_and_evidence() -> None:
+    """THE RECORD SAYS WHAT SOURCE SAYS, AND ONLY WHAT WINDOWS PROVED. The
+    metadata values are read from their owners, the Source Revision row from the
+    builder, and the support statement keeps VERIFIED apart from EXPECTED."""
+    import yaml as _yaml
+    section = _run_evidence_section("## Final static reconciliation — release metadata and supported environment")
+    plain = " ".join(section.replace("`", "").replace("**", "").split())
+    model = _yaml.safe_load((PCCM_ROOT / "spec" / "workbook.yaml").read_text(encoding="utf-8"))["model"]
+    builder = (PCCM_ROOT / "builder" / "pccm_builder" / "workbook_builder.py").read_text(encoding="utf-8")
+    assert model["model_version"] == "1.0.0" and model["build_phase"] == "Release 1.0 - Production"
+    assert 'BUILDER_VERSION = "1.0.0"' in builder
+    assert 'SOURCE_REVISION_ENV_VAR = "PCCM_SOURCE_REVISION"' in builder
+    assert '("Source Revision", self.source_revision),' in builder
+    for fact in ("| PCCM Model Version | spec/workbook.yaml → model.model_version | 1.0.0 |",
+                 "Release 1.0 - Production", "BUILDER_VERSION | 1.0.0",
+                 "resolve_source_revision(), overridable by PCCM_SOURCE_REVISION",
+                 "(clean) / (dirty), or unavailable", "independent authorities",
+                 "VERIFIED (tested): Windows desktop Excel", "Excel 16.0 build 20326, 64-bit, on Windows 11 Pro",
+                 "EXPECTED, compatible by inspection, NOT tested: 32-bit Office",
+                 "UNSUPPORTED / UNVALIDATED: Excel for Mac",
+                 "UNSUPPORTED: Excel Online, Excel mobile, LibreOffice",
+                 "Not a Windows run"):
+        assert fact in plain, fact
+    assert "VERIFIED (tested): 32-bit" not in plain and "32-bit Office is tested" not in plain
+    # THE INSPECTION CLAIM IS TRUE OF THE TREE: no Declare, no LongLong in src/vba.
+    for path in sorted((PCCM_ROOT / "src" / "vba").glob("*")):
+        if path.suffix.lower() in (".bas", ".cls", ".frm"):
+            code = path.read_text(encoding="utf-8", errors="replace")
+            assert "Declare " not in code and "LongLong" not in code, path.name
 
 
 # Every rectangular fixture block, and the geometry each must have. Restated here so

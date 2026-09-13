@@ -122,6 +122,11 @@ def _evidence(name: str) -> dict:
 # ===========================================================================
 # A. the module exists and is declared
 # ===========================================================================
+# P10-2A DECLARED: modConstants carries ENTRY_RUNSIMULATION, the button entry-point
+# NAME as a string constant, so the structure contract grants the "RunSimulation"
+# token to it beside the one owner of the ability. The ability itself - the
+# PCCM_RunSimulation procedure - is still modSimReport's alone (test_53 / the
+# ownership helper keep proving that).
 def test_01_the_module_exists_and_opens_correctly() -> None:
     lines = SIM_RNG_BAS.read_text(encoding="utf-8").splitlines()
     assert lines[0] == 'Attribute VB_Name = "modSimRng"'
@@ -254,16 +259,17 @@ def test_10_every_scoped_construct_has_exactly_one_owner() -> None:
     scoped = [r for r in structure.forbidden_construct_rules if r.is_scoped]
     assert [(r.construct, tuple(r.allowed_in)) for r in scoped] == [
         ("MRG32k3a", ("modSimRng",)),
-        ("RunSimulation", ("modSimReport",)),
+        ("RunSimulation", ("modSimReport", "modConstants")),
     ], scoped
     for rule in scoped:
-        assert len(rule.allowed_in) == 1, rule.construct
+        assert len(rule.allowed_in) == (2 if rule.construct == "RunSimulation" else 1), rule.construct
         assert "*" not in rule.allowed_in
     endpoint = next(r for r in structure.forbidden_construct_rules
                     if r.construct == "RunSimulation")
-    assert endpoint.allowed_in == ("modSimReport",)
+    assert endpoint.allowed_in == ("modSimReport", "modConstants")
     assert endpoint.forbidden_in("modSimRng") is True
     assert endpoint.forbidden_in("modSimReport") is False
+    assert endpoint.forbidden_in("modConstants") is False
 
 
 def test_11_the_globally_forbidden_constructs_still_apply_here() -> None:
@@ -289,13 +295,16 @@ def test_12_the_manifest_carries_the_structured_rules() -> None:
     by_construct = {r["construct"]: r["allowed_in"] for r in rules}
     assert by_construct["MRG32k3a"] == ["modSimRng"]
     # SCOPED SINCE STEP 11, in the commit that introduced its owner.
-    assert by_construct["RunSimulation"] == ["modSimReport"]
+    assert by_construct["RunSimulation"] == ["modSimReport", "modConstants"]
     assert by_construct["Percentile"] == []
     # EVERY OTHER construct is still global. Exactly two are scoped, and each
     # names exactly one owner.
     for construct, owners in by_construct.items():
-        if construct in ("MRG32k3a", "RunSimulation"):
+        if construct == "MRG32k3a":
             assert len(owners) == 1, (construct, owners)
+            continue
+        if construct == "RunSimulation":
+            assert owners == ["modSimReport", "modConstants"], (construct, owners)
             continue
         assert owners == [], (construct, owners)
     # Every flattened entry still has a structured rule, so no consumer is left

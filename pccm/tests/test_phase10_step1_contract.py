@@ -334,10 +334,19 @@ def test_61_the_build_phase_finalisation_landed_as_the_record_said_it_would() ->
 
 
 def test_62_the_source_revision_is_an_addition_not_an_existing_row() -> None:
+    """RESTATED at the final static reconciliation, which made the addition:
+    the row was absent when the contract called it an ADD, and it is present
+    now, generated - never typed - beside the other build metadata rows."""
+    import subprocess
+    then = subprocess.run(
+        ["git", "show", "6ab8f6a:pccm/builder/pccm_builder/workbook_builder.py"],
+        cwd=PCCM_ROOT, capture_output=True, text=True, check=True).stdout
+    assert "Source Revision" not in then, (
+        "the source revision already existed when the record called it an addition")
     builder = (PCCM_ROOT / "builder" / "pccm_builder" / "workbook_builder.py").read_text(
         encoding="utf-8")
-    assert "Source Revision" not in builder, (
-        "the source revision already exists; the record calls it an addition")
+    assert '("Source Revision", self.source_revision),' in builder, "the ADD did not happen"
+    assert "def resolve_source_revision() -> str:" in builder
     assert "**ADD**" in _text()
 
 

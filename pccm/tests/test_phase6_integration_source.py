@@ -397,7 +397,9 @@ def test_12_the_candidate_never_touches_the_active_bank() -> None:
     # THE SELECTOR HAS EXACTLY ONE NAMER, AND IT READS.
     owners = [name for name in _module(REPORT).procedures
               if "SIM_IDENTITY_ROW_ACTIVE_BANK" in _procedure(REPORT, name)]
-    assert owners == ["ReadActiveBank"], owners
+    # P10-2B DECLARED: the Reset pair addresses the publication record through
+    # PublicationRecordRange, which reads the active-bank row to find it.
+    assert owners == ["ReadActiveBank", "PublicationRecordRange"], owners
     # AND EXACTLY ONE PROCEDURE WRITES THE COMMIT RANGE.
     writers = [name for name in _module(REPORT).procedures
                if "Range(SIM_FINAL_COMMIT_RANGE).Value2 =" in _procedure(REPORT, name)]
@@ -499,8 +501,10 @@ def test_16_the_attempt_result_cannot_decide_the_status() -> None:
 # ===========================================================================
 def test_17_the_two_public_surfaces_are_exactly_the_accepted_ones() -> None:
     modules = _modules()
+    # P10-2B DECLARED: the clear/restore pair Reset Results asks the owner for.
+    phase10_reset_pair = ("SimReportClearPublication", "SimReportRestorePublication")
     assert tuple(sorted(modules[REPORT].public_procedures)) == tuple(
-        sorted(PHASE6_PUBLIC + PHASE8_READ_ONLY_ADDITION)), (
+        sorted(PHASE6_PUBLIC + PHASE8_READ_ONLY_ADDITION + phase10_reset_pair)), (
         sorted(modules[REPORT].public_procedures)
     )
     # AND THE ADDITION IS A DELEGATION, not an endpoint: no PCCM_ prefix, so no
@@ -580,7 +584,9 @@ def test_17_the_two_public_surfaces_are_exactly_the_accepted_ones() -> None:
     # still fails: the Step-11 preparation bridge, and P9-2's read-only
     # exposure of the module's own status derivation.
     extra = set(modules["modCalcReport"].public_procedures) - set(PHASE5_ENDPOINTS)
-    assert extra == {BRIDGE, "CalcReportDerivedStatus"}, sorted(extra)
+    # P10-2B DECLARED: the same clear/restore pair on the calculation owner.
+    assert extra == {BRIDGE, "CalcReportDerivedStatus", "CalcReportClearPublication",
+                     "CalcReportRestorePublication"}, sorted(extra)
     # ONE PHASE-6 BUTTON, AND IT IS THE ONE PHASE 10 DECLARED. This read "no
     # Phase-6 button", which was right while the simulation had no user-facing
     # command. P10-2A binds PCCM_RunSimulation and nothing else from this set -
@@ -760,6 +766,9 @@ REOPENED_SINCE_CLOSURE = {
 # changes is which commit those bytes come from, never whether they are pinned.
 # Dropping the pin instead would leave the one module under active change as the
 # only one a stray byte could move unnoticed.
+# P10-2B / P10-RP DECLARED: Reset Results (a7c2222) added the clear/restore pair to
+# modSimReport and modCalcReport, and the structural command window (0946cf6) moved
+# modCalcReport again; both are pinned at those accepted bytes.
 REOPENED_CURRENT = {
     "modSimEngine": "9c307eae451252a983fc2c36205759335e14642557c3c4ecf9ab4ee30ec3237e",
     # P7-6 re-pins it: two LOOKUPS through the one projected ladder joined the
@@ -790,13 +799,13 @@ REOPENED_CURRENT = {
     # fingerprint-record refusal names its driver. Signatures, call sites and the
     # assignments of an id each loop already had - reversing them restores the
     # accepted reporter prefix to the digest it has always had.
-    "modCalcReport": "9a6636449fca750ad6d1925a7f08b229fb603f19452730d714dcb5ae6b6c6f7c",
+    "modCalcReport": "57eea70e1d5664bc7a4cab1c17234a89a54919a3b29606008acd80b41b479412",
     # P8-1 re-pins it: SimReportDerivedStatus joined the public surface. Three
     # code lines, one statement, returning the module's existing private
     # DeriveSimStatus(). The digest is repointed in the same commit as the change
     # that moved it, with the reason recorded in REOPENED_SINCE_CLOSURE - never
     # updated to whatever the file now hashes to.
-    "modSimReport": "75351490ca338be4c117902ec7e973331568ea222e850a4d488f5afcd1cc120c",
+    "modSimReport": "e0e53a4f8321d621598ecd0b69a38cf1aa95a5f870a575fd71309a9b79ed1ca7",
 }
 
 
@@ -868,7 +877,9 @@ RUN6_GENERATED_IDENTITY = "daa4d27889c30eadb2ab892bcfa4e6f6bab8a137aae79a01a8d8f
 # and the handoff state vocabulary are all projected, so contracting them
 # regenerated the module for the third time in Phase 7. The Run-6 identity is
 # untouched; this is a different artefact that no Windows run has executed.
-PHASE7_GENERATED_IDENTITY = "453a773bc800b850539e20f30c538dc1006eaea054a82ed1b34bf46503a0afe9"
+# P10-3 DECLARED: the projection is generated from the spec, and the 1.0.0 release
+# stamp (badeee1) and the Phase-10 UX corrections moved the spec.
+PHASE7_GENERATED_IDENTITY = "f622e42a2e729dd2b34a2da4899537294fc6ee9e264508d1ef81df1079127a88"
 
 
 def test_24_the_generated_authority_is_byte_identical() -> None:
@@ -881,7 +892,7 @@ def test_24_the_generated_authority_is_byte_identical() -> None:
     for path, expected in (
         (BUILD / "vba" / "modSimContract.bas", PHASE7_GENERATED_IDENTITY),
         (BUILD / "phase6_cases.json",
-         "8019683a0490fcf0740cf07244524973d9b7470c933f1003059025b6b019a0be"),
+         "58f1a4af3408a32e79a6d4618c359dbf2e25428c1e3c7a0a94729ec8e6ee2499"),
     ):
         actual = hashlib.sha256(path.read_bytes()).hexdigest()
         assert actual == expected, f"{path.name} moved: {actual}"
@@ -936,14 +947,19 @@ def test_25_the_accepted_reporter_prefix_is_still_byte_identical() -> None:
     # P9-2B's plumbing is reversed before the accepted prefix is measured, so
     # the historical digest below does not move.
     accepted = reverse_subject_plumbing("modCalcReport", text[: text.index(banner)])
+    # P10-2B / P10-RP DECLARED: Reset Results (a7c2222) and the structural command
+    # window (0946cf6) both touched the reporter ahead of the Step-11 banner; the
+    # prefix is pinned again at its accepted Phase-10 bytes.
     assert hashlib.sha256(accepted.encode("utf-8")).hexdigest() == (
-        "8d67d3f18b1ea8c4a8baba478f025d486f71afaa1ac31beac88d7b7ecfff80a9")
+        "3ad21ec0edd9398ee2a5545983bebc3997498e2012e85045ea3f7b3f257eb924")
     after = re.findall(r"^(?:Public|Private) (?:Function|Sub) (\w+)",
                        text[text.index(banner):], re.M)
     # AND P9-2 ADDED A SECOND, AFTER THE BRIDGE AND AFTER EVERYTHING
     # ACCEPTED. The prefix hash above is what proves the accepted
     # region did not move; this names what has been appended to it.
-    assert after == [BRIDGE, "CalcReportDerivedStatus"], after
+    assert after == [BRIDGE, "CalcReportDerivedStatus", "CalcReportClearPublication",
+                     "CalcReportRestorePublication", "PublicationBlocks", "BodyAddress",
+                     "CapturedBlock", "RestoredBlock"], after
 
 
 # ===========================================================================
@@ -1191,8 +1207,10 @@ def test_31_both_phase6_orchestration_modules_stay_within_their_limits() -> None
     assert sizes.PHASE5_RAW_LINE_LIMIT == 1200
     assert sizes.PHASE5_CODE_LINE_LIMIT == 900
     assert sizes.PHASE4_RAW_LINE_LIMIT == 900
-    assert set(sizes.RAW_LINE_EXEMPTIONS) == {"modSimReport"}, (
-        "a second module has been exempted from the prose ceiling")
+    # P10-2B DECLARED: the calculation owner gained the same clear/restore pair
+    # and the Phase-4 sizes module documents its ceiling beside modSimReport's.
+    assert set(sizes.RAW_LINE_EXEMPTIONS) == {"modSimReport", "modCalcReport"}, (
+        "a third module has been exempted from the prose ceiling")
 
 
 def test_32_the_pending_sidecar_is_a_genuinely_free_coordinate() -> None:

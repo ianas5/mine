@@ -1236,16 +1236,20 @@ function Format-ProbeFailure {
     $exception = Get-ProbeProperty -InputObject $ErrorRecord -Name 'Exception'
     $invocation = Get-ProbeProperty -InputObject $ErrorRecord -Name 'InvocationInfo'
     $line = [string](Get-ProbeProperty -InputObject $invocation -Name 'Line')
+    # EACH ELEMENT PARENTHESISED. The comma binds tighter than +, so
+    # `'a' + $x, 'b' + $y` is ONE string built from an array, not two lines;
+    # the Phase-8 detector caught exactly that here, with a proof in pwsh.
     $lines = @(
-        '  stage              : ' + [string]$cursor.Stage,
-        '  doing              : ' + [string]$cursor.Action,
-        '  endpoint           : ' + $(if ([string]::IsNullOrWhiteSpace([string]$cursor.Endpoint)) { '(none)' } else { [string]$cursor.Endpoint }),
-        '  detail             : ' + [string]$cursor.Detail,
-        '  exception          : ' + $(if ($null -eq $exception) { 'unavailable' } else { $exception.GetType().FullName }),
-        '  message            : ' + [string](Get-ProbeProperty -InputObject $exception -Name 'Message'),
-        '  at line            : ' + [string](Get-ProbeProperty -InputObject $invocation -Name 'ScriptLineNumber'),
-        '  statement          : ' + $line.Trim(),
-        '  command            : ' + [string](Get-ProbeProperty -InputObject $invocation -Name 'MyCommand'))
+        ('  stage              : ' + [string]$cursor.Stage),
+        ('  doing              : ' + [string]$cursor.Action),
+        ('  endpoint           : ' + $(if ([string]::IsNullOrWhiteSpace([string]$cursor.Endpoint)) { '(none)' } else { [string]$cursor.Endpoint })),
+        ('  detail             : ' + [string]$cursor.Detail),
+        ('  exception          : ' + $(if ($null -eq $exception) { 'unavailable' } else { $exception.GetType().FullName })),
+        ('  message            : ' + [string](Get-ProbeProperty -InputObject $exception -Name 'Message')),
+        ('  at line            : ' + [string](Get-ProbeProperty -InputObject $invocation -Name 'ScriptLineNumber')),
+        ('  statement          : ' + $line.Trim()),
+        ('  command            : ' + [string](Get-ProbeProperty -InputObject $invocation -Name 'MyCommand'))
+    )
     return ($lines -join "`r`n")
 }
 

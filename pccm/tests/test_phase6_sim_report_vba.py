@@ -2198,7 +2198,9 @@ def test_46_the_corpus_moved_only_for_the_authorised_axis_change() -> None:
     import json
 
     digest = hashlib.sha256(CASES_JSON.read_bytes()).hexdigest()
-    assert digest == "8019683a0490fcf0740cf07244524973d9b7470c933f1003059025b6b019a0be", digest
+    # P10-3 DECLARED: the corpus is generated from the spec, and the 1.0.0 release
+    # stamp (badeee1) moved the spec; the axis change it was pinned for is still in it.
+    assert digest == "58f1a4af3408a32e79a6d4618c359dbf2e25428c1e3c7a0a94729ec8e6ee2499", digest
     text = CASES_JSON.read_text(encoding="utf-8")
     assert "AUTO_NONCE_INDETERMINATE" in text, (
         "the corpus moved for something other than the authorised axis change"

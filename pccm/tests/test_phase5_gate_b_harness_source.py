@@ -64,6 +64,19 @@ _PHASE6_MANIFEST_MODULES = {"modSimContract", "modSimRng", "modSimSample",
 _PHASE7_MANIFEST_MODULES = {"modSimSensitivity", "modSimPostReport", "modSimAnnual",
                             "modSimAnnualRun", "modSimAnnualStore"}
 _PHASE8_MANIFEST_MODULES = {"modResultsState"}
+_PHASE10_MANIFEST_MODULES = {"modProtection", "modReset", "modRepair"}
+"""Phase 10's three user-command owners - the protection foundation (21a2774),
+Reset Results (a7c2222) and Repair Profiling (4f1a57d) - admitted by name on the
+same terms as every phase before them."""
+_PHASE5_BUTTON_ENTRY_POINTS = {"PCCM_ApplyTimeline", "PCCM_AddCostLine", "PCCM_DeleteCostLine",
+                               "PCCM_AddRisk", "PCCM_DeleteRisk"}
+_PHASE10_BUTTON_ENTRY_POINTS = {"PCCM_Calculate", "PCCM_RunSimulation", "PCCM_RunSensitivity",
+                                "PCCM_RunAnnualStochastic", "PCCM_ResetResults", "PCCM_RepairProfiling"}
+"""P10-2A DECLARED: the four commands a user can press (Calculate, Run Simulation,
+Run Sensitivity, Run Annual Cash Flow) and P10-2B/2C's Reset Results and Repair
+Profiling. The Phase-5 rule "no Calculate button" was a Gate-A rule about a
+workbook whose calculation was not yet a user command; a declared, manifest-bound
+Calculate button is what Phase 10 delivers. Undeclared bindings stay refused."""
 """P8-1's Results state adapter, admitted by name on the same terms as every
 phase before it. Naming it relaxes nothing about the Phase-5 half below."""
 
@@ -596,7 +609,7 @@ def test_19_the_diagnostic_module_is_not_a_production_module() -> None:
     )
     assert (set(declared) - _PHASE5_MANIFEST_MODULES
             == _PHASE6_MANIFEST_MODULES | _PHASE7_MANIFEST_MODULES
-            | _PHASE8_MANIFEST_MODULES)
+            | _PHASE8_MANIFEST_MODULES | _PHASE10_MANIFEST_MODULES)
     # Not in the structure contract either, so it can never be emitted into one.
     contract = _text(SPEC / "structure_contract.yaml")
     assert DIAGNOSTIC_MODULE_NAME not in contract
@@ -977,15 +990,15 @@ def test_36_blank_is_never_equal_to_numeric_zero() -> None:
 def test_37_no_calculate_button_and_no_new_production_module() -> None:
     emitted = _emitted()
     buttons = emitted["manifest"]["buttons"]
-    assert len(buttons) == 5, f"the manifest declares {len(buttons)} buttons, not 5"
     entry_points = {button["entry_point"] for button in buttons}
-    assert "PCCM_Calculate" not in entry_points, "a Calculate button was introduced"
+    assert entry_points == _PHASE5_BUTTON_ENTRY_POINTS | _PHASE10_BUTTON_ENTRY_POINTS, sorted(entry_points)
+    assert len(buttons) == len(entry_points), "a button is declared twice"
     assert entry_points == set(emitted["manifest"]["vba"]["entry_points"])
     modules = {module["name"] for module in emitted["manifest"]["vba"]["modules"]}
     assert _PHASE5_MANIFEST_MODULES <= set(modules)
     assert (set(modules) - _PHASE5_MANIFEST_MODULES
             == _PHASE6_MANIFEST_MODULES | _PHASE7_MANIFEST_MODULES
-            | _PHASE8_MANIFEST_MODULES)
+            | _PHASE8_MANIFEST_MODULES | _PHASE10_MANIFEST_MODULES)
     on_disk = {path.stem for path in SRC_VBA.glob("*.bas")}
     assert DIAGNOSTIC_MODULE_NAME not in on_disk
     # The thirteen Phase-5 hand-written modules, plus Phase 6's source modules
@@ -994,7 +1007,7 @@ def test_37_no_calculate_button_and_no_new_production_module() -> None:
     assert on_disk == ((_PHASE5_MANIFEST_MODULES
                         - {"modConstants", "modCalcContract"})
                        | _PHASE6_HANDWRITTEN | _PHASE7_MANIFEST_MODULES
-                       | _PHASE8_MANIFEST_MODULES), (
+                       | _PHASE8_MANIFEST_MODULES | _PHASE10_MANIFEST_MODULES), (
         f"a production module was added or removed: {sorted(on_disk)}"
     )
     # The harness asserts all three of those things at runtime too.
@@ -1247,8 +1260,9 @@ def test_nc_09_a_calculate_button_is_caught() -> None:
                     "caption": "Calculate", "entry_point": "PCCM_Calculate",
                     "anchor_cell": "E50", "width": 150.0, "height": 30.0})
     entry_points = {button["entry_point"] for button in buttons}
-    assert len(buttons) == 6, "the extra button must be visible"
-    assert "PCCM_Calculate" in entry_points, "the Calculate binding must be visible"
+    assert len(buttons) == 12, "the extra button must be visible"
+    assert [b["entry_point"] for b in buttons].count("PCCM_Calculate") == 2, (
+        "the duplicated Calculate binding must be visible")
 
 
 def test_nc_10_an_omitted_status_row_is_caught() -> None:
@@ -5236,7 +5250,7 @@ def test_125_the_button_decision_table() -> None:
     """Every case the review named, against the triple rule."""
     manifest = _emitted()["manifest"]
     declared = [(b["sheet"], b["shape_name"], b["entry_point"]) for b in manifest["buttons"]]
-    assert len(declared) == 5
+    assert len(declared) == 11
     declared_pairs = {(s, n) for s, n, _ in declared}
     declared_triples = set(declared)
 
@@ -5255,12 +5269,10 @@ def test_125_the_button_decision_table() -> None:
             return False
         if any((s[0], s[1]) not in declared_pairs and s[2].startswith("PCCM_") for s in shapes):
             return False
-        if any(s[2] == "PCCM_Calculate" for s in shapes):
-            return False
         return set(bound) == declared_triples and len(bound) == len(declared_triples)
 
     # correct five triples -> PASS
-    assert verdict(list(declared)), "the correct five bindings must pass"
+    assert verdict(list(declared)), "the correct eleven bindings must pass"
 
     # two entry points swapped -> FAIL  (the counterexample the review gave)
     swapped = list(declared)
@@ -5272,7 +5284,7 @@ def test_125_the_button_decision_table() -> None:
     # and the three global set-wise checks would all still have passed
     assert {t[1] for t in swapped} == {t[1] for t in declared}
     assert {t[2] for t in swapped} == {t[2] for t in declared}
-    assert len([t for t in swapped if t[2]]) == 5
+    assert len([t for t in swapped if t[2]]) == 11
 
     # correct shape name on the wrong sheet -> FAIL
     moved = [t for t in declared if t[1] != "btnPCCMAddRisk"]
@@ -5300,15 +5312,17 @@ def test_125_the_button_decision_table() -> None:
     # undeclared PCCM_ binding -> FAIL
     assert not verdict(list(declared) + [("Setup", "Rogue", "PCCM_AddRisk")])
 
-    # PCCM_Calculate binding -> FAIL, bound to a declared name or not
+    # an UNDECLARED shape bound to the declared Calculate entry point -> FAIL, and a
+    # declared button rebound to it -> FAIL: the declared Calculate button is the
+    # only binding that may carry it (P10-2A).
     assert not verdict(list(declared) + [("Setup", "Rogue", "PCCM_Calculate")])
     calc = list(declared)
     calc[a] = (calc[a][0], calc[a][1], "PCCM_Calculate")
     assert not verdict(calc), "a declared button rebound to PCCM_Calculate must fail"
 
     # and the raw-count rule is NOT what decides any of this
-    assert len(list(declared) + [("Setup", "Decoration", "")]) == 6, (
-        "the passing decorative case has six shapes, so a Shape.Count == 5 rule "
+    assert len(list(declared) + [("Setup", "Decoration", "")]) == 12, (
+        "the passing decorative case has twelve shapes, so a Shape.Count == 11 rule "
         "would have failed it"
     )
 
@@ -10781,7 +10795,9 @@ def _scoped_grants() -> dict[str, list[str]]:
 def test_ev_01_the_contract_grants_run_simulation_to_exactly_one_owner() -> None:
     """One construct, one owner, named. Not "at least" and not "including"."""
     grants = _scoped_grants()
-    assert grants.get("RunSimulation") == ["modSimReport"], grants.get("RunSimulation")
+    # P10-2A DECLARED: modConstants carries ENTRY_RUNSIMULATION, the entry-point NAME,
+    # so the token is granted to it beside the one owner of the ability.
+    assert grants.get("RunSimulation") == ["modSimReport", "modConstants"], grants.get("RunSimulation")
     assert grants.get("MRG32k3a") == ["modSimRng"], grants.get("MRG32k3a")
     # AND THE EMITTED MANIFEST AGREES, since that is what the harness reads.
     emitted = {
@@ -10803,7 +10819,9 @@ def test_ev_02_every_scoped_grant_is_checked_as_a_grant() -> None:
     for construct, owners in _scoped_grants().items():
         if not owners:
             continue
-        assert len(owners) == 1, (construct, owners)
+        # P10-2A DECLARED: RunSimulation has a second, name-only owner (modConstants);
+        # the accepted harness checks the ability's owner, which is still the first.
+        assert len(owners) == (2 if construct == "RunSimulation" else 1), (construct, owners)
         scoped = (
             f"(Test-ConstructScopedTo -Manifest $Manifest -Construct '{construct}' "
             f"-ModuleName '{owners[0]}')"

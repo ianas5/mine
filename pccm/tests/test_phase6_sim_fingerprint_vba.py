@@ -255,6 +255,11 @@ def _cases() -> dict[str, dict]:
 # ===========================================================================
 # A. Declaration, registry, surface and purity
 # ===========================================================================
+# P10-2A DECLARED: modConstants carries ENTRY_RUNSIMULATION, the button entry-point
+# NAME as a string constant, so the structure contract grants the "RunSimulation"
+# token to it beside the one owner of the ability. The ability itself - the
+# PCCM_RunSimulation procedure - is still modSimReport's alone (test_53 / the
+# ownership helper keep proving that).
 def test_01_the_module_exists_and_is_explicit() -> None:
     lines = SIM_FP_BAS.read_text(encoding="utf-8").splitlines()
     assert lines[0] == 'Attribute VB_Name = "modSimFingerprint"'
@@ -281,7 +286,7 @@ def test_02_the_module_is_registered_and_nothing_beyond_it() -> None:
     scoped = [(r.construct, tuple(r.allowed_in))
               for r in structure.forbidden_construct_rules if r.is_scoped]
     assert scoped == [("MRG32k3a", ("modSimRng",)),
-                      ("RunSimulation", ("modSimReport",))], scoped
+                      ("RunSimulation", ("modSimReport", "modConstants"))], scoped
     for construct in ("Percentile",):
         rule = next(r for r in structure.forbidden_construct_rules
                     if r.construct == construct)
@@ -961,6 +966,9 @@ def test_52_the_accepted_field_encoders_still_produce_the_accepted_bytes() -> No
 # read-only status evaluator. Not the writing status path, not a fingerprint,
 # not a digest.
 SIM_REPORT_CALLERS = {
+    # P10-2B DECLARED: Reset Results holds no geometry of its own; it asks each
+    # publication owner for its clear/restore pair, and nothing else.
+    "modReset": {"SimReportClearPublication", "SimReportRestorePublication"},
     "modSimPostReport": {
         "PCCM_SimulationRequestFingerprint",
         "PCCM_SimulationResultDigest",

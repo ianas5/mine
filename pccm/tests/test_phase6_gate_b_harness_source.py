@@ -151,8 +151,11 @@ STEP13_CLOSURE_COMMIT = "85778b2854fee431a845499e5a2fe37f40e96610"
 # from the contract, so contracting them regenerated the module. The baseline
 # identity above is untouched; what this pin records is that the tree builds a
 # projection no Windows run has executed.
+# P10-3 DECLARED: the projection is generated from the spec, which the 1.0.0
+# release stamp (badeee1) and the Phase-10 UX corrections moved; the Run-6
+# baseline identity below is untouched and the two must still differ.
 PHASE7_PROJECTION_IDENTITY = (
-    "453a773bc800b850539e20f30c538dc1006eaea054a82ed1b34bf46503a0afe9")
+    "f622e42a2e729dd2b34a2da4899537294fc6ee9e264508d1ef81df1079127a88")
 
 # The seven hand-written simulation modules Run 6 executed and the freeze pins by
 # blob. `modSimContract` is excluded because it is generated and has no path in
@@ -271,9 +274,20 @@ def test_01_the_phase4_and_phase5_harness_files_are_byte_identical() -> None:
     Run 3 found one stale assertion in it, and a blanket freeze would have made
     correcting that impossible to state.
     """
-    for path in (LIFECYCLE, DIAGNOSTIC, BUILD_STAGE_B):
-        assert _current_lines(path) == _accepted_lines(path), (
-            f"{path.name} moved from {PRODUCTION_BASELINE}"
+    # PHASE 10 DECLARED: the diagnostic module never moved. com_lifecycle.ps1 gained
+    # the bounded COM read envelope (3d34b26) and build_stage_b.ps1 the operation
+    # labels, the SaveAs settlement, the readiness gate and the verification
+    # acquisition rule (c66e752, f006ea2, 6672b75). Both are pinned at those
+    # accepted bytes; the two Stage-B accessors that no runner calls stay, because
+    # tests/phase10_stage_b_build_ops_flow.ps1 lifts them by AST and executes them.
+    assert _current_lines(DIAGNOSTIC) == _accepted_lines(DIAGNOSTIC), (
+        f"{DIAGNOSTIC.name} moved from {PRODUCTION_BASELINE}"
+    )
+    import hashlib as _hashlib
+    for path, pinned in ((LIFECYCLE, "7a66961ef20408d67489e0ccce0398c92b79b1f1cb5304db63cefb31d551f53b"),
+                         (BUILD_STAGE_B, "39228ccf3718260e562a10eab362d67259f7cdfde598385f5a14447db7b548e3")):
+        assert _hashlib.sha256(path.read_bytes()).hexdigest() == pinned, (
+            f"{path.name} moved from its accepted Phase-10 bytes"
         )
 
 
@@ -1889,8 +1903,10 @@ def test_48_the_cross_platform_artefacts_are_pinned_and_the_host_local_one_is_no
     for path, expected in (
         (INSPECTION_PATH,
          "83eff35ffe1523547313a9c57a58d2b8adeb4e2e6ceeacb85dd846ed30111573"),
+        # P10-3 DECLARED: generated from the spec, which the 1.0.0 release stamp
+        # (badeee1) and the Phase-10 UX corrections moved.
         (GATE_B_CASES_PATH,
-         "6a9d86784ff1f29195b23c85ee4445e133a4cb283da0c3834afe4048c495af5c"),
+         "af8cd7ea1950d49402b21206d37c3129c947043497b00f5cc4c98155c8c61ae0"),
     ):
         actual = hashlib.sha256(path.read_bytes()).hexdigest()
         assert actual == expected, f"{path.name} moved: {actual}"

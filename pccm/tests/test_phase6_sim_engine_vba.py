@@ -354,6 +354,11 @@ def _cases() -> dict[str, dict]:
 # ===========================================================================
 # A. The module exists, is declared, and exposes one entry point
 # ===========================================================================
+# P10-2A DECLARED: modConstants carries ENTRY_RUNSIMULATION, the button entry-point
+# NAME as a string constant, so the structure contract grants the "RunSimulation"
+# token to it beside the one owner of the ability. The ability itself - the
+# PCCM_RunSimulation procedure - is still modSimReport's alone (test_53 / the
+# ownership helper keep proving that).
 def test_01_the_module_exists_and_is_explicit() -> None:
     raw = _module().raw
     assert raw.startswith('Attribute VB_Name = "modSimEngine"')
@@ -380,12 +385,12 @@ def test_02_the_module_is_registered_and_nothing_beyond_it() -> None:
     scoped = [(r.construct, tuple(r.allowed_in))
               for r in structure.forbidden_construct_rules if r.is_scoped]
     assert scoped == [("MRG32k3a", ("modSimRng",)),
-                      ("RunSimulation", ("modSimReport",))], scoped
+                      ("RunSimulation", ("modSimReport", "modConstants"))], scoped
     endpoint = next(r for r in structure.forbidden_construct_rules
                     if r.construct == "RunSimulation")
     # SCOPED SINCE STEP 11, to its owner and to nothing else. This module is not
     # that owner, and the token still may not appear here.
-    assert endpoint.allowed_in == ("modSimReport",)
+    assert endpoint.allowed_in == ("modSimReport", "modConstants")
     assert endpoint.forbidden_in("modSimEngine") is True
     assert "RunSimulation" not in _code()
 
