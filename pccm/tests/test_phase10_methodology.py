@@ -709,6 +709,10 @@ def test_55_the_built_sheet_matches_the_plan_row_for_row() -> None:
             assert sheet[f"{label_column}{line.row}"].value == line.label, line
         if line.label == TIMESTAMP_LABEL:
             assert TIMESTAMP_SHAPE.match(sheet[f"{text_column}{line.row}"].value)
+        elif line.label == SOURCE_REVISION_LABEL:
+            # P10-9. A build-time capture like the timestamp: the plan computed
+            # NOW reads the working tree, the sheet holds the tree that was built.
+            assert SOURCE_REVISION_SHAPE.match(sheet[f"{text_column}{line.row}"].value)
         elif line.text is not None:
             assert sheet[f"{text_column}{line.row}"].value == line.text, line
         if line.kind == "blank":

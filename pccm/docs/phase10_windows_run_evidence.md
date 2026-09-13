@@ -3748,3 +3748,84 @@ environment where VBA cannot execute.
 
 The User Manual, when it is written, states these two lists separately and never
 merges them.
+
+## Final acceptance runner — IMPLEMENTED — NO WINDOWS
+
+**No Windows was executed for this round.** The contracted Phase-10 hardening
+runner exists now as `bootstrap/windows/phase10_final_acceptance.ps1`, in the
+accepted P9-1 shape, and it is the LAST new Windows harness architecture for this
+project unless a genuine product defect is found.
+
+### What it reuses, and what it adds
+
+| Reused, unchanged | For |
+|---|---|
+| `build_stage_b.ps1` | the disposable Stage-B build and its reopen verification (FileFormat, sheets, CodeNames, modules, buttons, OnAction) |
+| `com_lifecycle.ps1` | the COM ownership policy and the natural-exit shutdown |
+| `phase5_gate_b_scenarios.ps1` | the accepted W4-sized fixture (`Set-Phase5Fixture`), the production-operation invoker, the FX seed |
+| `phase6_gate_b_scenarios.ps1` | the simulation invoker and the persisted simulation-state reader |
+| `phase10_fixture_window.bas` | the setup-only protection window, imported into the disposable copy exactly as the benchmark imports it |
+| Stage-A projections | every expectation: sheets and modules (`stage_b_manifest.json`), metadata rows (`phase10_methodology_inspection.json`), the protection sheet set (`phase10_protection_inspection.json`), what Reset clears and preserves (`phase10_reset_inspection.json`), the state vocabulary (`phase7_acceptance_inspection.json`), the Model Check surface (`phase9_model_check_inspection.json`) |
+
+It adds no model builder, no business logic, no protection call of its own and
+no UI automation. The ten helpers the dot-sourced files call are the P9-1 copies
+byte for byte. Every inventory is compared as a SET against its projection: the
+module set observed through `VBComponents` must equal the manifest's modules plus
+its document module plus one document module per sheet CodeName; a count is
+reported only after it was derived.
+
+### The sequence
+
+bootstrap → open → compile check (`PCCM_CalculationStatus`, the accepted one) →
+sheets and CodeNames → module set → metadata rows (every projected label and
+value; Model Version `1.0.0`; Builder Version `1.0.0`; Build Phase
+`Release 1.0 - Production`; **Source Revision** equal to the checkout's
+`git rev-parse --short HEAD` plus ` (clean)`, expected and observed both printed)
+→ protection (applied, structure, every sheet, depth 0) → NOT CALCULATED → the W4
+fixture inside the window → `PCCM_AddCostLine` / `PCCM_DeleteCostLineById` /
+`PCCM_AddRisk` / `PCCM_DeleteRiskById` / `PCCM_ApplyTimeline` with no window →
+`PCCM_Calculate` CURRENT, fingerprint, Model Check PASS, worksheet safety →
+`PCCM_RunSimulation`, `PCCM_RunSensitivity`, `PCCM_RunAnnualStochastic` at the
+business minimum → STALE at the minimum plus one and back → INVALID with the
+attempt result REFUSED and Model Check ERROR, then restored to the identical
+fingerprint → Repair Profiling: no-op, missing row, order, ambiguous duplicate
+refused by id, restored, fingerprint identical → Reset Results: declined through
+the automation seam (no dialog exists), confirmed with every projected
+publication rectangle and table blank and every preserved cell identical,
+derived states, Model Check, idempotent, the annual endpoint REFUSED with no
+state moved, injected failure at `Phase10ResetSimulation` rolled back exactly →
+final protection, one unlocked input writable, one locked cell refused →
+`Workbook.Close`, `Application.Quit`, natural exit, release ledger.
+
+Iterations: the business minimum from `phase6_gate_b_cases.json` for every
+stochastic command, and the minimum plus one exactly once. No PERF scenario, no
+Bulk fixture, no equivalence pass, no 100,000 of anything.
+
+### What it prints
+
+One line per check, `PASS|scenario|detail` or `FAIL|scenario|detail`, fail-fast:
+a failed check throws, the one shutdown path runs, the verdict is
+`FINAL ACCEPTANCE FAIL` and the exit code is 1. Protection is asserted after the
+structural workflow, after the commands, after the refused Calculate, after each
+repair outcome including the refusal, after the reset, after the refused annual,
+after the rollback, and at the end.
+
+### Source Revision on Windows
+
+Stage A is rebuilt on the Windows host AFTER pulling this commit, so the builder
+stamps that commit's short hash. The runner refuses to start on a tree that
+`git status --porcelain --untracked-files=no` reports as modified, because the
+builder would have stamped `(dirty)`. The only passing value is
+`<this commit's short hash> (clean)`, and the report records the observed value
+literally. If git is not on the host's PATH the builder stamps `unavailable` and
+the check fails, correctly.
+
+### Controls
+
+`tests/test_phase10_final_acceptance_source.py` (36) and its mutation battery
+(12): entry points, no duplicate logic, no performance or equivalence
+invocation, iterations capped, Source Revision mandatory and literal, set-based
+inventories, Reset preservation, Repair assertions, protection after every path,
+fail-fast, clean lifecycle, no UI automation, production byte-identical to
+`2d32f35`, the command-resolution and uninitialised-variable audits CLEAN.
+

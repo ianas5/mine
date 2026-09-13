@@ -19,6 +19,7 @@ once here, in `com_lifecycle.ps1`.
 | `phase5_gate_b_scenarios.ps1` | Phase-5 Gate-B scenarios, dot-sourced into the functional test. |
 | `phase6_gate_b_scenarios.ps1` | Phase-6 Step-13 Gate-B scenarios, dot-sourced after the Phase-5 block, inside the same COM lifecycle. **Not yet run.** |
 | `phase7_timing_scenarios.ps1` | Phase-7 sensitivity **performance measurement**. Standalone, additive, and **not part of Gate B**: nothing above dot-sources it and it records no Gate-B result. See the section at the end. |
+| `phase10_final_acceptance.ps1` | **Phase-10 FINAL WINDOWS ACCEPTANCE** of the release workbook, in the P9-1 shape: Stage-B bootstrap, release metadata and Source Revision read from the workbook, the W4 fixture, the structural workflow, all six Setup commands through their real entry points, the four states, Repair Profiling and Reset Results with rollback, protection after every path, clean shutdown. One `PASS|scenario|detail` line per check; fails fast. |
 
 ## Inputs
 

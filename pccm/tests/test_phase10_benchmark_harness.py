@@ -771,6 +771,16 @@ CHANGED_BY_DECLARATION = {
     #
     # IT IS A NEW FILE, NOT AN EDIT. No accepted harness changed for it.
     "phase10_fixture_window.bas",
+    # W7. The contracted Phase-10 hardening runner - the FINAL WINDOWS ACCEPTANCE
+    # of the release workbook, in the accepted P9-1 shape. A NEW file: it
+    # dot-sources the three accepted files and invokes build_stage_b.ps1 exactly
+    # as the P9-1 runner does, imports the same setup-only shim the benchmark
+    # imports, and edits no accepted harness. tests/test_phase10_final_acceptance_source.py
+    # owns it.
+    "phase10_final_acceptance.ps1",
+    # W7 also lists that runner in the directory's README. Documentation, not a
+    # harness; the freeze below covers only scenario harnesses.
+    "README.md",
 }
 
 # The scenario harnesses this control exists to protect. Named, so the control
