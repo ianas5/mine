@@ -105,6 +105,12 @@ def _structure():
     return _CACHE["structure"]
 
 
+def _profiling_raw() -> str:
+    if "profiling" not in _CACHE:
+        _CACHE["profiling"] = (SRC / "modProfiling.bas").read_bytes().decode("utf-8")
+    return _CACHE["profiling"]  # type: ignore[return-value]
+
+
 def _generated_constants() -> dict[str, str]:
     if "constants" not in _CACHE:
         table: dict[str, str] = {}
@@ -120,24 +126,56 @@ def _generated_constants() -> dict[str, str]:
 # ===========================================================================
 # THE ORACLE COMPOSITION - what a repair of ONE grid produces
 # ===========================================================================
+def blank_reconstructed(before: dict[str, list[object]], before_years: int,
+                        after: dict[str, list[object]], target_years: int) -> dict[str, list[object]]:
+    """THE RULE REPAIR PROFILING ADDS ON TOP OF THE TWO OWNERS - modRepair's
+    BlankReconstructed, stated in Python beside the oracle it composes with.
+
+    The owners are the Add / Apply Timeline path and seed what they create with
+    the initial value, a zero. The Repair contract (§5) says a row Repair had to
+    recreate holds "id only, weights blank - a blank is an unmade assumption, not
+    a zero", and a grid it had to widen is "extended with blanks". So, after the
+    owners: every project year of a row that had no row before is blank, and
+    every project year beyond the previous width is blank for every row. A weight
+    that existed before, at a position that existed before, is untouched.
+
+    FINAL ACCEPTANCE RUN 7 at ee6e9fb found the recreated row seeded at zero: the
+    composition below used to assert exactly that, so the oracle-level controls
+    had enshrined the defect. They now assert the contract.
+    """
+    out: dict[str, list[object]] = {}
+    for permanent_id, weights in after.items():
+        first_blank = before_years if permanent_id in before else 0
+        out[permanent_id] = [BLANK if index >= first_blank else value
+                             for index, value in enumerate(list(weights)[:target_years])]
+    return out
+
+
 def repair_grid(register_ids: list[str], grid: dict[str, list[object]],
                 target_years: int) -> dict[str, list[object]]:
-    """SetYearColumns then SyncRows, in that order, over the accepted oracle.
+    """SetYearColumns then SyncRows, in that order, over the accepted oracle,
+    then the Repair reconstruction rule over what they produced.
 
     THE ORDER IS THE WHOLE OF IT. SyncRows preserves a weight by (permanent id,
     project-year INDEX), so the index set has to be the one the applied timeline
     calls for before ownership is re-established over it. Reversing these two
     would preserve weights into positions that are about to be reshaped.
     """
+    before_years = max((len(v) for v in grid.values()), default=target_years)
     reshaped = remap_profiling(grid, target_years, INITIAL)
     ordered, _added, _removed = sync_rows(register_ids, reshaped)
-    return sync_profiling_values(reshaped, ordered, target_years, INITIAL)
+    synced = sync_profiling_values(reshaped, ordered, target_years, INITIAL)
+    return blank_reconstructed(grid, before_years, synced, target_years)
 
 
-def test_01_the_repair_is_two_owner_calls_and_nothing_else() -> None:
+def test_01_the_repair_is_two_owner_calls_then_the_reconstruction_rule_and_nothing_else() -> None:
     """OWNERSHIP. modRepair holds no grid geometry: the repair is one call to
     the year-column owner and one to the row owner, both accepted, both
-    byte-frozen, and both already driven this way by Apply / Update Timeline."""
+    byte-frozen, and both already driven this way by Apply / Update Timeline -
+    and then the one rule this command adds, applied through the same owner's
+    (permanent id, project year) accessor: what the owners reconstructed is
+    left blank. RESTATED at final acceptance run 7, which found the recreated
+    row seeded at zero; the rule is the correction."""
     apply_body = _procedure("Apply")
     for call in OWNER_CALLS:
         assert call in apply_body, call
@@ -147,6 +185,12 @@ def test_01_the_repair_is_two_owner_calls_and_nothing_else() -> None:
     # decided for itself.
     assert "plan.StartYear, plan.TargetYears" in apply_body
     assert "plan.Kind" in apply_body
+    # THE IDS WITH A ROW ARE RECORDED BEFORE EITHER OWNER RUNS, and the blanking
+    # follows BOTH - so it sees the grid the owners produced, not one in flight.
+    assert "Set hadRow = PresentIds(plan.Kind)" in apply_body
+    assert "BlankReconstructed plan, hadRow" in apply_body
+    assert apply_body.index("PresentIds(plan.Kind)") < apply_body.index(OWNER_CALLS[0])
+    assert apply_body.index(OWNER_CALLS[1]) < apply_body.index("BlankReconstructed plan, hadRow")
     # NOTHING ELSE IN THE MODULE WRITES A CELL. Reads are what an assessment is
     # made of; an ASSIGNMENT to a cell would be this command reaching past the
     # two owners above and writing a grid itself.
@@ -182,13 +226,15 @@ def test_03_a_correct_grid_is_left_exactly_as_it_is() -> None:
     assert repair_grid(["CL-001", "CL-002"], grid, 2) == grid
 
 
-def test_04_a_missing_row_is_restored_at_the_contract_default() -> None:
-    """2 and 3. A driver with no profiling row gets one, and it starts at the
-    contract's own initial value in every project year - the only place this
-    command may write a weight, and only because the profiling owner does."""
+def test_04_a_missing_row_is_restored_with_blank_weights() -> None:
+    """2 and 3 - §5: "create it, id only, WEIGHTS BLANK - a blank is an unmade
+    assumption, not a zero". A driver with no profiling row gets one, and every
+    project-year weight of it is blank; the owners' initial value, a zero, is
+    what Repair clears. RUN 7 AT ee6e9fb observed the four year cells at zero."""
     grid = {"CL-001": [0.5, 0.5]}
     repaired = repair_grid(["CL-001", "CL-002"], grid, 2)
-    assert repaired == {"CL-001": [0.5, 0.5], "CL-002": [INITIAL, INITIAL]}
+    assert repaired == {"CL-001": [0.5, 0.5], "CL-002": [BLANK, BLANK]}
+    assert INITIAL not in repaired["CL-002"]
     # AND THE EXISTING ROW WAS NOT TOUCHED to make room for the new one.
     assert repaired["CL-001"] == grid["CL-001"]
 
@@ -212,12 +258,14 @@ def test_06_row_order_follows_the_register_and_transfers_nothing() -> None:
     assert repaired["CL-002"] == [0.2, 0.8]
 
 
-def test_07_the_width_follows_the_applied_timeline() -> None:
-    """7. Growth appends project years at the contract default; every existing
-    position keeps its value, so a row that totalled 100% still does."""
+def test_07_the_width_follows_the_applied_timeline_and_growth_is_blank() -> None:
+    """7 - §5: "extend with blanks". Growth appends project years BLANK, never
+    at the owners' initial value; every existing position keeps its value, so a
+    row that totalled 100% still does."""
     grid = {"CL-001": [0.5, 0.5]}
     grown = repair_grid(["CL-001"], grid, 4)
-    assert grown["CL-001"] == [0.5, 0.5, INITIAL, INITIAL]
+    assert grown["CL-001"] == [0.5, 0.5, BLANK, BLANK]
+    assert INITIAL not in grown["CL-001"][2:]
     assert sum(v for v in grown["CL-001"] if v is not None) == 1.0
 
 
@@ -227,8 +275,8 @@ def test_08_every_attributable_weight_survives_a_width_repair() -> None:
     one inside a structural operation."""
     grid = {"CL-001": [0.25, BLANK, 0.75], "CL-002": [1.0, 0.0, 0.0]}
     grown = repair_grid(["CL-001", "CL-002"], grid, 5)
-    assert grown["CL-001"] == [0.25, BLANK, 0.75, INITIAL, INITIAL]
-    assert grown["CL-002"] == [1.0, 0.0, 0.0, INITIAL, INITIAL]
+    assert grown["CL-001"] == [0.25, BLANK, 0.75, BLANK, BLANK]
+    assert grown["CL-002"] == [1.0, 0.0, 0.0, BLANK, BLANK]
     # AND A SHRINK KEEPS THE POSITIONS THAT SURVIVE. The command only reaches
     # this case when the trimmed tail carries no data - test_14 is that gate.
     shrunk = repair_grid(["CL-001"], {"CL-001": [0.6, 0.4, BLANK, 0.0]}, 2)
@@ -246,9 +294,9 @@ def test_09_a_repair_of_several_faults_at_once_is_still_value_preserving() -> No
     }
     repaired = repair_grid(["R-001", "R-002", "R-003"], grid, 3)
     assert list(repaired) == ["R-001", "R-002", "R-003"]
-    assert repaired["R-001"] == [0.5, BLANK, INITIAL]
-    assert repaired["R-002"] == [INITIAL, INITIAL, INITIAL]
-    assert repaired["R-003"] == [0.1, 0.9, INITIAL]
+    assert repaired["R-001"] == [0.5, BLANK, BLANK]
+    assert repaired["R-002"] == [BLANK, BLANK, BLANK]
+    assert repaired["R-003"] == [0.1, 0.9, BLANK]
 
 
 def test_10_a_second_repair_changes_nothing() -> None:
@@ -415,10 +463,12 @@ def test_19_the_two_recognised_totals_are_the_ones_the_model_check_uses() -> Non
                      _module().raw)
     assert theirs and ours, (theirs, ours)
     assert theirs.group(1) == ours.group(1), (theirs.group(1), ours.group(1))
-    # AND THE EMPTY TOTAL IS THE CONTRACT'S OWN INITIAL VALUE - what
-    # SetYearColumns seeds a new project year with - so "no profile yet" means
-    # the same thing to this command as it does to the profiling owner. The
-    # trailing "#" is VBA's Double type character and is not part of the number.
+    # AND THE EMPTY TOTAL IS THE PROFILING OWNER'S INITIAL VALUE - what the Add
+    # and Apply Timeline path seeds a new driver and a new project year with - so
+    # a row of zeros is RECOGNISED as "no profile yet" by this command as by the
+    # owner. Recognised, not written: what Repair itself reconstructs is BLANK
+    # (test_04, test_07, test_27). The trailing "#" is VBA's Double type
+    # character and is not part of the number.
     empty = re.search(r"Private Const REPAIR_PROFILE_SUM_EMPTY As Double = (\S+)",
                       _module().raw)
     assert empty, _module().raw
@@ -567,6 +617,117 @@ def test_26_the_success_wording_says_what_happened_and_what_was_kept() -> None:
     for path in sorted(SRC.glob("*.bas")):
         if path.name != "modRepair.bas":
             assert "structurally correct" not in path.read_text(encoding="utf-8"), path.name
+
+
+# ===========================================================================
+# E. THE RECONSTRUCTION RULE - final acceptance run 7
+# ===========================================================================
+def test_27_the_blanking_clears_exactly_what_the_owners_reconstructed_through_their_accessor() -> None:
+    """SOURCE. PresentIds reads the owner's id list before the owners run;
+    BlankReconstructed reads it again after, and for every id clears the
+    project years from 1 (a row that had none) or from the previous width plus
+    one (a row that existed) up to the target width - through
+    modProfiling.SetValueFor with Empty, the owner's own (id, year) accessor.
+    Nothing is cleared for a row that existed at a position that existed."""
+    present = _procedure("PresentIds")
+    assert "modProfiling.IdList(kind)" in present and 'Split(listed, ",")' in present
+    assert 'CreateObject("Scripting.Dictionary")' in present
+    body = _procedure("BlankReconstructed")
+    assert "modProfiling.IdList(plan.Kind)" in body
+    assert "If hadRow.Exists(ids(index)) Then" in body
+    assert "firstYear = plan.ActualYears + 1" in body
+    assert "firstYear = 1" in body
+    assert "For year = firstYear To plan.TargetYears" in body
+    assert "modProfiling.SetValueFor plan.Kind, ids(index), year, Empty" in body
+    assert body.index("If hadRow.Exists(ids(index)) Then") < body.index("firstYear = plan.ActualYears + 1") \
+        < body.index("firstYear = 1") < body.index("For year = firstYear To plan.TargetYears")
+    # ONLY Empty IS EVER WRITTEN THROUGH THE ACCESSOR: no zero, no initial value.
+    for line in body.splitlines():
+        if "SetValueFor" in line:
+            assert line.strip().endswith(", Empty"), line
+    assert "PROFILE_INITIAL_VALUE" not in _code()
+    assert re.search(r"SetValueFor[^\n]*\b0\b", _code()) is None
+    # THE RULE IS INSIDE Apply, BEFORE THE FAILPOINTS, so the transaction covers it.
+    repair = _procedure("RepairProfiling")
+    assert repair.index("Apply cost") < repair.index("FAILPOINT_REPAIR_COST") \
+        < repair.index("Apply risk") < repair.index("FAILPOINT_REPAIR_RISK")
+    # AND STILL NO GEOMETRY: the module names no cell and assigns no cell.
+    assert not re.search(r"\.Value2?\s*=", _code())
+
+
+def test_28_existing_blank_zero_and_nonzero_weights_survive_exactly() -> None:
+    """PRESERVATION, THE THREE KINDS. A blank stays blank, an explicit zero stays
+    zero and a number stays that number, through a no-op, a reorder, a missing
+    row beside them, and a width growth - because the rule touches only cells
+    the owners had to reconstruct."""
+    grid = {"CL-002": [BLANK, 0.0, 0.7], "CL-001": [0.3, BLANK, 0.0]}
+    same = repair_grid(["CL-002", "CL-001"], grid, 3)
+    assert same == grid
+    reordered = repair_grid(["CL-001", "CL-002"], grid, 3)
+    assert reordered == {"CL-001": [0.3, BLANK, 0.0], "CL-002": [BLANK, 0.0, 0.7]}
+    with_missing = repair_grid(["CL-001", "CL-003", "CL-002"], grid, 3)
+    assert with_missing == {"CL-001": [0.3, BLANK, 0.0], "CL-003": [BLANK, BLANK, BLANK],
+                            "CL-002": [BLANK, 0.0, 0.7]}
+    grown = repair_grid(["CL-001", "CL-002"], grid, 5)
+    assert grown == {"CL-001": [0.3, BLANK, 0.0, BLANK, BLANK], "CL-002": [BLANK, 0.0, 0.7, BLANK, BLANK]}
+    # A shrink of empty positions keeps every surviving cell exactly.
+    shrunk = repair_grid(["CL-001", "CL-002"], {"CL-001": [0.3, BLANK, 0.0, BLANK], "CL-002": [BLANK, 0.0, 0.7, 0.0]}, 3)
+    assert shrunk == {"CL-001": [0.3, BLANK, 0.0], "CL-002": [BLANK, 0.0, 0.7]}
+
+
+def test_29_the_ordinary_profiling_owners_are_unchanged_and_still_seed_the_initial_value() -> None:
+    """THE CORRECTION IS REPAIR'S, NOT THE OWNERS'. Add Cost Line, Add Risk and
+    Apply / Update Timeline keep their semantics: modProfiling is byte-identical
+    to the tree final acceptance run 7 executed, and SyncRows and SetYearColumns
+    still seed a new driver and a new project year with the initial value."""
+    profiling = _profiling_raw()
+    import subprocess
+    tested = subprocess.run(["git", "show", "ee6e9fb:pccm/src/vba/modProfiling.bas"],
+                            cwd=PCCM_ROOT.parent, capture_output=True, text=True, check=True).stdout
+    assert profiling == tested, "modProfiling moved with the Repair correction"
+    sync = re.search(r"^Public Sub SyncRows\b.*?^End Sub$", profiling, re.M | re.S).group(0)
+    assert "cell.Value = PROFILE_INITIAL_VALUE" in sync
+    columns = re.search(r"^Public Sub SetYearColumns\b.*?^End Sub$", profiling, re.M | re.S).group(0)
+    assert "added.DataBodyRange.Cells(r, 1).Value = PROFILE_INITIAL_VALUE" in columns
+    # And the accessor Repair blanks through is the owner's own, unchanged.
+    assert re.search(r"^Public Sub SetValueFor\b", profiling, re.M)
+
+
+def test_30_the_declared_correction_reverses_exactly_to_the_tree_run_7_executed() -> None:
+    """DECLARATION OVER PROHIBITION. Taking the correction back out of
+    modRepair.bas reproduces ee6e9fb byte for byte, and the structural-window
+    reversal beneath it still reproduces 58b2394 - so the only production
+    change since run 7 is this one, and every pinned control keeps its claim."""
+    import subprocess
+    from vba_repair_reconstruction import (ACCEPTED_BEFORE_REPAIR_RECONSTRUCTION,
+                                           DECLARED_REPAIR_RECONSTRUCTION_CHANGES,
+                                           strip_repair_reconstruction)
+    from vba_structural_window import strip_structural_window
+    assert set(DECLARED_REPAIR_RECONSTRUCTION_CHANGES) == {"modRepair.bas"}
+    current = REPAIR_BAS.read_bytes().decode("utf-8")
+    tested = subprocess.run(["git", "show", f"{ACCEPTED_BEFORE_REPAIR_RECONSTRUCTION}:pccm/src/vba/modRepair.bas"],
+                            cwd=PCCM_ROOT.parent, capture_output=True, text=True, check=True).stdout
+    assert strip_repair_reconstruction("modRepair.bas", current) == tested
+    assert current != tested, "the correction is absent"
+    base = subprocess.run(["git", "show", "58b2394:pccm/src/vba/modRepair.bas"],
+                          cwd=PCCM_ROOT.parent, capture_output=True, text=True, check=True).stdout
+    assert strip_structural_window("modRepair.bas", current) == base
+    changed = subprocess.run(["git", "diff", "--name-only", ACCEPTED_BEFORE_REPAIR_RECONSTRUCTION, "--", "pccm/src", "pccm/spec", "pccm/builder"],
+                             cwd=PCCM_ROOT.parent, capture_output=True, text=True, check=True).stdout.split()
+    assert changed in ([], ["pccm/src/vba/modRepair.bas"]), changed
+
+
+def test_31_the_success_wording_says_what_was_left_blank_only_when_something_was() -> None:
+    summary = _procedure("Summary")
+    assert "If Reconstructed(cost) Or Reconstructed(risk) Then" in summary
+    assert "left blank for you to complete" in summary and "a blank is an unmade assumption" in summary
+    reconstructed = _procedure("Reconstructed")
+    assert "(plan.Missing > 0) Or (plan.TargetYears > plan.ActualYears)" in reconstructed
+    assert "If Not plan.NeedsRepair Then Exit Function" in reconstructed
+    # THE RECOGNISED-EMPTY COMMENT NO LONGER CALLS ZERO THE RECONSTRUCTED STATE.
+    raw = _module().raw
+    assert "0% is the contract's EMPTY state" not in raw
+    assert "is left BLANK (see Apply)" in raw
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -412,9 +412,101 @@ def test_25_the_oracle_composition_cannot_carry_the_ordering_claim() -> None:
         reversed_order = remap_profiling(
             sync_profiling_values(grid, ordered, width, conformance.INITIAL),
             target, conformance.INITIAL)
+        # THE RECONSTRUCTION RULE IS APPLIED TO BOTH ORDERS ALIKE: it is a third
+        # step after the owners, and this control is about the owners' order.
+        reversed_order = conformance.blank_reconstructed(grid, width, reversed_order, target)
         assert forward == reversed_order, (grid, target, forward, reversed_order)
     # AND THE SOURCE CONTROL THAT DOES CARRY IT IS PRESENT AND ATTACKED.
-    assert "test_01_the_repair_is_two_owner_calls_and_nothing_else" in _tests()
+    assert "test_01_the_repair_is_two_owner_calls_then_the_reconstruction_rule_and_nothing_else" in _tests()
+
+
+# ===========================================================================
+# THE RUN-7 DEFECT AND ITS NEIGHBOURS
+# ===========================================================================
+def test_26_the_post_sync_blanking_of_a_recreated_row_is_removed() -> None:
+    """THE RUN-7 DEFECT, PUT BACK: the owners run and nothing is cleared."""
+    _control("test_01", _swap("    BlankReconstructed plan, hadRow\n", ""))
+
+
+def test_27_the_width_growth_blanking_is_removed() -> None:
+    """ONLY RECREATED ROWS ARE BLANKED; an added project year keeps the owner's zero."""
+    _control("test_27", _swap("            firstYear = plan.ActualYears + 1\n",
+                              "            firstYear = plan.TargetYears + 1\n"))
+
+
+def test_28_the_blanking_writes_a_zero_instead_of_a_blank() -> None:
+    _control("test_27", _swap("modProfiling.SetValueFor plan.Kind, ids(index), year, Empty",
+                              "modProfiling.SetValueFor plan.Kind, ids(index), year, 0"))
+
+
+def test_29_the_blanking_reaches_rows_that_already_existed() -> None:
+    """EVERY ROW BLANKED FROM YEAR 1 would destroy attributable weights."""
+    _control("test_27", _swap("        If hadRow.Exists(ids(index)) Then\n            firstYear = plan.ActualYears + 1\n",
+                              "        If False Then\n            firstYear = plan.ActualYears + 1\n"))
+
+
+def test_30_the_ids_are_recorded_after_the_owners_ran() -> None:
+    """RECORDED AFTER SYNC, every register id "had a row" and nothing is ever blanked."""
+    _control("test_01", _swap(
+        "    Set hadRow = PresentIds(plan.Kind)\n    modProfiling.SetYearColumns plan.Kind, plan.StartYear, plan.TargetYears\n    modProfiling.SyncRows plan.Kind\n",
+        "    modProfiling.SetYearColumns plan.Kind, plan.StartYear, plan.TargetYears\n    modProfiling.SyncRows plan.Kind\n    Set hadRow = PresentIds(plan.Kind)\n"))
+
+
+def _damaged_composition(mutation):
+    """Damage the Python model of the reconstruction rule and rerun the battery."""
+    original = conformance.blank_reconstructed
+    conformance.blank_reconstructed = mutation
+    try:
+        refused = _run_battery()
+    finally:
+        conformance.blank_reconstructed = original
+    assert refused, "the mutation survived the whole conformance battery"
+    return refused
+
+
+def test_31_an_existing_blank_turned_into_a_zero_is_refused() -> None:
+    def blank_becomes_zero(before, before_years, after, target_years):
+        out = conformance.__dict__["_ORIGINAL_BLANKING"](before, before_years, after, target_years)
+        return {k: [0.0 if v is None and i < before_years and k in before else v for i, v in enumerate(row)]
+                for k, row in out.items()}
+    conformance.__dict__["_ORIGINAL_BLANKING"] = conformance.blank_reconstructed
+    refused = _damaged_composition(blank_becomes_zero)
+    assert any(n.startswith(("test_08", "test_28")) for n in refused), refused
+
+
+def test_32_an_existing_zero_turned_into_a_blank_is_refused() -> None:
+    def zero_becomes_blank(before, before_years, after, target_years):
+        out = conformance.__dict__["_ORIGINAL_BLANKING"](before, before_years, after, target_years)
+        return {k: [None if v == 0.0 else v for v in row] for k, row in out.items()}
+    conformance.__dict__["_ORIGINAL_BLANKING"] = conformance.blank_reconstructed
+    refused = _damaged_composition(zero_becomes_blank)
+    assert any(n.startswith(("test_03", "test_28")) for n in refused), refused
+
+
+def test_33_an_existing_nonzero_weight_changed_is_refused() -> None:
+    def weight_moves(before, before_years, after, target_years):
+        out = conformance.__dict__["_ORIGINAL_BLANKING"](before, before_years, after, target_years)
+        return {k: [v * 0.5 if isinstance(v, float) and v not in (0.0,) else v for v in row] for k, row in out.items()}
+    conformance.__dict__["_ORIGINAL_BLANKING"] = conformance.blank_reconstructed
+    refused = _damaged_composition(weight_moves)
+    assert any(n.startswith(("test_03", "test_06", "test_28")) for n in refused), refused
+
+
+def test_34_changing_sync_rows_globally_as_a_shortcut_is_refused() -> None:
+    """THE OWNERS ARE NOT THE PLACE: a SyncRows that blanked every new driver would
+    change Add Cost Line, Add Risk and Apply Timeline for everyone."""
+    original = conformance._profiling_raw()
+    damaged = original.replace("                    cell.Value = PROFILE_INITIAL_VALUE\n",
+                               "                    cell.ClearContents\n", 1)
+    assert damaged != original
+    saved = dict(conformance._CACHE)
+    conformance._CACHE["profiling"] = damaged
+    try:
+        refused = _run_battery()
+    finally:
+        conformance._CACHE.clear()
+        conformance._CACHE.update(saved)
+    assert any(n.startswith("test_29") for n in refused), refused
 
 
 if __name__ == "__main__":  # pragma: no cover

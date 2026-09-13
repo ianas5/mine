@@ -660,6 +660,26 @@ def test_52h_the_run_9_root_cause_is_the_selector_not_mutable_state() -> None:
     assert "computed **after**" in text
 
 
+def _undeclared_production_changes(commit: str) -> list[str]:
+    """Production paths changed since `commit` that are NOT a declared layer -
+    after proving every declared module reverses to that commit's bytes."""
+    import sys as _sys
+    _sys.path.insert(0, str(PCCM_ROOT / "tests"))
+    from vba_structural_window import declared_production_changes, strip_declared_changes
+    declared = {f"pccm/src/vba/{name}" for name in declared_production_changes()}
+    changed = [line for line in subprocess.run(
+        ["git", "diff", "--name-only", commit, "--", "pccm/src", "pccm/spec"],
+        cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE, text=True).stdout.splitlines() if line.strip()]
+    for path in sorted(set(changed) & declared):
+        name = Path(path).name
+        current = strip_declared_changes(name, (PCCM_ROOT / "src" / "vba" / name).read_bytes().decode("utf-8"))
+        accepted = strip_declared_changes(name, subprocess.run(
+            ["git", "show", f"{commit}:{path}"], cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE, text=True).stdout)
+        assert current.replace("\r\n", "\n") == accepted.replace("\r\n", "\n"), \
+            f"{path} moved outside the declared layers"
+    return [path for path in changed if path not in declared]
+
+
 def test_52i_run_9_does_not_reopen_the_protection_architecture() -> None:
     """REQUIRED: a reporting defect is not a reason to widen the envelope."""
     text = _evidence_section("## Protection probe Run 9")
@@ -670,7 +690,10 @@ def test_52i_run_9_does_not_reopen_the_protection_architecture() -> None:
     changed = subprocess.run(
         ["git", "diff", "--name-only", "04fcf82", "--", "pccm/src", "pccm/spec"],
         cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE, text=True).stdout
-    assert not changed.strip(), f"production changed: {changed}"
+    # P10-2C DECLARED (final acceptance run 7): modRepair.bas carries the Repair
+    # reconstruction rule; taking that declared layer off both sides reproduces
+    # the run-9 tree, so the protection architecture is still not reopened.
+    assert _undeclared_production_changes("04fcf82") == [], changed
 
 
 def test_52j_the_closure_artifact_is_recorded_with_its_six_conclusions() -> None:
@@ -745,7 +768,10 @@ def test_54_production_vba_is_byte_identical_to_the_reconciliation() -> None:
         ["git", "diff", "--name-only", "0946cf6", "--", "pccm/src", "pccm/spec"],
         cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE, text=True).stdout.splitlines()
         if line.strip()]
-    assert changed == [], f"production changed after the run that exercised it: {changed}"
+    # P10-2C DECLARED (final acceptance run 7): the only production move since
+    # the reconciliation is the Repair reconstruction rule, proved by reversal.
+    assert _undeclared_production_changes("0946cf6") == [], \
+        f"production changed after the run that exercised it: {changed}"
 
 
 def test_51_the_owner_records_what_was_disproved_and_what_was_not() -> None:

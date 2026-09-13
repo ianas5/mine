@@ -686,10 +686,14 @@ def _production_changed_since(commit: str) -> list[str]:
     """
     import sys as _sys
     _sys.path.insert(0, str(PCCM_ROOT / "tests"))
-    from vba_structural_window import (DECLARED_STRUCTURAL_WINDOW_CHANGES,
-                                       strip_structural_window)
+    from vba_structural_window import (declared_production_changes,
+                                       strip_declared_changes)
 
-    declared = {f"pccm/src/vba/{name}" for name in DECLARED_STRUCTURAL_WINDOW_CHANGES}
+    # P10-2C CORRECTION, DECLARED THE SAME WAY (final acceptance run 7): the
+    # Repair reconstruction rule in modRepair.bas is a second declared layer,
+    # and the SAME reversal is applied to BOTH sides so a pin that sits before or
+    # after either layer still compares the trees beneath them.
+    declared = {f"pccm/src/vba/{name}" for name in declared_production_changes()}
     changed = [line for line in _git("diff", "--name-only", commit, "--",
                                      "pccm/src", "pccm/spec").splitlines() if line.strip()]
     for path in sorted(set(changed) & declared):
@@ -699,10 +703,11 @@ def _production_changed_since(commit: str) -> list[str]:
         # control is about CONTENT; the line-ending convention has its own
         # control (test_phase9_model_check test_46_2) and keeps it.
         current = (PCCM_ROOT / "src" / "vba" / name).read_bytes().decode("utf-8")
-        current = strip_structural_window(name, current).replace("\r\n", "\n")
-        accepted = _git("show", f"{commit}:{path}").replace("\r\n", "\n")
+        current = strip_declared_changes(name, current).replace("\r\n", "\n")
+        accepted = strip_declared_changes(name, _git("show", f"{commit}:{path}")).replace("\r\n", "\n")
         assert current == accepted, (
-            f"{path} moved outside the declared P10-RP structural window")
+            f"{path} moved outside the declared P10-RP structural window and the "
+            f"declared P10-2C Repair reconstruction")
     return [path for path in changed if path not in declared]
 
 
@@ -1824,8 +1829,12 @@ def test_137_the_correction_introduces_no_release_of_protection() -> None:
         "diff", "--name-only", "0119bee", "--",
         "pccm/src", "pccm/spec", "pccm/builder").splitlines() if line.strip()]
     # P10-9 DECLARED: the builder's Source Revision row, additive, proved by test_55.
-    assert changed == ["pccm/builder/pccm_builder/workbook_builder.py"], \
+    # P10-2C DECLARED: the Repair reconstruction rule in modRepair.bas (final
+    # acceptance run 7), proved by reversal in _production_changed_since below.
+    assert changed == ["pccm/builder/pccm_builder/workbook_builder.py",
+                       "pccm/src/vba/modRepair.bas"], \
         f"production changed for a harness correction: {changed}"
+    assert _production_changed_since("0119bee") == []
     _assert_only_source_revision_added(_git("diff", "0119bee", "--",
                                             "pccm/builder/pccm_builder/workbook_builder.py"))
 
@@ -3365,7 +3374,11 @@ def test_292_production_vba_is_unchanged() -> None:
     """REQUIRED CONTROL 16. The cause is a fixture-order matter; production is
     not touched for it."""
     assert _production_changed_since("d90a186") == []
-    assert _git("diff", "--name-only", "d90a186", "--", "pccm/src/vba").strip() == ""
+    # P10-2C DECLARED: the one module that moved since d90a186 is modRepair.bas,
+    # and _production_changed_since has just proved the move is the declared
+    # reversal and nothing else.
+    assert _git("diff", "--name-only", "d90a186", "--", "pccm/src/vba").split() in (
+        [], ["pccm/src/vba/modRepair.bas"])
 
 
 def test_293_calcequiv_remains_an_independent_requirement() -> None:
@@ -3625,10 +3638,12 @@ def test_304_the_snapshot_calcequiv_production_and_timed_path_are_unchanged() ->
     assert compare == then_compare, "the comparison or the CALCEQUIV block moved"
     assert "CALCEQUIV|match" in compare and "CALCEQUIV|differ" in compare
     assert _production_changed_since("1eb6395") == []
+    # P10-2C DECLARED (final acceptance run 7): modRepair.bas carries the Repair
+    # reconstruction rule, proved by reversal just above; nothing else moved.
     assert _git("diff", "--name-only", "1eb6395", "--", "pccm/src/vba",
                 "pccm/bootstrap/windows/build_stage_b.ps1", "pccm/bootstrap/windows/com_lifecycle.ps1",
                 "pccm/bootstrap/windows/phase5_gate_b_scenarios.ps1",
-                "pccm/bootstrap/windows/phase10_fixture_window.bas").strip() == ""
+                "pccm/bootstrap/windows/phase10_fixture_window.bas").split() in ([], ["pccm/src/vba/modRepair.bas"])
     for name in ("Invoke-BenchmarkExecution", "Test-BenchmarkSample", "Get-BenchmarkMedian",
                  "New-BenchmarkWeightBlock", "New-BenchmarkRegisterBlock", "Set-BenchmarkRangeBlock",
                  "Set-BenchmarkRegisterRowCount", "Set-BenchmarkBulkFixture",

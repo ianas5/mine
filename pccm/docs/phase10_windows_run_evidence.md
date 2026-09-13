@@ -4191,3 +4191,101 @@ two identical entries consume two distinct rows; four mutations — the token
 restored on either expectation, the Subject constraint dropped, and the matched
 row left in the pool — are refused. The semantic expected sets are unchanged.
 
+## Final acceptance run 7 — ee6e9fb — FAILED AT repair.missing-row — GENUINE PRODUCTION DEFECT
+
+**Executed on Windows at `ee6e9fb`.** Stage A 351 passed, 0 failed. **Source
+Revision expected `ee6e9fb (clean)`, observed `ee6e9fb (clean)`.** This run went
+further than every run before it: every check through
+`repair.missing-row.window-after` passed — the Stage-B bootstrap; the persisted
+initial state; compile; sheets and CodeNames; the module set; every metadata
+row; protection; the fixture; the structural add/delete workflow for the cost
+line and the risk; Apply Timeline; Calculate CURRENT; `modelcheck.calculated`;
+worksheet safety; Simulation CURRENT; Sensitivity; Annual CURRENT;
+`modelcheck.simulated`; the STALE transition and restore; the INVALID
+transition; the REFUSED attempt semantics; the refusal subject; the historical
+annual and profile assertion; **`modelcheck.invalid` passed exactly:
+`CAL-010 ERROR [CL-001]`, `INP-010 WARNING`, `ANN-010 WARNING`,
+`ANN-050 WARNING`**; the state restored to the identical CURRENT fingerprint;
+protection after the refusal; Repair Profiling as a no-op; protection after the
+no-op; and the fixture window before and after deleting `CL-002`'s profiling row.
+
+The first genuine acceptance failure was:
+
+```
+FAIL|repair.missing-row|CL-002 column 3 is 0, not blank; CL-002 column 4 is 0, not blank; CL-002 column 5 is 0, not blank; CL-002 column 6 is 0, not blank
+```
+
+45 checks recorded, 1 failed. **Shutdown was clean:** Workbook.Close True;
+Application.Quit True; natural PID exit True; no emergency cleanup; every
+transient COM object released.
+
+**Classification: a GENUINE PRODUCTION DEFECT.** The runner enforces the settled
+Phase-10 Step-1 contract, §5, correctly: for a valid driver with no profiling
+row, Repair Profiling must "create it, id only, weights blank — a blank is an
+unmade assumption, not a zero", and where the grid is narrower than the applied
+duration it must "extend with blanks". Repair recreated `CL-002` but its four
+project-year cells held numeric zero. Production behaviour contradicted the
+settled contract; the runner correctly refused it.
+
+**Root cause, from source.** `modRepair.Apply` called
+`modProfiling.SetYearColumns` and then `modProfiling.SyncRows` and nothing
+else. `SyncRows` snapshots the existing rows by permanent id; `CL-002`'s row had
+been deleted, so it was absent from the held dictionary and `SyncRows` took its
+ordinary NEW-DRIVER branch, `cell.Value = PROFILE_INITIAL_VALUE`, which is a
+zero. That is correct for Add Cost Line, Add Risk and Apply / Update Timeline —
+a genuinely new driver starts at the profiling owner's initial value — and it
+is wrong for Repair Profiling, whose recovery contract says blank. The same
+collision existed for width growth: `SetYearColumns` seeds every newly appended
+project-year cell with the initial value, where the Repair contract says
+"extend with blanks". The oracle-level controls in the Repair suite had
+composed the two owners and asserted the zero, so they had enshrined the defect.
+
+**FINAL ACCEPTANCE IS NOT PASSED.** The runner's `repair.missing-row`
+expectation is correct and is not weakened.
+
+### Corrected in this round (production: modRepair.bas only — no Windows)
+
+`modRepair.Apply` now records, through `modProfiling.IdList`, which permanent
+ids had a profiling row BEFORE the two owners run; calls the two owners exactly
+as before, in the same order; and then, through the profiling owner's own
+(permanent id, project year) accessor `modProfiling.SetValueFor` with `Empty`,
+clears every project-year weight of a row the owners had to recreate, and every
+project-year position beyond the previous width for every row when the grid was
+widened — and nothing else. A weight that existed before, at a position that
+existed before, is untouched: blank stays blank, zero stays zero, a number stays
+exactly that number; reordered rows keep their weights by permanent id; orphans
+are removed as before. The blanking sits inside `Apply`, before the existing
+failpoints, so both grids are still snapshotted before the first `Apply` and
+restored on any failure. No state word is written and no fingerprint is touched.
+The success wording adds one sentence, only when a row or a project year was
+reconstructed: "Rows and project years this command had to reconstruct are left
+blank for you to complete: a blank is an unmade assumption, not a zero." The
+recognised-empty comment no longer calls zero the reconstructed state.
+`modProfiling.SyncRows` and `modProfiling.SetYearColumns` are byte-identical to
+`ee6e9fb` and still seed the ordinary path with the initial value; Add Cost
+Line, Add Risk and Apply / Update Timeline are unchanged.
+
+The correction is declared, not exempted: `tests/vba_repair_reconstruction.py`
+holds the exact fragments, taking them out reproduces `ee6e9fb` byte for byte,
+and the structural-window reversal beneath still reproduces `58b2394`; every
+control that pins production to an accepted tree applies both declared layers to
+both sides and keeps its claim that nothing else moved.
+
+### The §5 reconciliation audit
+
+| § 5 case | contract | implementation | verdict |
+|---|---|---|---|
+| 1. missing valid driver row | recreate, id only, weights blank | was: owners' zero; now: blank through the owner's accessor | **corrected** |
+| 2. orphan profiling row | remove | `SyncRows` writes only register ids; trailing rows cleared | conforms |
+| 3. unique rows out of register order | reorder; weights travel with their id | `SyncRows` re-keys every row by permanent id | conforms |
+| 4. grid too narrow | extend with blanks | was: `SetYearColumns` seeds the initial value; now: added positions blanked | **corrected** |
+| 5. grid too wide | trim only when the removed cells hold no non-empty weight | `TrimIsEmpty` → `modProfiling.CountDataBeyond` → `modWorkbook.IsDataCell`, which counts an explicit **0 as not data** (Phase-4 convention) | **OPEN — reported, not changed**: the Phase-10 wording "non-empty weight" read under blank ≠ zero would treat an explicit 0 as a typed weight; the accepted owner treats it as empty |
+| 6. duplicate id, different weights | refuse, naming the id | `ReadGridIds` refuses naming the id; identical duplicates collapse | conforms |
+| 7. unreadable id | refuse | `ReadRegisterIds` / `ReadGridIds` refuse an error-valued id; a non-numeric or error weight is refused too | conforms |
+| 8. weights present but do not sum to 1 | refuse — a business assumption | `RecognisedProfile` refuses a total that is neither 0% nor 100%, but ONLY when the width changes (weights would move between project-year sets); a 0% total is recognised as "no profile yet" | **OPEN — reported, not changed**: the contract row carries no width qualifier and does not say whether an all-zero row counts as "weights present"; the accepted P10-2C batch settled the narrower reading and its controls assert it |
+
+Items 5 and 8 are genuine wording-versus-convention questions between the
+settled Phase-10 text and the accepted Phase-4 profiling convention. Per the
+authorisation they are reported here and no rule is changed for them; the
+missing-row and width-growth defects are unambiguous and are corrected.
+

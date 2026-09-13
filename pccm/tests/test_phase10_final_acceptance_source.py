@@ -448,6 +448,19 @@ def test_50_the_four_repair_scenarios_assert_the_contract() -> None:
     assert "Add-FaCheck 'repair.fingerprint'" in code and "($fingerprintAfterRepairs -ceq $fingerprint)" in code
 
 
+def test_50b_the_missing_row_expectation_requires_blank_weights_and_never_a_zero() -> None:
+    """RUN 7's GENUINE FINDING. The runner requires the recreated row's
+    project-year cells to be BLANK, and that is the settled §5 contract; it is
+    not weakened to accept the owners' zero."""
+    code = _code()
+    missing = code[code.index("$repairMissing = Invoke-FaEndpoint"):code.index("Add-FaCheck 'repair.missing-row'")]
+    assert "if ([string]$restoredRow[$c] -ne '') { $repairProblems += ($missingId + ' column ' + [string]($c + 1) + ' is ' + [string]$restoredRow[$c] + ', not blank') }" in missing
+    assert "-ne '0'" not in missing and "-ne 0" not in missing
+    contract = (PCCM_ROOT / "docs" / "phase10_step1_contract.md").read_text(encoding="utf-8")
+    assert "create it, id only, **weights blank** — a blank is an unmade assumption, not a zero" in contract
+    assert "extend with blanks" in contract
+
+
 def test_51_every_repair_precondition_is_created_inside_the_window_and_repaired_outside_it() -> None:
     """THE WINDOW MAKES THE DEFECT; PRODUCTION REPAIRS UNDER ITS OWN PROTECTION."""
     code = _code()
@@ -963,6 +976,19 @@ def test_60t_the_record_states_run_6_as_a_runner_representation_defect() -> None
         assert fact in plain, fact
 
 
+def test_60u_the_record_states_run_7_as_a_genuine_production_defect() -> None:
+    record = (PCCM_ROOT / "docs" / "phase10_windows_run_evidence.md").read_text(encoding="utf-8")
+    start = record.index("## Final acceptance run 7 — ee6e9fb — FAILED AT repair.missing-row — GENUINE PRODUCTION DEFECT")
+    plain = " ".join(record[start:].replace("`", "").replace("**", "").split())
+    for fact in ("351 passed", "expected ee6e9fb (clean)", "observed ee6e9fb (clean)", "repair.missing-row.window-after",
+                 "modelcheck.invalid passed exactly", "CAL-010 ERROR [CL-001]", "INP-010 WARNING", "ANN-010 WARNING", "ANN-050 WARNING",
+                 "identical CURRENT fingerprint", "Repair Profiling as a no-op", "CL-002 column 3 is 0, not blank",
+                 "GENUINE PRODUCTION DEFECT", "not weakened", "cell.Value = PROFILE_INITIAL_VALUE", "extend with blanks",
+                 "FINAL ACCEPTANCE IS NOT PASSED", "Workbook.Close True", "Application.Quit True", "natural PID exit True",
+                 "modProfiling.SetValueFor", "OPEN — reported, not changed"):
+        assert fact in plain, fact
+
+
 def test_60o_the_record_states_run_4_as_a_runner_matcher_defect() -> None:
     record = (PCCM_ROOT / "docs" / "phase10_windows_run_evidence.md").read_text(encoding="utf-8")
     start = record.index("## Final acceptance run 4 — 95e322f — TERMINATED IN THE MODEL CHECK MATCHER — RUNNER MATCHER DEFECT")
@@ -1082,9 +1108,23 @@ def test_65_the_shutdown_is_the_accepted_lifecycle_and_is_asserted() -> None:
 # ===========================================================================
 # H. THE TREE
 # ===========================================================================
-def test_70_production_vba_spec_and_builder_are_byte_identical_to_the_accepted_head() -> None:
-    changed = _git("diff", "--name-only", ACCEPTED, "--", "pccm/src", "pccm/spec", "pccm/builder").strip()
-    assert changed == "", changed
+def test_70_production_vba_spec_and_builder_are_byte_identical_to_the_accepted_head_except_the_declared_repair_correction() -> None:
+    """RESTATED at final acceptance run 7, which found a GENUINE production
+    defect: Repair Profiling recreated a missing row seeded at zero where the
+    contract says blank. The correction is one declared layer in modRepair.bas;
+    taking it off reproduces the tree run 7 executed byte for byte, and no other
+    production, spec or builder byte has moved since the accepted head."""
+    changed = _git("diff", "--name-only", ACCEPTED, "--", "pccm/src", "pccm/spec", "pccm/builder").split()
+    assert changed == ["pccm/src/vba/modRepair.bas"], changed
+    sys.path.insert(0, str(PCCM_ROOT / "tests"))
+    from vba_repair_reconstruction import (ACCEPTED_BEFORE_REPAIR_RECONSTRUCTION,
+                                           strip_repair_reconstruction)
+    current = (PCCM_ROOT / "src" / "vba" / "modRepair.bas").read_bytes().decode("utf-8")
+    tested = _git("show", f"{ACCEPTED_BEFORE_REPAIR_RECONSTRUCTION}:pccm/src/vba/modRepair.bas")
+    assert strip_repair_reconstruction("modRepair.bas", current) == tested
+    assert current != tested, "the declared correction is absent"
+    assert _git("diff", "--name-only", ACCEPTED, ACCEPTED_BEFORE_REPAIR_RECONSTRUCTION, "--",
+                "pccm/src", "pccm/spec", "pccm/builder").strip() == ""
 
 
 def test_71_the_runner_is_declared_and_documented() -> None:

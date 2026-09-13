@@ -38,6 +38,10 @@ Option Explicit
 '   modProfiling.SyncRows         one row per register ID, in register order,
 '                                 with every weight following its permanent id
 '
+' plus the one rule this command adds on top of them, applied through the same
+' owner's (permanent id, project year) accessor and never through an address of
+' its own: what those two calls had to RECONSTRUCT is left blank (see Apply).
+'
 ' And the decision to act is taken against the ACCEPTED structural checker, not
 ' against a second opinion assembled here: modStructuralCheck.ValidateStructure
 ' reports every fault by its contract-declared key, and this command refuses
@@ -68,12 +72,15 @@ Public Const FAILPOINT_REPAIR_RISK As String = "Phase10RepairRisk"
 ' TOL_PROFILING_SUM_ABSOLUTE below, and nobody owns the target because it is what
 ' "a profile" means. A control asserts the two literals agree.
 '
-' 0% is the contract's EMPTY state, not an invalid one: PROFILE_INITIAL_VALUE is
-' what SetYearColumns seeds a new project year with and what SyncRows gives a
-' newly identified driver, so a row that totals zero is a driver nobody has
-' profiled yet. Neither of these two is a semantic choice this command could get
-' wrong. Anything between them is a half-entered profile, and restructuring one
-' is refused rather than guessed at.
+' 0% is the total this command RECOGNISES as "no profile yet": a row whose
+' weights are all zero or blank is a driver nobody has profiled, so restructuring
+' it moves no allocation. Zero is the profiling owner's ordinary initial value,
+' the one the Add and Apply / Update Timeline path seeds a new driver and a new
+' project year with. It is NOT what this command writes: a row or a project year
+' Repair Profiling has to reconstruct is left BLANK (see Apply), because a blank
+' is an unmade assumption and a zero is a typed one. Neither recognised total is
+' a semantic choice this command could get wrong. Anything between them is a
+' half-entered profile, and restructuring one is refused rather than guessed at.
 Private Const REPAIR_PROFILE_SUM_TARGET As Double = 1#
 Private Const REPAIR_PROFILE_SUM_EMPTY As Double = 0#
 
@@ -231,14 +238,72 @@ RepairFailed:
     RepairProfiling = Rollback(captured, costBefore, riskBefore, failure)
 End Function
 
-' THE REPAIR ITSELF, AND IT IS TWO CALLS. Columns before rows, in the order
-' Apply / Update Timeline uses them: SyncRows preserves a weight by (permanent
-' id, project-year index), so the index set has to be the right one before
-' ownership is re-established over it.
+' THE REPAIR ITSELF: TWO OWNER CALLS, THEN THE ONE RULE THIS COMMAND ADDS.
+' Columns before rows, in the order Apply / Update Timeline uses them: SyncRows
+' preserves a weight by (permanent id, project-year index), so the index set has
+' to be the right one before ownership is re-established over it.
+'
+' AND THEN WHAT THE OWNERS RECONSTRUCTED IS LEFT BLANK. The two owners are the
+' ordinary Add / Apply Timeline path, and on that path a driver that has never
+' been profiled and a project year that has just been applied are seeded with
+' the profiling owner's initial value, which is a zero. Repair Profiling is not
+' that path. It is the recovery command whose contract says a row it had to
+' recreate holds "id only, weights blank - a blank is an unmade assumption, not
+' a zero", and that a grid it had to widen is "extended with blanks"; final
+' acceptance run 7 found a recreated row seeded at zero instead. So the ids that
+' had a row BEFORE the owners ran are recorded first, and afterwards every
+' project-year weight of a row the owners had to recreate, and every project-year
+' position the owners had to add, is cleared - through the profiling owner's own
+' (permanent id, project year) accessor, so this module still names no cell. A
+' weight that existed before, at a position that existed before, is untouched:
+' blank stays blank, zero stays zero, a number stays exactly that number. Both
+' grids are snapshotted before Apply and restored on any failure, so a failure
+' after the blanking rolls it back with everything else.
 Private Sub Apply(ByRef plan As ProfilingPlan)
+    Dim hadRow As Object
     If Not plan.NeedsRepair Then Exit Sub
+    Set hadRow = PresentIds(plan.Kind)
     modProfiling.SetYearColumns plan.Kind, plan.StartYear, plan.TargetYears
     modProfiling.SyncRows plan.Kind
+    BlankReconstructed plan, hadRow
+End Sub
+
+' The permanent ids that have a profiling row NOW, as the owner lists them.
+Private Function PresentIds(ByVal kind As String) As Object
+    Dim found As Object
+    Dim listed As String, parts() As String
+    Dim index As Long
+    Set found = CreateObject("Scripting.Dictionary")
+    listed = modProfiling.IdList(kind)
+    If Len(listed) > 0 Then
+        parts = Split(listed, ",")
+        For index = LBound(parts) To UBound(parts)
+            If Not found.Exists(parts(index)) Then found.Add parts(index), True
+        Next index
+    End If
+    Set PresentIds = found
+End Function
+
+' Every weight cell this command RECONSTRUCTED, cleared, and nothing else: all
+' project years of a row that had no row before the owners ran, and the
+' project years beyond the previous width of every row when the grid was
+' widened. A shrink adds no position, so it clears nothing here.
+Private Sub BlankReconstructed(ByRef plan As ProfilingPlan, ByVal hadRow As Object)
+    Dim listed As String, ids() As String
+    Dim index As Long, year As Long, firstYear As Long
+    listed = modProfiling.IdList(plan.Kind)
+    If Len(listed) = 0 Then Exit Sub
+    ids = Split(listed, ",")
+    For index = LBound(ids) To UBound(ids)
+        If hadRow.Exists(ids(index)) Then
+            firstYear = plan.ActualYears + 1
+        Else
+            firstYear = 1
+        End If
+        For year = firstYear To plan.TargetYears
+            modProfiling.SetValueFor plan.Kind, ids(index), year, Empty
+        Next year
+    Next index
 End Sub
 
 ' BOTH GRIDS BACK, OR THE FAILURE SAYS SO. The snapshot pair is the whole of
@@ -702,6 +767,18 @@ Private Function Summary(ByRef cost As ProfilingPlan, ByRef risk As ProfilingPla
     End If
     Summary = out & " Every weight that could be attributed to a driver was preserved " & _
               "exactly, by permanent identifier and project year."
+    If Reconstructed(cost) Or Reconstructed(risk) Then
+        Summary = Summary & " Rows and project years this command had to reconstruct " & _
+                  "are left blank for you to complete: a blank is an unmade assumption, " & _
+                  "not a zero."
+    End If
+End Function
+
+' Whether a repair recreated a row or added a project year - the two cases whose
+' weights this command leaves blank.
+Private Function Reconstructed(ByRef plan As ProfilingPlan) As Boolean
+    If Not plan.NeedsRepair Then Exit Function
+    Reconstructed = (plan.Missing > 0) Or (plan.TargetYears > plan.ActualYears)
 End Function
 
 Private Function Describe(ByRef plan As ProfilingPlan) As String

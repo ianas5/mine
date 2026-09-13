@@ -94,7 +94,7 @@ _HUNKS: dict[str, tuple[tuple[str, str], ...]] = {
 }
 
 
-def strip_structural_window(module_name: str, text: str) -> str:
+def strip_structural_window(module_name: str, text: str, _already_stripped: bool = False) -> str:
     """`text` with this batch's declared reconciliation removed.
 
     A module the reconciliation never touched comes back unchanged, so the same
@@ -104,6 +104,13 @@ def strip_structural_window(module_name: str, text: str) -> str:
     text unchanged: "this file was not touched" is the one answer that would turn
     every control built on this into a control that passes over anything.
     """
+    # LATER DECLARED CHANGES COME OFF FIRST. The P10-2C Repair reconstruction
+    # correction (final acceptance run 7) was made on top of this reconciliation,
+    # so its reversal is applied before this one; each layer reproduces the tree
+    # beneath it exactly, and the composition reproduces the accepted tree.
+    if not _already_stripped:
+        from vba_repair_reconstruction import strip_repair_reconstruction
+        text = strip_repair_reconstruction(module_name, text)
     for current, accepted in _HUNKS.get(module_name, ()):
         # THE SAME FRAGMENT IN WHICHEVER ENDING THE CALLER IS HOLDING. Some
         # controls read these files as bytes and some through read_text, which
@@ -123,6 +130,37 @@ def strip_structural_window(module_name: str, text: str) -> str:
                 f"{found} times, so the reversal cannot be exact. Either the change "
                 f"moved or something rode along inside it:\n  {current.splitlines()[0]!r}")
     return text
+
+
+def strip_declared_changes(module_name: str, text: str) -> str:
+    """Every declared production layer taken off `text`, each all-or-none.
+
+    FOR COMPARING TWO TREES. A control that pins production to an accepted
+    commit compares the CURRENT file with the file AT that commit; the commit
+    may sit before or after either declared change, so the same reversal is
+    applied to BOTH sides and a layer a side does not carry passes through.
+    The later layer (the P10-2C Repair reconstruction) comes off before the
+    earlier one (the P10-RP structural window) because it was made on top of it.
+    """
+    from vba_repair_reconstruction import strip_repair_reconstruction
+    text = strip_repair_reconstruction(module_name, text)
+    hunks = _HUNKS.get(module_name, ())
+    if not hunks:
+        return text
+    present = [any(text.count(pair) == 1 for pair in (current, current.replace("\r\n", "\n")))
+               for current, _accepted in hunks]
+    if not any(present):
+        return text
+    return strip_structural_window(module_name, text, _already_stripped=True)
+
+
+def declared_production_changes() -> dict[str, str]:
+    """Every production module a declared change touches, and why."""
+    from vba_repair_reconstruction import DECLARED_REPAIR_RECONSTRUCTION_CHANGES
+    merged = dict(DECLARED_STRUCTURAL_WINDOW_CHANGES)
+    for name, why in DECLARED_REPAIR_RECONSTRUCTION_CHANGES.items():
+        merged[name] = (merged[name] + "; " + why) if name in merged else why
+    return merged
 
 
 def structural_window_touches(module_name: str) -> bool:
