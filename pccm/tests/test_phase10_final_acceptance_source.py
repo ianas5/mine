@@ -668,8 +668,8 @@ def test_60h_the_model_check_assertion_derives_everything_from_the_expected_set_
     assert "if ($expectedErrors -gt 0) { $expectedOverall = $states[2] }" in fn
     for required in ("if ($overall -cne $expectedOverall)", "if ($errors -ne $expectedErrors)", "if ($warnings -ne $expectedWarnings)",
                      "if ($unmatched.Count -gt 0) { $problems += ('unexpected actionable row(s): '",
-                     "is not shown as expected", "((Format-FaCell $row.message) -cne [string]$entry.Message)",
-                     "((Format-FaCell $row.subject) -cne [string]$entry.Subject)"):
+                     "is not shown as expected", "($entry.HasMessage -and ((Format-FaCell $row.message) -cne $entry.Message))",
+                     "($entry.HasSubject -and ((Format-FaCell $row.subject) -cne $entry.Subject))"):
         assert required in fn, required
     reader = _function("Get-FaModelCheckSurface", _code())
     assert "$Projection.register.first_row" in reader and "$Projection.register.last_row" in reader
@@ -749,6 +749,93 @@ def test_60k_every_projection_path_the_runner_reads_exists_in_the_generated_phas
     # reads the same path.
     builder = (PCCM_ROOT / "builder" / "pccm_builder" / "phase9_model_check.py").read_text(encoding="utf-8")
     assert 'inspection["evaluation"]["declared_checks"]' in builder
+
+
+MATCHER_HARNESS = PCCM_ROOT / "tests" / "phase10_final_acceptance_matcher_flow.ps1"
+PROJECTION_JSON = PCCM_ROOT / "build" / "phase9_model_check_inspection.json"
+
+
+def _matcher_lines(runner: Path = RUNNER) -> dict[str, str]:
+    done = subprocess.run([PWSH, "-NoProfile", "-File", str(MATCHER_HARNESS), "-Runner", str(runner),
+                           "-Projection", str(PROJECTION_JSON)], capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stdout + done.stderr
+    lines = {}
+    for line in done.stdout.splitlines():
+        parts = line.split("|", 2)
+        if len(parts) == 3 and parts[0] in ("MATCH", "REFUSED", "ERROR"):
+            lines[parts[1]] = line
+    assert lines, done.stdout
+    return lines
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_60m_the_matcher_executes_every_real_expectation_shape_under_strict_mode() -> None:
+    """RUN 4 AT 95e322f DIED HERE: `$entry.Subject` on the advisory expectation,
+    which names no Subject, under Set-StrictMode. The real matcher is lifted
+    out of the runner by AST and driven over the three real shapes, three
+    refusals and four malformed definitions, with no Excel and no COM."""
+    lines = _matcher_lines()
+    for case in ("A.advisory", "B.invalid", "C.after-reset"):
+        assert lines[case].startswith(f"MATCH|{case}|ok=True|"), lines[case]
+    assert "actionable=INP-010(WARNING)[Monte Carlo Iterations]" in lines["A.advisory"]
+    assert "overall=ERROR errors=1 warnings=1 actionable=CAL-010(ERROR)[CL-001], INP-010(WARNING)" in lines["B.invalid"]
+    assert "overall=WARNING errors=0 warnings=2" in lines["C.after-reset"] and "CAL-020(WARNING)[<blank>]" in lines["C.after-reset"]
+    for case, why in (("D.unrelated", "unexpected actionable row(s): ANN-050(WARNING)"),
+                      ("E.missing", "expected INP-010(WARNING) is not shown as expected"),
+                      ("F.wrong-subject", "expected CAL-010(ERROR) is not shown as expected")):
+        assert lines[case].startswith(f"MATCH|{case}|ok=False|") and why in lines[case], lines[case]
+    for case, why in (("M1.both-selectors", "names both Id and AnyOf"), ("M2.no-selector", "names neither Id nor AnyOf"),
+                      ("M3.no-severity", "has no Severity"), ("M4.empty-anyof", "has an empty AnyOf")):
+        assert lines[case].startswith(f"REFUSED|{case}|RUNNER DEFINITION ERROR") and why in lines[case], lines[case]
+    assert not [line for line in lines.values() if line.startswith("ERROR|")], lines
+
+
+def test_60n_no_optional_expected_field_is_read_before_its_presence_is_established() -> None:
+    code = _code()
+    validator = _function("Test-FaExpectedEntry", code)
+    for key in ("Id", "AnyOf", "Severity", "Subject", "Message"):
+        assert f"$Entry.ContainsKey('{key}')" in validator, key
+    for read in ("[string]$Entry['Id']", "$Entry['AnyOf']", "[string]$Entry['Severity']", "[string]$Entry['Subject']", "[string]$Entry['Message']"):
+        assert read in validator, read
+    assert "if ($hasSubject) { $subject = [string]$Entry['Subject'] }" in validator
+    assert "if ($hasMessage) { $message = [string]$Entry['Message'] }" in validator
+    assert "if ($hasId) { $ids = @([string]$Entry['Id']) }" in validator
+    assert "if ($hasAnyOf) { $wanted = 'one of ' + ($ids -join '/') }" in validator
+    for refusal in ("names both Id and AnyOf", "names neither Id nor AnyOf", "has no Severity", "has a blank Severity",
+                    "has an empty AnyOf", "names a blank check id", "is not a hashtable"):
+        assert refusal in validator, refusal
+    assert validator.count("throw ($where") == 7
+    matcher = _function("Assert-FaModelCheck", code)
+    assert "Test-FaExpectedEntry -Entry $raw -Scenario $Scenario" in matcher
+    # NO RAW HASHTABLE READ, no selector read, and Subject and Message read only
+    # on the line that first tests the descriptor's presence flag.
+    assert not re.search(r"\$entry\.Id\b", matcher) and "$entry.AnyOf" not in matcher
+    for banned in ("$raw.", "$entry['", "$Expected."):
+        assert banned not in matcher, banned
+    for field in ("Subject", "Message"):
+        for line in matcher.splitlines():
+            if f"$entry.{field}" in line:
+                assert f"$entry.Has{field} -and" in line, line
+    for guarded in ("if ($entry.HasSubject -and ((Format-FaCell $row.subject) -cne $entry.Subject))",
+                    "if ($entry.HasMessage -and ((Format-FaCell $row.message) -cne $entry.Message))",
+                    "if (-not ($entry.Ids -ccontains [string]$row.check_id))", "$entry.Wanted"):
+        assert guarded in matcher, guarded
+    # THE THREE REAL SHAPES ARE STILL THE SHAPES THE RUNNER BUILDS.
+    assert "$advisoryExpected = @{ Id = [string]$projection.advisory.check_id; Severity = [string]$projection.advisory.severity" in code
+    assert "$notCalculatedExpected = @{ AnyOf = $calcWarningIds; Severity = $severityWarning; Subject = '<blank>' }" in code
+    assert "@{ Id = [string]$calcErrorChecks[0].check_id; Severity = $severityError; Subject = $victimId }" in code
+
+
+def test_60o_the_record_states_run_4_as_a_runner_matcher_defect() -> None:
+    record = (PCCM_ROOT / "docs" / "phase10_windows_run_evidence.md").read_text(encoding="utf-8")
+    start = record.index("## Final acceptance run 4 — 95e322f — TERMINATED IN THE MODEL CHECK MATCHER — RUNNER MATCHER DEFECT")
+    plain = " ".join(record[start:].replace("`", "").replace("**", "").split())
+    for fact in ("351 passed", "Stage-B bootstrap completed", "expected 95e322f (clean)", "observed 95e322f (clean)",
+                 "PASS|calculate.current", "23DA06D35152CFF9", "No acceptance check had failed",
+                 "PropertyNotFoundException", "'Subject'", "runner matcher defect, NOT a production or Model Check defect",
+                 "modelcheck.calculated itself was NOT evaluated", "FINAL ACCEPTANCE IS NOT PASSED",
+                 "Workbook.Close True", "Application.Quit True", "natural PID exit True"):
+        assert fact in plain, fact
 
 
 def test_60l_the_record_states_the_preflight_attempt_at_2bc10e8() -> None:

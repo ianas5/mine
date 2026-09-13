@@ -3990,3 +3990,68 @@ requiring each to resolve — vocabulary, advisory, summary, register, sheet and
 copy of its schema, is the authority. One mutation puts the root path back and
 is refused. Every other scenario is byte-identical to `2bc10e8`.
 
+## Final acceptance run 4 — 95e322f — TERMINATED IN THE MODEL CHECK MATCHER — RUNNER MATCHER DEFECT
+
+**Executed on Windows at `95e322f`.** Stage A 351 passed, 0 failed. The
+Stage-B bootstrap completed. Every acceptance check through
+`calculate.current` passed: bootstrap; the persisted initial state; compile;
+sheets and CodeNames; the manifest-set module verification; every release
+metadata row; **Source Revision expected `95e322f (clean)`, observed
+`95e322f (clean)`**; initial protection; the live initial state; the fixture
+window before and after; the W4 fixture; the structural add/delete workflow for
+the cost line and the risk; Apply Timeline; protection after the structural
+workflow; and
+
+```
+PASS|calculate.current|OK|Calculation committed.; calc=CURRENT sim=<blank> annual=NOT PRODUCED profile=NOT PRODUCED; attempt=SUCCESS; fingerprint=23DA06D35152CFF9
+```
+
+**No acceptance check had failed at the point of termination:** 25 checks
+recorded, 0 failed. Before `modelcheck.calculated` could produce a verdict,
+`Assert-FaModelCheck` threw
+
+```
+System.Management.Automation.PropertyNotFoundException:
+The property 'Subject' cannot be found on this object.
+```
+
+**Root cause.** The expected Model Check entries are hashtables with OPTIONAL
+fields — the advisory names Id, Severity and Message and no Subject; the
+invalid-calculation error names Id, Severity and Subject and no Message; the
+NOT CALCULATED warning names AnyOf, Severity and Subject and neither Id nor
+Message — and the matcher read `$entry.Subject`, `$entry.Message`, `$entry.Id`
+and `$entry.AnyOf` directly, deciding presence by a null test. Under
+`Set-StrictMode` reading an absent key is itself an error, so the advisory
+expectation died on `Subject`; Message, Id and AnyOf would have died the same
+way at later checkpoints. **This is a runner matcher defect, NOT a production
+or Model Check defect.** `modelcheck.calculated` itself was NOT evaluated to an
+acceptance verdict, and nothing is claimed about the Model Check result of this
+run.
+
+**Shutdown was clean:** Workbook.Close True; Application.Quit True; natural PID
+exit True; no emergency cleanup; every transient COM object released.
+
+**FINAL ACCEPTANCE IS NOT PASSED.**
+
+### Corrected in this round (source only — no Windows)
+
+Every expected entry is now validated ONCE, before anything is read from it, by
+`Test-FaExpectedEntry`: presence is tested with `ContainsKey` for Id, AnyOf,
+Severity, Subject and Message; exactly one of Id or AnyOf is required;
+Severity is required and non-blank; an empty AnyOf or a blank id is refused; a
+non-hashtable is refused. Each refusal is a `RUNNER DEFINITION ERROR` throw —
+never a tolerated default. The matcher reads only the descriptor that
+validation returns, whose properties always exist, and matches Subject and
+Message only when the entry declared them. `Set-StrictMode` stays. The expected
+sets are unchanged: the advisory alone at `modelcheck.calculated` and
+`modelcheck.simulated`; `CAL-010` for the refused driver plus the advisory at
+`modelcheck.invalid`; `CAL-020` plus the advisory at `modelcheck.after-reset`.
+
+`tests/phase10_final_acceptance_matcher_flow.ps1` lifts the real validator and
+matcher out of the runner by AST and executes them under `Set-StrictMode 2.0`
+with the real projection vocabulary, over the three real shapes, three refusals
+and four malformed definitions, with no Excel and no COM; the runner-source
+suite decides from its tagged lines, and one mutation restores the direct
+optional access and requires the executed advisory case to die with exactly
+run 4's `PropertyNotFoundException`.
+

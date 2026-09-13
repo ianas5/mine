@@ -838,21 +838,63 @@ function Format-FaActionable {
     return ($parts -join ', ')
 }
 
+# AN EXPECTED ENTRY, VALIDATED BEFORE IT IS READ. The expected entries are
+# hashtables with OPTIONAL fields, and under Set-StrictMode reading a key that
+# is absent is itself an error - run 4 died on `$entry.Subject` for the advisory,
+# which names no Subject. So every field is tested for PRESENCE with ContainsKey
+# before it is read, exactly once, here; the matcher below reads only this
+# descriptor, whose properties always exist. A malformed definition - both Id
+# and AnyOf, neither, no Severity, an empty AnyOf or a blank id - is a RUNNER
+# DEFINITION ERROR and throws before any row is compared; it is never tolerated.
+function Test-FaExpectedEntry {
+    param($Entry, [string]$Scenario)
+    $where = 'RUNNER DEFINITION ERROR at ' + $Scenario + ': an expected Model Check entry '
+    if ($Entry -isnot [hashtable]) { throw ($where + 'is not a hashtable') }
+    $hasId = $Entry.ContainsKey('Id')
+    $hasAnyOf = $Entry.ContainsKey('AnyOf')
+    if ($hasId -and $hasAnyOf) { throw ($where + 'names both Id and AnyOf; exactly one selector is allowed') }
+    if (-not ($hasId -or $hasAnyOf)) { throw ($where + 'names neither Id nor AnyOf; exactly one selector is required') }
+    if (-not $Entry.ContainsKey('Severity')) { throw ($where + 'has no Severity') }
+    $severity = [string]$Entry['Severity']
+    if ($severity -eq '') { throw ($where + 'has a blank Severity') }
+    $ids = @()
+    if ($hasId) { $ids = @([string]$Entry['Id']) }
+    else { $ids = @(@($Entry['AnyOf']) | ForEach-Object { [string]$_ }) }
+    if ($ids.Count -lt 1) { throw ($where + 'has an empty AnyOf') }
+    foreach ($id in $ids) { if ($id -eq '') { throw ($where + 'names a blank check id') } }
+    $hasSubject = $Entry.ContainsKey('Subject')
+    $hasMessage = $Entry.ContainsKey('Message')
+    $subject = ''
+    if ($hasSubject) { $subject = [string]$Entry['Subject'] }
+    $message = ''
+    if ($hasMessage) { $message = [string]$Entry['Message'] }
+    $wanted = $ids[0]
+    if ($hasAnyOf) { $wanted = 'one of ' + ($ids -join '/') }
+    return [pscustomobject]@{
+        Ids = $ids; Wanted = $wanted; Severity = $severity
+        HasSubject = $hasSubject; Subject = $subject
+        HasMessage = $hasMessage; Message = $message
+    }
+}
+
 # THE ONE MODEL CHECK ASSERTION. It takes the EXACT expected actionable set and
 # derives everything else from it: the overall status from the vocabulary, the
 # error and warning counts from the set, and the requirement that no actionable
 # row is shown beyond the set - so an unrelated WARNING cannot satisfy a
 # checkpoint, and a missing advisory cannot hide behind a matching overall word.
 # An expected entry names an Id or an AnyOf list, a Severity, and optionally a
-# Subject and a Message that must match the row exactly.
+# Subject and a Message that must match the row exactly; each is validated by
+# Test-FaExpectedEntry before anything is read from it.
 function Assert-FaModelCheck {
     param($Workbook, $Projection, [string]$Scenario, $Expected)
     $states = @($Projection.vocabulary.overall_states | ForEach-Object { [string]$_ })
     $actionable = @($Projection.vocabulary.actionable_severities | ForEach-Object { [string]$_ })
+    $entries = @()
+    foreach ($raw in @($Expected)) { $entries += (Test-FaExpectedEntry -Entry $raw -Scenario $Scenario) }
     $expectedErrors = 0; $expectedWarnings = 0
-    foreach ($entry in @($Expected)) {
-        if ([string]$entry.Severity -ceq $actionable[0]) { $expectedErrors = $expectedErrors + 1 }
-        if ([string]$entry.Severity -ceq $actionable[1]) { $expectedWarnings = $expectedWarnings + 1 }
+    foreach ($entry in $entries) {
+        if ($entry.Severity -ceq $actionable[0]) { $expectedErrors = $expectedErrors + 1 }
+        if ($entry.Severity -ceq $actionable[1]) { $expectedWarnings = $expectedWarnings + 1 }
     }
     $expectedOverall = $states[0]
     if ($expectedWarnings -gt 0) { $expectedOverall = $states[1] }
@@ -867,21 +909,17 @@ function Assert-FaModelCheck {
     if ($errors -ne $expectedErrors) { $problems += ('errors ' + [string]$errors + ', expected ' + [string]$expectedErrors) }
     if ($warnings -ne $expectedWarnings) { $problems += ('warnings ' + [string]$warnings + ', expected ' + [string]$expectedWarnings) }
     $unmatched = @($rows)
-    foreach ($entry in @($Expected)) {
+    foreach ($entry in $entries) {
         $found = $null
         foreach ($row in $unmatched) {
-            $idOk = $false
-            if ($null -ne $entry.Id) { $idOk = ([string]$row.check_id -ceq [string]$entry.Id) }
-            else { $idOk = (@($entry.AnyOf) -ccontains [string]$row.check_id) }
-            if (-not $idOk) { continue }
-            if ([string]$row.severity -cne [string]$entry.Severity) { continue }
-            if (($null -ne $entry.Subject) -and ((Format-FaCell $row.subject) -cne [string]$entry.Subject)) { continue }
-            if (($null -ne $entry.Message) -and ((Format-FaCell $row.message) -cne [string]$entry.Message)) { continue }
+            if (-not ($entry.Ids -ccontains [string]$row.check_id)) { continue }
+            if ([string]$row.severity -cne $entry.Severity) { continue }
+            if ($entry.HasSubject -and ((Format-FaCell $row.subject) -cne $entry.Subject)) { continue }
+            if ($entry.HasMessage -and ((Format-FaCell $row.message) -cne $entry.Message)) { continue }
             $found = $row; break
         }
         if ($null -eq $found) {
-            $wanted = $(if ($null -ne $entry.Id) { [string]$entry.Id } else { 'one of ' + (@($entry.AnyOf) -join '/') })
-            $problems += ('expected ' + $wanted + '(' + [string]$entry.Severity + ') is not shown as expected')
+            $problems += ('expected ' + $entry.Wanted + '(' + $entry.Severity + ') is not shown as expected')
         } else {
             $unmatched = @($unmatched | Where-Object { -not [object]::ReferenceEquals($_, $found) })
         }

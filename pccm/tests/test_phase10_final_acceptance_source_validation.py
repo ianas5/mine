@@ -180,6 +180,35 @@ def test_18_reading_declared_checks_at_the_projection_root_is_refused() -> None:
             "$calcErrorChecks = @($projection.declared_checks | Where-Object {")
 
 
+def test_19_restoring_the_direct_optional_property_access_is_caught_by_the_executed_matcher() -> None:
+    """THE RUN-4 DEFECT, PUT BACK, AND EXECUTED: the advisory case must die with
+    PropertyNotFoundException under StrictMode exactly as Windows did."""
+    import pytest as _pytest
+    if not Path(conformance.PWSH).exists():
+        _pytest.skip("no PowerShell on this host")
+    original = conformance._runner()
+    damaged = original.replace(
+        "            if ($entry.HasSubject -and ((Format-FaCell $row.subject) -cne $entry.Subject)) { continue }\n",
+        "            if (($null -ne $raw.Subject) -and ((Format-FaCell $row.subject) -cne [string]$raw.Subject)) { continue }\n", 1)
+    assert damaged != original
+    import tempfile
+    scratch = Path(tempfile.mkdtemp(prefix="pccm-fa-matcher-")) / "phase10_final_acceptance.ps1"
+    scratch.write_text(damaged, encoding="utf-8")
+    lines = conformance._matcher_lines(scratch)
+    assert lines["A.advisory"].startswith("ERROR|A.advisory|System.Management.Automation.PropertyNotFoundException|"), lines["A.advisory"]
+    assert "'Subject'" in lines["A.advisory"]
+    # And the static control refuses the same restoration without executing it.
+    _mutate("test_60n",
+            "            if ($entry.HasSubject -and ((Format-FaCell $row.subject) -cne $entry.Subject)) { continue }\n",
+            "            if (($null -ne $raw.Subject) -and ((Format-FaCell $row.subject) -cne [string]$raw.Subject)) { continue }\n")
+
+
+def test_20_dropping_a_malformed_definition_refusal_is_refused() -> None:
+    _mutate("test_60n",
+            "    if ($hasId -and $hasAnyOf) { throw ($where + 'names both Id and AnyOf; exactly one selector is allowed') }\n",
+            "")
+
+
 if __name__ == "__main__":
     failures = 0
     for name in sorted(n for n in dir() if n.startswith("test_")):
