@@ -3888,3 +3888,63 @@ the fixture to the exit code is byte-identical to the runner Windows executed at
 workbook — its first Model Check read follows the first Calculate — so no PASS is
 forced on an invalid model.
 
+## Final acceptance run 2 — 9686baf — FAILED AT modelcheck.calculated — RUNNER EXPECTATION DEFECT
+
+**Executed on Windows at `9686baf`.** Stage A 351 passed, 0 failed. Every check
+through `calculate.current` passed: bootstrap; the persisted initial state; the
+compile check; sheets and CodeNames; the manifest-set module verification; every
+release metadata row; **Source Revision expected `9686baf (clean)`, observed
+`9686baf (clean)`**; initial protection; the live initial state; the fixture
+window; the W4 fixture; the structural add/delete workflow; Apply Timeline;
+protection after the structural workflow; and
+
+```
+PASS|calculate.current|OK|Calculation committed.; calc=CURRENT sim=<blank> annual=NOT PRODUCED profile=NOT PRODUCED; attempt=SUCCESS; fingerprint=23DA06D35152CFF9
+FAIL|modelcheck.calculated|overall=WARNING errors=0
+```
+
+**Why it failed, and why that is the runner's fault.** Model Check returned
+WARNING with zero errors and the runner expected PASS. The runner deliberately
+requests the business minimum, 1,000 iterations, and the accepted Phase-9
+contract shows the low-iteration advisory `INP-010` as an actionable WARNING
+whenever the request is strictly below the recommended 10,000: it refuses
+nothing, it makes nothing INVALID, and it creates no ERROR. WARNING with zero
+errors is therefore the contracted result for a valid CURRENT model at this
+request. **This is a runner expectation defect, NOT a production defect.**
+Production VBA, spec and builder are unchanged, and the request sizes are not
+raised to obtain a PASS.
+
+**Shutdown was clean:** Workbook.Close True; Application.Quit True; natural PID
+exit True; no emergency cleanup; every transient COM object released.
+
+**FINAL ACCEPTANCE IS NOT PASSED.** Nothing after `calculate.current` was
+executed, and no later scenario is claimed.
+
+### Corrected in this round (source only — no Windows)
+
+Every Model Check checkpoint was audited against the Phase-9 source — the
+projection's declared checks and advisory, the spec's firing conditions, and the
+Phase-9 suite's evaluator over the sheet's own formulas — and each now asserts
+the EXACT expected actionable set at the business minimum, from which the overall
+status and the error and warning counts are derived, with any unexpected
+actionable row refused:
+
+| checkpoint | live state presented | expected actionable rows | overall | errors | warnings |
+|---|---|---|---|---|---|
+| `modelcheck.calculated` | calc CURRENT, sim blank, annual NOT PRODUCED | `INP-010` WARNING, the advisory message | WARNING | 0 | 1 |
+| `modelcheck.simulated` | all CURRENT | `INP-010` WARNING | WARNING | 0 | 1 |
+| `modelcheck.invalid` | calc INVALID, sim INVALID (context) | `CAL-010` ERROR with the refused driver as subject; `INP-010` WARNING; no `SIM-010` | ERROR | 1 | 1 |
+| `modelcheck.after-reset` | calc NOT CALCULATED, sim blank, annual NOT PRODUCED | `CAL-020` WARNING with no subject; `INP-010` WARNING | WARNING | 0 | 2 |
+
+The runner names no check id: the advisory comes from the projection's
+`advisory` entry (id, severity, message); the Calculation ERROR is the one
+declared ERROR in the Calculation group, its subject read from
+`PCCM_ModelCheckRefusalSubject` and required to be the invalidated driver; the
+NOT CALCULATED warning is the one Calculation-group WARNING shown while the
+live state is NOT CALCULATED, which the spec's conditions make `CAL-020`. The
+runner refuses to start if the business minimum were not below the advisory
+threshold. Iterations remain 1,000 for Simulation, Sensitivity and Annual and
+1,001 once, for STALE. From the fixture to the exit code the runner is the one
+Windows executed at `9686baf` with exactly these four substitutions, and a
+control holds the substitutions in full.
+

@@ -66,10 +66,10 @@ REQUIRED_SCENARIOS = (
     "structural.apply-timeline", "calculate.current", "modelcheck.calculated",
     "modelcheck.worksheet-safety", "simulation.current", "sensitivity", "annual",
     "modelcheck.simulated", "state.stale", "state.invalid", "refused.outcome.calculate",
-    "modelcheck.invalid", "state.current-restored", "repair.noop", "repair.missing-row",
+    "modelcheck.invalid", "modelcheck.invalid.subject", "state.current-restored", "repair.noop", "repair.missing-row",
     "repair.order", "repair.duplicate-refused", "repair.restored", "repair.fingerprint",
     "reset.precondition", "reset.declined", "reset.confirmed", "reset.preserved",
-    "reset.states", "modelcheck.after-reset", "reset.idempotent", "refused.outcome.annual",
+    "reset.states", "modelcheck.after-reset", "modelcheck.after-reset.adapter", "reset.idempotent", "refused.outcome.annual",
     "reset.rollback", "protection.final", "protection.unlocked-writable",
     "protection.locked-refused", "shutdown.workbook-close", "shutdown.application-quit",
     "shutdown.natural-exit", "shutdown.no-emergency", "shutdown.com-released",
@@ -513,19 +513,219 @@ def test_60b_the_untouched_workbook_is_asserted_as_phase_9_accepted_it_live_and_
         < code.index("$excel.Run('PCCM_CalculationStatus')") < code.index("Add-FaCheck 'state.initial.live'")
     # AND NO MODEL CHECK IS READ ON THE UNTOUCHED WORKBOOK: the first Model Check
     # read follows the first Calculate, so no PASS is forced on an invalid model.
-    assert code.index("Add-FaCheck 'calculate.current'") < code.index("Get-FaModelCheckSummary -Workbook $wb")
+    assert code.index("Add-FaCheck 'calculate.current'") < code.index("Assert-FaModelCheck -Workbook $wb")
 
 
-def test_60c_every_scenario_from_the_fixture_onward_is_byte_identical_to_the_windows_tested_runner() -> None:
-    """ONLY THE INITIAL-STATE ASSERTION MOVED. From the fixture to the exit
-    code, the runner is the one Windows executed at 6770cb8."""
-    tested = _git("show", "6770cb8:pccm/bootstrap/windows/phase10_final_acceptance.ps1").replace("\r\n", "\n")
+def test_60c_every_scenario_from_the_fixture_onward_is_the_windows_tested_runner_plus_the_model_check_corrections() -> None:
+    """ONLY THE MODEL CHECK ASSERTIONS MOVED SINCE RUN 2. The tail of the runner
+    Windows executed at 9686baf, with exactly these four substitutions applied,
+    is the tail of the runner now - so every non-Model-Check scenario is
+    byte-identical, and the corrections are listed here in full."""
+    tested = _git("show", "9686baf:pccm/bootstrap/windows/phase10_final_acceptance.ps1").replace("\r\n", "\n")
     now = _runner().replace("\r\n", "\n")
     marker = "    # 7. THE ACCEPTED W4 FIXTURE"
-    assert now[now.index(marker):] == tested[tested.index(marker):]
-    # And everything before the session, except the two persisted-cell addresses.
+    tail = tested[tested.index(marker):]
+    for old, new in MODEL_CHECK_CORRECTIONS:
+        assert tail.count(old) == 1, old[:60]
+        tail = tail.replace(old, new)
+    assert now[now.index(marker):] == tail
+    # And before the session, everything but the Model Check reader region -
+    # the summary-only reader became the surface reader and the assertion - and
+    # the projected Model Check expectations added to the preflight is the
+    # Windows-tested runner too.
     head_marker = "$calcAttemptCell = ($calcValueColumn + [string]$calcStateBlock.rows.last_attempt_result)\n"
-    assert now[: now.index(head_marker)] == tested[: tested.index(head_marker)]
+    preflight = "# ===========================================================================\n# PREFLIGHT"
+
+    def outside_readers(text: str, reader_marker: str) -> str:
+        head = text[: text.index(head_marker)]
+        return head[: head.index(reader_marker)] + head[head.index(preflight):]
+
+    tested_head = outside_readers(tested, "# Read the Model Check summary through the Phase-9 projection")
+    now_head = outside_readers(now, "# Read the Model Check surface through the Phase-9 projection")
+    expectations = now_head[now_head.index("$severityError       = "): now_head.index("# THE CALCULATION STATE BLOCK")]
+    assert "$notCalculatedExpected = @{ AnyOf = $calcWarningIds" in expectations
+    tested_expectations = tested_head[tested_head.index("$overallPass         = "): tested_head.index("# THE CALCULATION STATE BLOCK")]
+    assert now_head.replace(expectations, "") == tested_head.replace(tested_expectations, "")
+
+
+MODEL_CHECK_CORRECTIONS = (
+    ("    $summaryCalc = Get-FaModelCheckSummary -Workbook $wb -Projection $projection\n"
+     "    $null = Add-FaCheck 'modelcheck.calculated' ([string]$summaryCalc['overall_status'] -ceq $overallPass) `\n"
+     "        ('overall=' + (Format-FaCell $summaryCalc['overall_status']) + ' errors=' + (Format-FaCell $summaryCalc['error_count']))\n",
+     "    $null = Assert-FaModelCheck -Workbook $wb -Projection $projection -Scenario 'modelcheck.calculated' `\n"
+     "        -Expected @($advisoryExpected)\n"),
+    ("    $summaryFull = Get-FaModelCheckSummary -Workbook $wb -Projection $projection\n"
+     "    $null = Add-FaCheck 'modelcheck.simulated' ([string]$summaryFull['overall_status'] -ceq $overallPass) `\n"
+     "        ('overall=' + (Format-FaCell $summaryFull['overall_status']) + ' errors=' + (Format-FaCell $summaryFull['error_count']))\n",
+     "    $null = Assert-FaModelCheck -Workbook $wb -Projection $projection -Scenario 'modelcheck.simulated' `\n"
+     "        -Expected @($advisoryExpected)\n"),
+    ("    $summaryInvalid = Get-FaModelCheckSummary -Workbook $wb -Projection $projection\n"
+     "    $null = Add-FaCheck 'modelcheck.invalid' ([string]$summaryInvalid['overall_status'] -ceq $overallError) `\n"
+     "        ('overall=' + (Format-FaCell $summaryInvalid['overall_status']) + ' errors=' + (Format-FaCell $summaryInvalid['error_count']))\n",
+     "    $refusalSubject = Get-FaRunText -Excel $excel -Procedure 'PCCM_ModelCheckRefusalSubject'\n"
+     "    $null = Add-FaCheck 'modelcheck.invalid.subject' ($refusalSubject -ceq $victimId) `\n"
+     "        ('the refusal subject is ' + $refusalSubject + '; the invalidated driver is ' + $victimId)\n"
+     "    $null = Assert-FaModelCheck -Workbook $wb -Projection $projection -Scenario 'modelcheck.invalid' `\n"
+     "        -Expected @(@{ Id = [string]$calcErrorChecks[0].check_id; Severity = $severityError; Subject = $victimId },\n"
+     "                    $advisoryExpected)\n"),
+    ("    $summaryReset = Get-FaModelCheckSummary -Workbook $wb -Projection $projection\n"
+     "    $modelCheckReset = Get-FaRunText -Excel $excel -Procedure 'PCCM_ModelCheckCalculationState'\n"
+     "    $null = Add-FaCheck 'modelcheck.after-reset' ($modelCheckReset -ceq $statusNotCalculated) `\n"
+     "        ('adapter=' + $modelCheckReset + ' overall=' + (Format-FaCell $summaryReset['overall_status']) + ' errors=' + (Format-FaCell $summaryReset['error_count']))\n",
+     "    $modelCheckReset = Get-FaRunText -Excel $excel -Procedure 'PCCM_ModelCheckCalculationState'\n"
+     "    $null = Add-FaCheck 'modelcheck.after-reset.adapter' ($modelCheckReset -ceq $statusNotCalculated) ('adapter=' + $modelCheckReset)\n"
+     "    $null = Assert-FaModelCheck -Workbook $wb -Projection $projection -Scenario 'modelcheck.after-reset' `\n"
+     "        -Expected @($advisoryExpected, $notCalculatedExpected)\n"),
+)
+
+
+def _spec_checks() -> list[dict]:
+    import yaml
+    return yaml.safe_load((PCCM_ROOT / "spec" / "workbook.yaml").read_text(encoding="utf-8"))["phase9_shell"]["model_check"]["checks"]
+
+
+def _projection() -> dict:
+    import json
+    return json.loads((PCCM_ROOT / "build" / "phase9_model_check_inspection.json").read_text(encoding="utf-8"))
+
+
+def test_60e_a_valid_model_at_the_business_minimum_expects_the_advisory_warning_not_pass() -> None:
+    """RUN 2 AT 9686baf FAILED HERE: the runner expected PASS after Calculate. The
+    Phase-9 contract places the business minimum strictly below the recommended
+    iterations, so the low-iteration advisory is an actionable WARNING with zero
+    errors, and it refuses nothing. The runner now expects exactly that."""
+    code = _code()
+    projection = _projection()
+    import json
+    cases = json.loads((PCCM_ROOT / "build" / "phase6_gate_b_cases.json").read_text(encoding="utf-8"))
+    assert int(cases["bounds"]["business_minimum_iterations"]) < int(projection["advisory"]["threshold"])
+    assert projection["advisory"]["severity"] == "WARNING" and projection["advisory"]["refuses"] is False
+    assert "if (-not ($acceptanceIterations -lt [int]$projection.advisory.threshold)) {" in code
+    assert "$advisoryExpected = @{ Id = [string]$projection.advisory.check_id; Severity = [string]$projection.advisory.severity" in code
+    assert "Message = [string]$projection.advisory.message }" in code
+    for scenario in ("modelcheck.calculated", "modelcheck.simulated"):
+        assert f"-Scenario '{scenario}' `\n        -Expected @($advisoryExpected)\n" in code, scenario
+    assert "$overallPass" not in code and "overall_states[0]" not in code.replace("$states[0]", "")
+
+
+def test_60f_the_invalid_checkpoint_expects_the_one_calculation_error_and_the_advisory_and_nothing_else() -> None:
+    """THE PHASE-9 CONTRACT, KEPT: the genuine driver refusal is the one declared
+    Calculation ERROR with the refused driver as its subject; the simulation's
+    invalidity under a non-CURRENT calculation is context, never a second
+    actionable row; the advisory is still shown at the business minimum."""
+    code = _code()
+    assert "$calcErrorChecks = @($projection.declared_checks | Where-Object {" in code
+    assert "if ($calcErrorChecks.Count -ne 1) { throw" in code
+    invalid = code[code.index("$refusalSubject = Get-FaRunText -Excel $excel -Procedure 'PCCM_ModelCheckRefusalSubject'"):]
+    invalid = invalid[: invalid.index("Set-TableCell -Workbook $wb")]
+    assert "Add-FaCheck 'modelcheck.invalid.subject' ($refusalSubject -ceq $victimId)" in invalid
+    assert "-Expected @(@{ Id = [string]$calcErrorChecks[0].check_id; Severity = $severityError; Subject = $victimId }," in invalid
+    assert "$advisoryExpected)" in invalid
+    # FROM THE SPEC: exactly one Calculation ERROR, fired by INVALID with the
+    # refusal subject; the Simulation ERROR needs a CURRENT calculation, so it
+    # cannot fire beside it; the INVALID-under-non-CURRENT row is INFO.
+    checks = _spec_checks()
+    by_id = {c["check_id"]: c for c in checks}
+    calc_errors = [c for c in checks if c["group"] == "Calculation" and c["severity"] == "ERROR"]
+    assert [c["check_id"] for c in calc_errors] == ["CAL-010"]
+    assert calc_errors[0]["condition"] == '{calculation_state}="INVALID"'
+    assert calc_errors[0]["subject"] == "{calculation_refusal_subject}"
+    assert by_id["SIM-010"]["condition"] == 'AND({simulation_state}="INVALID",{calculation_state}="CURRENT")'
+    assert by_id["SIM-020"]["severity"] == "INFO"
+    assert by_id["SIM-020"]["condition"] == 'AND({simulation_state}="INVALID",{calculation_state}<>"CURRENT")'
+
+
+def test_60g_the_after_reset_checkpoint_expects_the_not_calculated_warning_and_the_advisory() -> None:
+    """FROM THE SPEC: two Calculation WARNING checks exist, one for NOT
+    CALCULATED and one for STALE; the calculation state is one word, so at
+    NOT CALCULATED - which the runner asserts separately at that point - the one
+    Calculation WARNING shown is the NOT CALCULATED check, with no subject; and
+    the advisory still fires because the request is still the business minimum."""
+    code = _code()
+    assert "$calcWarningIds = @($projection.declared_checks | Where-Object {" in code
+    assert "$notCalculatedExpected = @{ AnyOf = $calcWarningIds; Severity = $severityWarning; Subject = '<blank>' }" in code
+    after = code[code.index("Add-FaCheck 'modelcheck.after-reset.adapter'"):]
+    after = after[: after.index("Assert-FaProtectionApplied")]
+    assert "($modelCheckReset -ceq $statusNotCalculated)" in after
+    assert "-Scenario 'modelcheck.after-reset' `\n        -Expected @($advisoryExpected, $notCalculatedExpected)" in after
+    # The request is still the business minimum there: the only two writes of
+    # the iterations name are the minimum and the minimum plus one, and the last
+    # write, which precedes the reset block, restores the minimum.
+    writes = [m.group(1) for m in re.finditer(r"Set-NamedValue -Workbook \$wb -DefinedName \$iterationsName -Value \(\[double\](\$\w+)\)", code)]
+    assert writes[-1] == "$acceptanceIterations"
+    assert code.rindex("Set-NamedValue -Workbook $wb -DefinedName $iterationsName") < code.index("Add-FaCheck 'reset.precondition'")
+    checks = _spec_checks()
+    calc_warnings = {c["check_id"]: c["condition"] for c in checks if c["group"] == "Calculation" and c["severity"] == "WARNING"}
+    assert calc_warnings == {"CAL-020": '{calculation_state}="NOT CALCULATED"', "CAL-030": '{calculation_state}="STALE"'}
+    assert all(not c.get("subject") for c in checks if c["check_id"] in calc_warnings)
+
+
+def test_60h_the_model_check_assertion_derives_everything_from_the_expected_set_and_refuses_unrelated_rows() -> None:
+    fn = _function("Assert-FaModelCheck", _code())
+    assert "$states = @($Projection.vocabulary.overall_states | ForEach-Object { [string]$_ })" in fn
+    assert "$actionable = @($Projection.vocabulary.actionable_severities | ForEach-Object { [string]$_ })" in fn
+    assert "if ($expectedWarnings -gt 0) { $expectedOverall = $states[1] }" in fn
+    assert "if ($expectedErrors -gt 0) { $expectedOverall = $states[2] }" in fn
+    for required in ("if ($overall -cne $expectedOverall)", "if ($errors -ne $expectedErrors)", "if ($warnings -ne $expectedWarnings)",
+                     "if ($unmatched.Count -gt 0) { $problems += ('unexpected actionable row(s): '",
+                     "is not shown as expected", "((Format-FaCell $row.message) -cne [string]$entry.Message)",
+                     "((Format-FaCell $row.subject) -cne [string]$entry.Subject)"):
+        assert required in fn, required
+    reader = _function("Get-FaModelCheckSurface", _code())
+    assert "$Projection.register.first_row" in reader and "$Projection.register.last_row" in reader
+    assert "$script:FaErrorCodes.ContainsKey([int]$id)" in reader
+    assert "Get-FaModelCheckSummary" not in _code()
+
+
+def test_60i_the_accepted_phase_9_formulas_produce_exactly_the_runner_expectations() -> None:
+    """SOURCE-PROVEN BY THE ACCEPTED STATIC EVALUATOR, not by reading. The
+    Phase-9 suite evaluates the sheet's own formulas over the readings each
+    checkpoint will present at the business minimum."""
+    sys.path.insert(0, str(PCCM_ROOT / "tests"))
+    import test_phase9_model_check as p9
+    import json
+    plan = p9._plan()
+    minimum = int(json.loads((PCCM_ROOT / "build" / "phase6_gate_b_cases.json").read_text(encoding="utf-8"))["bounds"]["business_minimum_iterations"])
+
+    def actionable(readings: dict) -> tuple[str, list[tuple[str, str, str]]]:
+        result = p9._evaluate(plan, dict({"requested_iterations": minimum, "structural_report": ""}, **readings))
+        rows = [(str(r["check_id"]), str(r["severity"]), str(r["subject"])) for r in result["shown"]
+                if str(r["severity"]) in ("ERROR", "WARNING")]
+        return str(result["summary"]["overall_status"]), sorted(rows)
+
+    advisory = ("INP-010", "WARNING", "Monte Carlo Iterations")
+    assert actionable({"calculation_state": "CURRENT", "simulation_state": "", "calculation_attempt_result": "SUCCESS",
+                       "calculation_attempt_detail": "Calculation committed."}) == ("WARNING", [advisory])
+    assert actionable({"calculation_state": "CURRENT", "simulation_state": "CURRENT", "annual_distribution_state": "CURRENT",
+                       "annual_profile_state": "CURRENT", "annual_profile_px": "P80", "annual_year_count": 4,
+                       "calculation_attempt_result": "SUCCESS", "calculation_attempt_detail": "Calculation committed.",
+                       "simulation_publication": "stamp", "published_run_id": "run", "published_iterations_run": minimum,
+                       "simulation_status_last_evaluated": "CURRENT", "sensitivity_availability": "Available"}) == ("WARNING", [advisory])
+    assert actionable({"calculation_state": "INVALID", "simulation_state": "INVALID", "annual_distribution_state": "CURRENT",
+                       "annual_profile_state": "CURRENT", "annual_profile_px": "P80", "annual_year_count": 4,
+                       "calculation_refusal_detail": "maximum below minimum", "calculation_refusal_subject": "CL-001",
+                       "calculation_attempt_result": "REFUSED", "calculation_attempt_detail": "refused",
+                       "simulation_publication": "stamp", "published_run_id": "run", "published_iterations_run": minimum,
+                       "simulation_status_last_evaluated": "CURRENT", "sensitivity_availability": "Available"}) \
+        == ("ERROR", sorted([("CAL-010", "ERROR", "CL-001"), advisory]))
+    assert actionable({"calculation_state": "NOT CALCULATED", "simulation_state": "", "calculation_attempt_result": "NONE"}) \
+        == ("WARNING", sorted([("CAL-020", "WARNING", ""), advisory]))
+    # And the same valid model at the recommendation is PASS: the WARNING the
+    # runner expects is the request size, not the model.
+    threshold = int(_projection()["advisory"]["threshold"])
+    result = p9._evaluate(plan, {"requested_iterations": threshold, "calculation_state": "CURRENT", "simulation_state": ""})
+    assert str(result["summary"]["overall_status"]) == "PASS"
+
+
+def test_60j_the_record_states_run_2_as_a_runner_expectation_defect() -> None:
+    record = (PCCM_ROOT / "docs" / "phase10_windows_run_evidence.md").read_text(encoding="utf-8")
+    start = record.index("## Final acceptance run 2 — 9686baf — FAILED AT modelcheck.calculated — RUNNER EXPECTATION DEFECT")
+    plain = " ".join(record[start:].replace("`", "").replace("**", "").split())
+    for fact in ("PASS|calculate.current", "expected 9686baf (clean)", "observed 9686baf (clean)", "23DA06D35152CFF9",
+                 "FAIL|modelcheck.calculated|overall=WARNING errors=0", "the runner expected PASS",
+                 "runner expectation defect, NOT a production defect", "1,000", "Phase-9",
+                 "Workbook.Close True", "Application.Quit True", "natural PID exit True", "FINAL ACCEPTANCE IS NOT PASSED"):
+        assert fact in plain, fact
 
 
 def test_60d_the_record_states_run_1_as_a_runner_expectation_defect() -> None:
@@ -562,7 +762,7 @@ def test_62_protection_is_asserted_after_every_success_refusal_and_error_path() 
     # rollback are each followed by an assertion before the next scenario.
     for after, assertion in (("Add-FaCheck 'state.current-restored'", "protection.after-refusal"),
                              ("Add-FaCheck 'repair.duplicate-refused'", "protection.after-repair-refusal"),
-                             ("Add-FaCheck 'modelcheck.after-reset'", "protection.after-reset"),
+                             ("Add-FaCheck 'modelcheck.after-reset.adapter'", "protection.after-reset"),
                              ("Add-FaCheck 'refused.outcome.annual'", "protection.after-refused-annual"),
                              ("Add-FaCheck 'reset.rollback'", "protection.after-rollback")):
         start = code.index(after)

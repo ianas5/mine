@@ -789,9 +789,10 @@ function Format-FaStates {
             ' annual=' + $States.Annual + ' profile=' + $States.Profile)
 }
 
-# Read the Model Check summary through the Phase-9 projection: the overall
-# status cell and the count cells, one rectangle.
-function Get-FaModelCheckSummary {
+# Read the Model Check surface through the Phase-9 projection: the summary
+# rows and every shown register row (check id, group, severity, subject,
+# message), two rectangles. Unused register slots hold #N/A and are dropped.
+function Get-FaModelCheckSurface {
     param($Workbook, $Projection)
     $sheet = [string]$Projection.sheet
     $valueColumn = [string]$Projection.summary.value_column
@@ -807,7 +808,91 @@ function Get-FaModelCheckSummary {
     foreach ($entry in $rows) {
         $summary[$entry.Key] = Get-FaBlockCell -Block $block -Row ($entry.Row - $first + 1) -Column 1
     }
-    return $summary
+    $columns = @($Projection.register.columns)
+    $firstColumn = [string]$columns[0].column
+    $lastColumn = [string]$columns[$columns.Count - 1].column
+    $firstRow = [int]$Projection.register.first_row
+    $lastRow = [int]$Projection.register.last_row
+    $register = Get-FaBlock -Workbook $Workbook -SheetName $sheet `
+        -Address ($firstColumn + [string]$firstRow + ':' + $lastColumn + [string]$lastRow)
+    $shown = @()
+    for ($offset = 0; $offset -lt ($lastRow - $firstRow + 1); $offset++) {
+        $record = @{}
+        for ($index = 0; $index -lt $columns.Count; $index++) {
+            $record[[string]$columns[$index].key] = Get-FaBlockCell -Block $register -Row ($offset + 1) -Column ($index + 1)
+        }
+        $id = $record['check_id']
+        if (($null -eq $id) -or (($id -is [int]) -and $script:FaErrorCodes.ContainsKey([int]$id))) { continue }
+        $shown += [pscustomobject]$record
+    }
+    return [pscustomobject]@{ Summary = $summary; Shown = $shown }
+}
+
+function Format-FaActionable {
+    param($Rows)
+    $parts = @()
+    foreach ($row in @($Rows)) {
+        $parts += ([string]$row.check_id + '(' + [string]$row.severity + ')[' + (Format-FaCell $row.subject) + ']')
+    }
+    if ($parts.Count -eq 0) { return '<none>' }
+    return ($parts -join ', ')
+}
+
+# THE ONE MODEL CHECK ASSERTION. It takes the EXACT expected actionable set and
+# derives everything else from it: the overall status from the vocabulary, the
+# error and warning counts from the set, and the requirement that no actionable
+# row is shown beyond the set - so an unrelated WARNING cannot satisfy a
+# checkpoint, and a missing advisory cannot hide behind a matching overall word.
+# An expected entry names an Id or an AnyOf list, a Severity, and optionally a
+# Subject and a Message that must match the row exactly.
+function Assert-FaModelCheck {
+    param($Workbook, $Projection, [string]$Scenario, $Expected)
+    $states = @($Projection.vocabulary.overall_states | ForEach-Object { [string]$_ })
+    $actionable = @($Projection.vocabulary.actionable_severities | ForEach-Object { [string]$_ })
+    $expectedErrors = 0; $expectedWarnings = 0
+    foreach ($entry in @($Expected)) {
+        if ([string]$entry.Severity -ceq $actionable[0]) { $expectedErrors = $expectedErrors + 1 }
+        if ([string]$entry.Severity -ceq $actionable[1]) { $expectedWarnings = $expectedWarnings + 1 }
+    }
+    $expectedOverall = $states[0]
+    if ($expectedWarnings -gt 0) { $expectedOverall = $states[1] }
+    if ($expectedErrors -gt 0) { $expectedOverall = $states[2] }
+    $surface = Get-FaModelCheckSurface -Workbook $Workbook -Projection $Projection
+    $overall = Format-FaCell $surface.Summary['overall_status']
+    $errors = [int]$surface.Summary['error_count']
+    $warnings = [int]$surface.Summary['warning_count']
+    $rows = @($surface.Shown | Where-Object { $actionable -ccontains [string]$_.severity })
+    $problems = @()
+    if ($overall -cne $expectedOverall) { $problems += ('overall ' + $overall + ', expected ' + $expectedOverall) }
+    if ($errors -ne $expectedErrors) { $problems += ('errors ' + [string]$errors + ', expected ' + [string]$expectedErrors) }
+    if ($warnings -ne $expectedWarnings) { $problems += ('warnings ' + [string]$warnings + ', expected ' + [string]$expectedWarnings) }
+    $unmatched = @($rows)
+    foreach ($entry in @($Expected)) {
+        $found = $null
+        foreach ($row in $unmatched) {
+            $idOk = $false
+            if ($null -ne $entry.Id) { $idOk = ([string]$row.check_id -ceq [string]$entry.Id) }
+            else { $idOk = (@($entry.AnyOf) -ccontains [string]$row.check_id) }
+            if (-not $idOk) { continue }
+            if ([string]$row.severity -cne [string]$entry.Severity) { continue }
+            if (($null -ne $entry.Subject) -and ((Format-FaCell $row.subject) -cne [string]$entry.Subject)) { continue }
+            if (($null -ne $entry.Message) -and ((Format-FaCell $row.message) -cne [string]$entry.Message)) { continue }
+            $found = $row; break
+        }
+        if ($null -eq $found) {
+            $wanted = $(if ($null -ne $entry.Id) { [string]$entry.Id } else { 'one of ' + (@($entry.AnyOf) -join '/') })
+            $problems += ('expected ' + $wanted + '(' + [string]$entry.Severity + ') is not shown as expected')
+        } else {
+            $unmatched = @($unmatched | Where-Object { -not [object]::ReferenceEquals($_, $found) })
+        }
+    }
+    if ($unmatched.Count -gt 0) { $problems += ('unexpected actionable row(s): ' + (Format-FaActionable $unmatched)) }
+    $null = Add-FaCheck $Scenario ($problems.Count -eq 0) `
+        $(if ($problems.Count -eq 0) {
+            ('overall=' + $overall + ' errors=' + [string]$errors + ' warnings=' + [string]$warnings +
+             ' actionable=' + (Format-FaActionable $rows))
+          } else { ($problems -join '; ') + '; shown actionable=' + (Format-FaActionable $rows) })
+    return $surface
 }
 
 # ===========================================================================
@@ -868,8 +953,34 @@ $attemptNone         = [string]$p7.model_states.attempt_result[0]
 $attemptSuccess      = [string]$p7.model_states.attempt_result[1]
 $attemptRefused      = [string]$p7.model_states.attempt_result[2]
 $derivedVocabulary   = @($p7.model_states.derived_status | ForEach-Object { [string]$_ })
-$overallPass         = [string]$projection.vocabulary.overall_states[0]
-$overallError        = [string]$projection.vocabulary.overall_states[2]
+$severityError       = [string]$projection.vocabulary.actionable_severities[0]
+$severityWarning     = [string]$projection.vocabulary.actionable_severities[1]
+$groupCalculation    = [string]$projection.vocabulary.group_order[2]
+
+# THE MODEL CHECK EXPECTATIONS, FROM THE PHASE-9 PROJECTION. The runner's request
+# is the business minimum, which the Phase-9 contract places STRICTLY BELOW the
+# recommendation, so the low-iteration advisory is shown as an actionable WARNING
+# at every checkpoint; it refuses nothing and is never an error. The INVALID
+# checkpoint shows the one declared Calculation ERROR with the refused driver as
+# its subject and the simulation's invalidity only as context; the reset
+# checkpoint shows the one Calculation WARNING that a NOT CALCULATED live state
+# raises, with no subject. Nothing here is a literal check id.
+if (-not ($acceptanceIterations -lt [int]$projection.advisory.threshold)) {
+    Write-Host ('REFUSED, BEFORE EXCEL WAS STARTED: the business minimum ' + [string]$acceptanceIterations +
+                ' is not below the advisory threshold ' + [string]$projection.advisory.threshold +
+                ', so the Model Check expectations in this runner would not hold.') -ForegroundColor Red
+    exit 1
+}
+$advisoryExpected = @{ Id = [string]$projection.advisory.check_id; Severity = [string]$projection.advisory.severity
+                       Message = [string]$projection.advisory.message }
+$calcErrorChecks = @($projection.declared_checks | Where-Object {
+    ([string]$_.group -ceq $groupCalculation) -and ([string]$_.severity -ceq $severityError) })
+if ($calcErrorChecks.Count -ne 1) { throw ('the projection declares ' + [string]$calcErrorChecks.Count + ' Calculation ERROR checks; exactly one is expected') }
+$calcWarningIds = @($projection.declared_checks | Where-Object {
+    ([string]$_.group -ceq $groupCalculation) -and ([string]$_.severity -ceq $severityWarning) } |
+    ForEach-Object { [string]$_.check_id })
+if ($calcWarningIds.Count -lt 1) { throw 'the projection declares no Calculation WARNING check' }
+$notCalculatedExpected = @{ AnyOf = $calcWarningIds; Severity = $severityWarning; Subject = '<blank>' }
 
 # THE CALCULATION STATE BLOCK, from the Phase-5 inspection.
 $calcSheet = [string]$inspection.calc.sheet
@@ -1139,9 +1250,8 @@ try {
          ($attemptCalc -ceq $attemptSuccess) -and (-not [string]::IsNullOrWhiteSpace($fingerprint))) `
         ($calcResult + '; ' + (Format-FaStates $statesCalc) + '; attempt=' + $attemptCalc + '; fingerprint=' + $fingerprint)
     $excel.Calculate()
-    $summaryCalc = Get-FaModelCheckSummary -Workbook $wb -Projection $projection
-    $null = Add-FaCheck 'modelcheck.calculated' ([string]$summaryCalc['overall_status'] -ceq $overallPass) `
-        ('overall=' + (Format-FaCell $summaryCalc['overall_status']) + ' errors=' + (Format-FaCell $summaryCalc['error_count']))
+    $null = Assert-FaModelCheck -Workbook $wb -Projection $projection -Scenario 'modelcheck.calculated' `
+        -Expected @($advisoryExpected)
 
     # WORKSHEET SAFETY, as P9-1 proved it: a recalculation rewrites no persisted status cell.
     $statusBefore = Get-FaBlockDigest -Workbook $wb -SheetName $calcSheet -Address $calcStatusRange
@@ -1164,9 +1274,8 @@ try {
          ($statesAnnual.Profile -ceq $statusCurrent) -and ([int]$yearCount -eq $durationYears)) `
         ($annualResult + '; ' + (Format-FaStates $statesAnnual) + '; years=' + $yearCount)
     $excel.Calculate()
-    $summaryFull = Get-FaModelCheckSummary -Workbook $wb -Projection $projection
-    $null = Add-FaCheck 'modelcheck.simulated' ([string]$summaryFull['overall_status'] -ceq $overallPass) `
-        ('overall=' + (Format-FaCell $summaryFull['overall_status']) + ' errors=' + (Format-FaCell $summaryFull['error_count']))
+    $null = Assert-FaModelCheck -Workbook $wb -Projection $projection -Scenario 'modelcheck.simulated' `
+        -Expected @($advisoryExpected)
     $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'protection.after-commands'
 
     # 11. STALE: the request drifts by one iteration; the state is derived, not written.
@@ -1196,9 +1305,12 @@ try {
         (($attemptInvalid -ceq $attemptRefused) -and ($derivedVocabulary -cnotcontains $attemptRefused)) `
         ('attempt result ' + $attemptInvalid + '; derived status ' + $statesInvalid.Calculation + '; REFUSED is not a derived status')
     $excel.Calculate()
-    $summaryInvalid = Get-FaModelCheckSummary -Workbook $wb -Projection $projection
-    $null = Add-FaCheck 'modelcheck.invalid' ([string]$summaryInvalid['overall_status'] -ceq $overallError) `
-        ('overall=' + (Format-FaCell $summaryInvalid['overall_status']) + ' errors=' + (Format-FaCell $summaryInvalid['error_count']))
+    $refusalSubject = Get-FaRunText -Excel $excel -Procedure 'PCCM_ModelCheckRefusalSubject'
+    $null = Add-FaCheck 'modelcheck.invalid.subject' ($refusalSubject -ceq $victimId) `
+        ('the refusal subject is ' + $refusalSubject + '; the invalidated driver is ' + $victimId)
+    $null = Assert-FaModelCheck -Workbook $wb -Projection $projection -Scenario 'modelcheck.invalid' `
+        -Expected @(@{ Id = [string]$calcErrorChecks[0].check_id; Severity = $severityError; Subject = $victimId },
+                    $advisoryExpected)
     Set-TableCell -Workbook $wb -SheetName ([string]$costRegister.sheet) -TableName ([string]$costRegister.table_name) `
         -RowIndex $victimRow -ColumnIndex $maxOrdinal -Value $originalMax
     $recalcResult = [string](Invoke-Phase5ProductionOperation -Excel $excel -Operation 'PCCM_Calculate' -Stage 'calculate after restore')
@@ -1389,10 +1501,10 @@ try {
          ($statesReset.Annual -like 'NOT PRODUCED*')) `
         (Format-FaStates $statesReset)
     $excel.Calculate()
-    $summaryReset = Get-FaModelCheckSummary -Workbook $wb -Projection $projection
     $modelCheckReset = Get-FaRunText -Excel $excel -Procedure 'PCCM_ModelCheckCalculationState'
-    $null = Add-FaCheck 'modelcheck.after-reset' ($modelCheckReset -ceq $statusNotCalculated) `
-        ('adapter=' + $modelCheckReset + ' overall=' + (Format-FaCell $summaryReset['overall_status']) + ' errors=' + (Format-FaCell $summaryReset['error_count']))
+    $null = Add-FaCheck 'modelcheck.after-reset.adapter' ($modelCheckReset -ceq $statusNotCalculated) ('adapter=' + $modelCheckReset)
+    $null = Assert-FaModelCheck -Workbook $wb -Projection $projection -Scenario 'modelcheck.after-reset' `
+        -Expected @($advisoryExpected, $notCalculatedExpected)
     $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'protection.after-reset'
 
     # 15c. IDEMPOTENT.

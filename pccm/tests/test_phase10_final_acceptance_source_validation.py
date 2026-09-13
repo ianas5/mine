@@ -147,6 +147,32 @@ def test_13_reading_the_persisted_history_after_the_compile_check_is_refused() -
     _mutate("test_60b", original, moved)
 
 
+def test_14_expecting_pass_after_calculate_at_the_business_minimum_is_refused() -> None:
+    """THE RUN-2 DEFECT, PUT BACK: no advisory expected, so the derived overall is PASS."""
+    _mutate("test_60e",
+            "-Scenario 'modelcheck.calculated' `\n        -Expected @($advisoryExpected)\n",
+            "-Scenario 'modelcheck.calculated' `\n        -Expected @()\n")
+
+
+def test_15_dropping_the_calculation_error_from_the_invalid_checkpoint_is_refused() -> None:
+    _mutate("test_60f",
+            "-Expected @(@{ Id = [string]$calcErrorChecks[0].check_id; Severity = $severityError; Subject = $victimId },\n"
+            "                    $advisoryExpected)\n",
+            "-Expected @($advisoryExpected)\n")
+
+
+def test_16_dropping_the_not_calculated_warning_after_reset_is_refused() -> None:
+    _mutate("test_60g",
+            "-Scenario 'modelcheck.after-reset' `\n        -Expected @($advisoryExpected, $notCalculatedExpected)\n",
+            "-Scenario 'modelcheck.after-reset' `\n        -Expected @($advisoryExpected)\n")
+
+
+def test_17_tolerating_an_unrelated_actionable_row_is_refused() -> None:
+    _mutate("test_60h",
+            "    if ($unmatched.Count -gt 0) { $problems += ('unexpected actionable row(s): ' + (Format-FaActionable $unmatched)) }\n",
+            "")
+
+
 if __name__ == "__main__":
     failures = 0
     for name in sorted(n for n in dir() if n.startswith("test_")):
