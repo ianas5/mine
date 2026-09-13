@@ -614,7 +614,7 @@ def test_60f_the_invalid_checkpoint_expects_the_one_calculation_error_and_the_ad
     invalidity under a non-CURRENT calculation is context, never a second
     actionable row; the advisory is still shown at the business minimum."""
     code = _code()
-    assert "$calcErrorChecks = @($projection.declared_checks | Where-Object {" in code
+    assert "$calcErrorChecks = @($projection.evaluation.declared_checks | Where-Object {" in code
     assert "if ($calcErrorChecks.Count -ne 1) { throw" in code
     invalid = code[code.index("$refusalSubject = Get-FaRunText -Excel $excel -Procedure 'PCCM_ModelCheckRefusalSubject'"):]
     invalid = invalid[: invalid.index("Set-TableCell -Workbook $wb")]
@@ -642,7 +642,7 @@ def test_60g_the_after_reset_checkpoint_expects_the_not_calculated_warning_and_t
     Calculation WARNING shown is the NOT CALCULATED check, with no subject; and
     the advisory still fires because the request is still the business minimum."""
     code = _code()
-    assert "$calcWarningIds = @($projection.declared_checks | Where-Object {" in code
+    assert "$calcWarningIds = @($projection.evaluation.declared_checks | Where-Object {" in code
     assert "$notCalculatedExpected = @{ AnyOf = $calcWarningIds; Severity = $severityWarning; Subject = '<blank>' }" in code
     after = code[code.index("Add-FaCheck 'modelcheck.after-reset.adapter'"):]
     after = after[: after.index("Assert-FaProtectionApplied")]
@@ -715,6 +715,50 @@ def test_60i_the_accepted_phase_9_formulas_produce_exactly_the_runner_expectatio
     threshold = int(_projection()["advisory"]["threshold"])
     result = p9._evaluate(plan, {"requested_iterations": threshold, "calculation_state": "CURRENT", "simulation_state": ""})
     assert str(result["summary"]["overall_status"]) == "PASS"
+
+
+def test_60k_every_projection_path_the_runner_reads_exists_in_the_generated_phase_9_projection() -> None:
+    """THE SCHEMA-PATH CONTROL. Run 3 at 2bc10e8 died in preflight with
+    PropertyNotFoundStrict on `declared_checks`: the runner read it at the
+    projection root while build_phase9_inspection() emits it under
+    `evaluation`, and the controls had pinned the same wrong path. This walks
+    EVERY `$projection.<path>` the runner spells against the generated JSON, so
+    the projection builder - never a copy of its schema - is the authority."""
+    import json
+    projection = json.loads((PCCM_ROOT / "build" / "phase9_model_check_inspection.json").read_text(encoding="utf-8"))
+    paths = sorted({m.group(1) for m in re.finditer(r"\$[Pp]rojection\.([A-Za-z_][A-Za-z0-9_.]*)", _code())})
+    assert paths, "the runner reads nothing from the projection"
+    for path in paths:
+        node = projection
+        for segment in path.split("."):
+            if segment == "PSObject":
+                break
+            assert isinstance(node, dict) and segment in node, (path, segment, sorted(node) if isinstance(node, dict) else type(node).__name__)
+            node = node[segment]
+    # THE TWO DISCOVERIES CONSUME THE AUTHORITATIVE PATH, AND NOTHING AT THE ROOT.
+    assert "$projection.evaluation.declared_checks" in _code()
+    assert "$projection.declared_checks" not in _code()
+    assert "evaluation.declared_checks" in paths
+    assert isinstance(projection["evaluation"]["declared_checks"], list) and projection["evaluation"]["declared_checks"]
+    for required in ("vocabulary.overall_states", "vocabulary.actionable_severities", "vocabulary.group_order",
+                     "advisory.check_id", "advisory.severity", "advisory.message", "advisory.threshold",
+                     "summary.value_column", "summary.rows", "register.columns", "register.first_row",
+                     "register.last_row", "sheet"):
+        assert any(path == required or path.startswith(required + ".") for path in paths), required
+    # And the builder is the authority the runner follows: its own validator
+    # reads the same path.
+    builder = (PCCM_ROOT / "builder" / "pccm_builder" / "phase9_model_check.py").read_text(encoding="utf-8")
+    assert 'inspection["evaluation"]["declared_checks"]' in builder
+
+
+def test_60l_the_record_states_the_preflight_attempt_at_2bc10e8() -> None:
+    record = (PCCM_ROOT / "docs" / "phase10_windows_run_evidence.md").read_text(encoding="utf-8")
+    start = record.index("## Final acceptance attempt 3 — 2bc10e8 — TERMINATED IN PREFLIGHT — RUNNER SCHEMA-PATH DEFECT")
+    plain = " ".join(record[start:].replace("`", "").replace("**", "").split())
+    for fact in ("PropertyNotFoundStrict", "declared_checks", "No Stage-B bootstrap output", "no Excel acceptance scenario",
+                 "projection.evaluation.declared_checks", "static controls had pinned the same incorrect path",
+                 "Production was not implicated", "FINAL ACCEPTANCE IS NOT PASSED", "351 passed"):
+        assert fact in plain, fact
 
 
 def test_60j_the_record_states_run_2_as_a_runner_expectation_defect() -> None:

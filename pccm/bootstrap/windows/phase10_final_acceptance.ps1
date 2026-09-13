@@ -973,10 +973,10 @@ if (-not ($acceptanceIterations -lt [int]$projection.advisory.threshold)) {
 }
 $advisoryExpected = @{ Id = [string]$projection.advisory.check_id; Severity = [string]$projection.advisory.severity
                        Message = [string]$projection.advisory.message }
-$calcErrorChecks = @($projection.declared_checks | Where-Object {
+$calcErrorChecks = @($projection.evaluation.declared_checks | Where-Object {
     ([string]$_.group -ceq $groupCalculation) -and ([string]$_.severity -ceq $severityError) })
 if ($calcErrorChecks.Count -ne 1) { throw ('the projection declares ' + [string]$calcErrorChecks.Count + ' Calculation ERROR checks; exactly one is expected') }
-$calcWarningIds = @($projection.declared_checks | Where-Object {
+$calcWarningIds = @($projection.evaluation.declared_checks | Where-Object {
     ([string]$_.group -ceq $groupCalculation) -and ([string]$_.severity -ceq $severityWarning) } |
     ForEach-Object { [string]$_.check_id })
 if ($calcWarningIds.Count -lt 1) { throw 'the projection declares no Calculation WARNING check' }

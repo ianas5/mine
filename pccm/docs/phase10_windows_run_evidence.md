@@ -3948,3 +3948,45 @@ threshold. Iterations remain 1,000 for Simulation, Sensitivity and Annual and
 Windows executed at `9686baf` with exactly these four substitutions, and a
 control holds the substitutions in full.
 
+## Final acceptance attempt 3 — 2bc10e8 — TERMINATED IN PREFLIGHT — RUNNER SCHEMA-PATH DEFECT
+
+**Attempted on Windows at checkout `2bc10e8`.** Stage A had passed, 351 passed,
+0 failed. The final acceptance command terminated inside the PowerShell
+preflight with
+
+```
+The property 'declared_checks' cannot be found on this object.
+PropertyNotFoundStrict
+```
+
+**No Stage-B bootstrap output appeared and no Excel acceptance scenario
+executed.** No Excel instance was started. There is no new Windows acceptance
+evidence from this attempt.
+
+**Root cause.** The runner read `projection.declared_checks` at the root of
+`phase9_model_check_inspection.json` in its two Model Check discoveries — the
+Calculation ERROR and the Calculation WARNING checks — while the authoritative
+projection builder, `build_phase9_inspection()` in
+`builder/pccm_builder/phase9_model_check.py`, emits the list under
+`evaluation`, and its own validator reads
+`inspection["evaluation"]["declared_checks"]`. The runner must read
+`projection.evaluation.declared_checks`. **The static controls had pinned the
+same incorrect path**, so they protected the defect rather than catching it.
+**Production was not implicated:** production VBA, spec, builder and the
+projection schema are unchanged, and the builder is not altered to suit the
+runner.
+
+**FINAL ACCEPTANCE IS NOT PASSED.**
+
+### Corrected in this round (source only — no Windows)
+
+Both runner references now read `$projection.evaluation.declared_checks`, with
+no fallback, no property probing and no default: there is one authoritative
+schema and the runner uses it exactly. The two controls that pinned the root
+path are corrected, and a schema-path control now loads the generated
+projection and walks every `$projection.<path>` the runner spells against it,
+requiring each to resolve — vocabulary, advisory, summary, register, sheet and
+`evaluation.declared_checks` among them — so the projection builder, never a
+copy of its schema, is the authority. One mutation puts the root path back and
+is refused. Every other scenario is byte-identical to `2bc10e8`.
+

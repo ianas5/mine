@@ -173,6 +173,13 @@ def test_17_tolerating_an_unrelated_actionable_row_is_refused() -> None:
             "")
 
 
+def test_18_reading_declared_checks_at_the_projection_root_is_refused() -> None:
+    """THE ATTEMPT-3 DEFECT, PUT BACK."""
+    _mutate("test_60k",
+            "$calcErrorChecks = @($projection.evaluation.declared_checks | Where-Object {",
+            "$calcErrorChecks = @($projection.declared_checks | Where-Object {")
+
+
 if __name__ == "__main__":
     failures = 0
     for name in sorted(n for n in dir() if n.startswith("test_")):
