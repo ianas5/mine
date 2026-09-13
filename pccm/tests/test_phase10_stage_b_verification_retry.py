@@ -1525,12 +1525,38 @@ def test_83_the_snapshot_and_the_reserved_row_correction_are_untouched() -> None
     _assert_benchmark_freeze("1e0edb2")
 
 
+def _no_undeclared_vba_change(commit: str) -> None:
+    """Production VBA is byte-identical to `commit` outside the DECLARED layers.
+
+    P10-2C DECLARED (final acceptance run 7): modRepair.bas carries the Repair
+    reconstruction rule, a genuine production correction made under its own
+    authorisation AFTER every batch this suite pins. The freeze these controls
+    state - no production VBA moved for a Stage-B / harness batch - still holds,
+    and is now proved by reversal on both sides, exactly as the P10-RP structural
+    window is: taking every declared layer off the current file and off the
+    pinned file reproduces the same bytes, and any other module that moved is
+    reported as before.
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(PCCM_ROOT / "tests"))
+    from vba_structural_window import declared_production_changes, strip_declared_changes
+    declared = {f"pccm/src/vba/{name}" for name in declared_production_changes()}
+    done = subprocess.run(["git", "diff", "--name-only", commit, "--", "pccm/src/vba"],
+                          cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE, text=True)
+    changed = [line for line in done.stdout.splitlines() if line.strip()]
+    for path in sorted(set(changed) & declared):
+        name = path.rsplit("/", 1)[1]
+        current = strip_declared_changes(name, (PCCM_ROOT / "src" / "vba" / name).read_bytes().decode("utf-8"))
+        pinned = strip_declared_changes(name, _at(commit, path))
+        assert current.replace("\r\n", "\n") == pinned.replace("\r\n", "\n"), \
+            f"{path} moved outside the declared layers since {commit}"
+    assert [p for p in changed if p not in declared] == [], done.stdout
+
+
 def test_84_production_vba_is_byte_identical() -> None:
     """NO PRODUCTION VBA CHANGE IS AUTHORISED. Asked of git rather than of a list,
     so a file nobody thought to name is covered too."""
-    done = subprocess.run(["git", "diff", "--name-only", "1e0edb2", "--", "pccm/src/vba"],
-                          cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE, text=True)
-    assert done.stdout.strip() == "", done.stdout
+    _no_undeclared_vba_change("1e0edb2")
 
 
 def test_85_the_historical_runs_do_not_claim_an_exact_rejected_operation() -> None:
@@ -1893,9 +1919,7 @@ def test_103_the_freezes_this_batch_may_not_touch() -> None:
     """REQUIRED CONTROLS 26-29. Production VBA, the benchmark runner, the
     reserved-row correction and the equivalence snapshot are all byte-identical to
     the Windows-tested revision."""
-    done = subprocess.run(["git", "diff", "--name-only", "3d34b26", "--", "pccm/src/vba"],
-                          cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE, text=True)
-    assert done.stdout.strip() == "", done.stdout
+    _no_undeclared_vba_change("3d34b26")
     _assert_benchmark_freeze("3d34b26")
     assert _ps_function(_gate(), "Get-EquivalenceSnapshot") == \
         _ps_function(_at("99cb472", "pccm/tests/phase10_fixture_equivalence.ps1"),
@@ -2141,9 +2165,7 @@ def test_111_the_three_state_settlement_is_unchanged_in_substance() -> None:
 
 def test_112_the_freezes_this_batch_may_not_touch() -> None:
     """REQUIRED CONTROLS 17-20, against the Windows-tested revision."""
-    done = subprocess.run(["git", "diff", "--name-only", "cc9cf8d", "--", "pccm/src/vba"],
-                          cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE, text=True)
-    assert done.stdout.strip() == "", done.stdout
+    _no_undeclared_vba_change("cc9cf8d")
     _assert_benchmark_freeze("cc9cf8d")
     assert _lifecycle() == _at("cc9cf8d", "pccm/bootstrap/windows/com_lifecycle.ps1")
     _assert_gate_freeze("cc9cf8d")
@@ -2335,9 +2357,7 @@ def test_121_no_inter_pass_drain_and_no_generic_mutation_retry() -> None:
 
 def test_122_the_freezes_this_batch_may_not_touch() -> None:
     """REQUIRED CONTROLS 20-21 AND 23-26, against the Windows-tested revision."""
-    done = subprocess.run(["git", "diff", "--name-only", "c66e752", "--", "pccm/src/vba"],
-                          cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE, text=True)
-    assert done.stdout.strip() == "", done.stdout
+    _no_undeclared_vba_change("c66e752")
     assert _lifecycle() == _at("c66e752", "pccm/bootstrap/windows/com_lifecycle.ps1")
     _assert_benchmark_freeze("c66e752")
     _assert_gate_freeze("c66e752")
@@ -2505,9 +2525,7 @@ def test_128_the_readiness_gate_and_saveas_settlement_did_not_move() -> None:
         assert _ps_function(now, name) == _ps_function(then, name), f"{name} changed"
     assert _lifecycle() == _at("f006ea2", "pccm/bootstrap/windows/com_lifecycle.ps1")
     _assert_gate_freeze("f006ea2")
-    done = subprocess.run(["git", "diff", "--name-only", "f006ea2", "--", "pccm/src/vba"],
-                          cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE, text=True)
-    assert done.stdout.strip() == "", done.stdout
+    _no_undeclared_vba_change("f006ea2")
     _assert_benchmark_freeze("f006ea2")
     assert _ps_function(_gate(), "Get-EquivalenceSnapshot") == \
         _ps_function(_at("99cb472", "pccm/tests/phase10_fixture_equivalence.ps1"),
