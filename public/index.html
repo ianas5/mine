@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ResumeIQ — AI-Powered Resume Analyzer</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <div class="container">
+      <div class="logo">
+        <span class="logo-icon">⚡</span>
+        <span class="logo-text">ResumeIQ</span>
+        <span class="logo-badge">AI</span>
+      </div>
+      <p class="header-tagline">Professional resume analysis powered by Claude AI</p>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- Upload Section -->
+    <section class="upload-section" id="uploadSection">
+      <div class="upload-card">
+        <h1 class="upload-title">Get Your Resume Score in Seconds</h1>
+        <p class="upload-subtitle">Our AI recruiter analyzes, scores, and rewrites your resume to help you land more interviews.</p>
+
+        <div class="upload-area" id="uploadArea">
+          <div class="upload-icon">📄</div>
+          <p class="upload-text">Drop your resume here or <label for="fileInput" class="upload-link">browse files</label></p>
+          <p class="upload-hint">Supports PDF and TXT • Max 10MB</p>
+          <input type="file" id="fileInput" accept=".pdf,.txt" hidden />
+        </div>
+
+        <div class="divider"><span>or paste resume text</span></div>
+
+        <textarea
+          id="resumeText"
+          class="resume-textarea"
+          placeholder="Paste your resume text here..."
+          rows="8"
+        ></textarea>
+
+        <div class="target-role-group">
+          <label class="field-label">Target Role <span class="optional">(optional but recommended)</span></label>
+          <input
+            type="text"
+            id="targetRole"
+            class="text-input"
+            placeholder="e.g., Senior Software Engineer at Google, Marketing Manager, Data Scientist..."
+          />
+        </div>
+
+        <button class="analyze-btn" id="analyzeBtn" onclick="startAnalysis()">
+          <span class="btn-icon">⚡</span>
+          Analyze My Resume
+        </button>
+
+        <p class="privacy-note">🔒 Your resume is analyzed privately and never stored</p>
+      </div>
+    </section>
+
+    <!-- Loading Section -->
+    <section class="loading-section hidden" id="loadingSection">
+      <div class="loading-card">
+        <div class="loading-animation">
+          <div class="pulse-ring"></div>
+          <div class="pulse-core">AI</div>
+        </div>
+        <h2 class="loading-title">Analyzing Your Resume</h2>
+        <div class="loading-steps">
+          <div class="step active" id="step1">Parsing resume content...</div>
+          <div class="step" id="step2">Scoring each section...</div>
+          <div class="step" id="step3">Identifying critical issues...</div>
+          <div class="step" id="step4">Generating rewrites & tips...</div>
+          <div class="step" id="step5">Finalizing report...</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Results Section -->
+    <section class="results-section hidden" id="resultsSection">
+      <div class="results-header">
+        <button class="back-btn" onclick="resetApp()">← Analyze Another Resume</button>
+        <h2 class="results-title">Your Resume Analysis</h2>
+      </div>
+
+      <!-- Overall Score Hero -->
+      <div class="score-hero" id="scoreHero">
+        <div class="score-circle-wrap">
+          <svg class="score-ring" viewBox="0 0 200 200">
+            <circle class="ring-bg" cx="100" cy="100" r="80" />
+            <circle class="ring-fill" id="ringFill" cx="100" cy="100" r="80"
+              stroke-dasharray="502"
+              stroke-dashoffset="502" />
+          </svg>
+          <div class="score-inner">
+            <div class="score-number" id="overallScore">-</div>
+            <div class="score-grade" id="scoreGrade">-</div>
+          </div>
+        </div>
+        <div class="score-meta">
+          <h3 class="score-headline" id="scoreHeadline"></h3>
+          <div class="score-badges">
+            <div class="badge badge-ats">
+              <span class="badge-label">ATS Score</span>
+              <span class="badge-value" id="atsScore">-</span>
+            </div>
+            <div class="badge badge-hire">
+              <span class="badge-label">Hire Likelihood</span>
+              <span class="badge-value" id="hireLikelihood">-</span>
+            </div>
+            <div class="badge badge-time">
+              <span class="badge-label">Recruiter Time</span>
+              <span class="badge-value" id="recruiterTime">-s</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Category Scores -->
+      <div class="card" id="categoryScores">
+        <h3 class="card-title">Score Breakdown</h3>
+        <div class="score-bars" id="scoreBars"></div>
+      </div>
+
+      <!-- Tab Navigation -->
+      <div class="tabs">
+        <button class="tab active" onclick="showTab('issues')">Issues</button>
+        <button class="tab" onclick="showTab('sections')">Sections</button>
+        <button class="tab" onclick="showTab('rewrites')">Rewrites</button>
+        <button class="tab" onclick="showTab('levelup')">Level Up</button>
+      </div>
+
+      <!-- Issues Tab -->
+      <div class="tab-content" id="tab-issues">
+        <div class="two-col">
+          <div>
+            <div class="card" id="strengthsCard">
+              <h3 class="card-title">✅ Strengths</h3>
+              <ul class="strength-list" id="strengthsList"></ul>
+            </div>
+          </div>
+          <div>
+            <div class="card" id="quickWinsCard">
+              <h3 class="card-title">⚡ Quick Wins</h3>
+              <ul class="quick-list" id="quickWinsList"></ul>
+            </div>
+          </div>
+        </div>
+        <div class="card" id="issuesCard">
+          <h3 class="card-title">Critical Issues</h3>
+          <div id="issuesList"></div>
+        </div>
+      </div>
+
+      <!-- Sections Tab -->
+      <div class="tab-content hidden" id="tab-sections">
+        <div id="sectionsContent"></div>
+      </div>
+
+      <!-- Rewrites Tab -->
+      <div class="tab-content hidden" id="tab-rewrites">
+        <div id="summaryRewrite"></div>
+        <div class="card" id="bulletRewritesCard">
+          <h3 class="card-title">✏️ Bullet Point Rewrites</h3>
+          <p class="card-desc">Before → After transformations with AI-powered improvements</p>
+          <div id="bulletRewrites"></div>
+        </div>
+        <div class="card" id="keywordsCard">
+          <h3 class="card-title">🔑 Keywords to Add</h3>
+          <p class="card-desc">Boost your ATS score by incorporating these keywords</p>
+          <div class="keyword-tags" id="keywordTags"></div>
+        </div>
+      </div>
+
+      <!-- Level Up Tab -->
+      <div class="tab-content hidden" id="tab-levelup">
+        <div class="card" id="levelUpCard">
+          <h3 class="card-title">🚀 Level Up Your Resume</h3>
+          <p class="card-desc">Ranked by impact to your job search</p>
+          <div id="levelUpList"></div>
+        </div>
+        <div class="card hidden" id="tailoringCard">
+          <h3 class="card-title">🎯 Tailoring Suggestions</h3>
+          <div id="tailoringList"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <p>Powered by Claude AI · Built for job seekers everywhere</p>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
