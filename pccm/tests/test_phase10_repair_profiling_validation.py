@@ -192,10 +192,8 @@ def test_06_a_trim_that_would_delete_weights_is_allowed() -> None:
     """Repairing the width by deleting the user's weights is the one repair that
     would be worse than the fault."""
     damaged = _swap(
-        "    hits = modProfiling.CountDataBeyond(kind, targetYears, affected, affectedCount)\n"
-        "    If hits = 0 Then\n",
-        "    hits = modProfiling.CountDataBeyond(kind, targetYears, affected, affectedCount)\n"
-        "    If True Then\n")
+        "    If hits = 0 Then\n        TrimIsEmpty = True\n",
+        "    If True Then\n        TrimIsEmpty = True\n")
     _control("test_14", source=damaged)
 
 
@@ -249,7 +247,7 @@ def test_12_a_half_entered_profile_is_restructured_anyway() -> None:
     """The semantic gate removed: a row totalling 60% gets moved between two
     different sets of project years and handed back looking repaired."""
     damaged = _swap(
-        "            If plan.WidthDrift And registerIds.Exists(idText) Then\n"
+        "            If registerIds.Exists(idText) Then\n"
         "                If Not RecognisedProfile(weights, label, idText, detail) Then Exit Function\n"
         "            End If\n", "")
     _control("test_18", source=damaged)
@@ -259,9 +257,9 @@ def test_13_the_command_normalises_a_profile_to_100_percent() -> None:
     """THE ONE THING A STRUCTURAL REPAIR MUST NEVER DO. Scaling a row to total
     100% is inventing an allocation the user never made."""
     damaged = _swap(
-        "    If IsRecognisedSum(total) Then\n",
+        "    If WithinTolerance(total, REPAIR_PROFILE_SUM_TARGET) Then\n",
         "    terms(0) = terms(0) / total\n"
-        "    If IsRecognisedSum(total) Then\n")
+        "    If WithinTolerance(total, REPAIR_PROFILE_SUM_TARGET) Then\n")
     _control("test_18", source=damaged)
 
 
@@ -274,13 +272,65 @@ def test_14_the_recognised_total_stops_being_100_percent() -> None:
     _control("test_19", source=damaged)
 
 
-def test_15_the_empty_total_stops_being_the_contract_default() -> None:
-    """0% is the contract's own initial value. A different one here would make
-    the command refuse on every workbook with an unprofiled driver."""
+def test_15_a_populated_zero_total_is_read_as_an_empty_profile() -> None:
+    """THE OLD EMPTY TOTAL PUT BACK: a row of typed zeros, or +1 beside -1,
+    waved through as "no profile yet"."""
     damaged = _swap(
-        "Private Const REPAIR_PROFILE_SUM_EMPTY As Double = 0#",
-        "Private Const REPAIR_PROFILE_SUM_EMPTY As Double = 0.5")
-    _control("test_19", source=damaged)
+        "    If WithinTolerance(total, REPAIR_PROFILE_SUM_TARGET) Then\n",
+        "    If WithinTolerance(total, 0#) Or WithinTolerance(total, REPAIR_PROFILE_SUM_TARGET) Then\n")
+    _control("test_18", source=damaged)
+    # And the Python model of the gate refuses the same shortcut.
+    original = conformance.assess_refusal
+    def lenient(register_ids, grid, target_years):
+        width = max((len(v) for v in grid.values()), default=target_years)
+        for pid, weights in grid.items():
+            if pid not in register_ids:
+                continue
+            populated = [x for x in weights if x is not None]
+            total = sum(populated)
+            if populated and abs(total) > 1e-9 and abs(total - 1.0) > 1e-9:
+                return f"{pid}: populated, total {total}, not 100%"
+        return original(register_ids, grid, target_years) if target_years < width else None
+    conformance.assess_refusal = lenient
+    try:
+        refused = _run_battery()
+    finally:
+        conformance.assess_refusal = original
+    assert any(n.startswith("test_33") for n in refused), refused
+
+
+def test_15b_the_semantic_gate_is_made_width_only_again() -> None:
+    damaged = _swap(
+        "            If registerIds.Exists(idText) Then\n"
+        "                If Not RecognisedProfile(weights, label, idText, detail) Then Exit Function\n",
+        "            If plan.WidthDrift And registerIds.Exists(idText) Then\n"
+        "                If Not RecognisedProfile(weights, label, idText, detail) Then Exit Function\n")
+    _control("test_18", source=damaged)
+
+
+def test_15c_a_typed_zero_beyond_the_duration_is_trimmed_as_nothing() -> None:
+    """THE ORDINARY OWNER'S RULE PUT BACK INTO REPAIR: zero is data-free there."""
+    damaged = _swap(
+        "            If Not IsEmpty(weights(year - 1)) Then\n",
+        "            If (Not IsEmpty(weights(year - 1))) And (weights(year - 1) <> 0) Then\n")
+    _control("test_14", source=damaged)
+    original = conformance.assess_refusal
+    def zero_is_nothing(register_ids, grid, target_years):
+        cleaned = {k: [None if (i >= target_years and v == 0.0) else v for i, v in enumerate(row)] for k, row in grid.items()}
+        return original(register_ids, cleaned, target_years)
+    conformance.assess_refusal = zero_is_nothing
+    try:
+        refused = _run_battery()
+    finally:
+        conformance.assess_refusal = original
+    assert any(n.startswith("test_32") for n in refused), refused
+
+
+def test_15d_the_trim_refusal_stops_naming_the_id_and_the_year() -> None:
+    damaged = _swap(
+        "the applied timeline no longer covers, the first on \" & firstId & \" in \" & _\n",
+        "the applied timeline no longer covers, the first on a driver in \" & _\n")
+    _control("test_14", source=damaged)
 
 
 # ===========================================================================
@@ -403,7 +453,7 @@ def test_25_the_oracle_composition_cannot_carry_the_ordering_claim() -> None:
     behavioural controls would then be asserting something new.
     """
     register = ["CL-001", "CL-002"]
-    for grid, target in (({"CL-001": [0.5, 0.5, 0.0]}, 2),
+    for grid, target in (({"CL-001": [0.5, 0.5, None]}, 2),
                          ({"CL-001": [1.0]}, 3),
                          ({"CL-001": [0.25, 0.75], "CL-009": [1.0, 0.0]}, 4)):
         forward = conformance.repair_grid(register, grid, target)

@@ -4289,3 +4289,173 @@ settled Phase-10 text and the accepted Phase-4 profiling convention. Per the
 authorisation they are reported here and no rule is changed for them; the
 missing-row and width-growth defects are unambiguous and are corrected.
 
+
+## Bounded correction round after the independent review — from 347f42e — NO WINDOWS EXECUTED
+
+**Nothing was executed on Windows in this round. No Excel was executed. No
+benchmark was run. No complete full static sweep was run.** The round was
+authorised after an independent review of the tree at `347f42e` (the runner
+Windows executed at run 7 is byte-identical between `ee6e9fb` and `347f42e`).
+The run-7 Repair correction of `2372ab7` is kept in full. Four blockers were
+corrected, at source, and every correction is declared and proved by reversal.
+
+### Blocker 1 — Repair strict trim (production: modRepair.bas only)
+
+Section 5 of the settled contract says the grid is trimmed "only when the
+removed cells hold no non-empty weight". The §5 audit of run 7 recorded item 5
+as OPEN because `modRepair.TrimIsEmpty` delegated to
+`modProfiling.CountDataBeyond` → `modWorkbook.IsDataCell`, which counts an
+explicit 0 as not data. That item is now CLOSED — corrected. `TrimIsEmpty` is
+Repair's own: it reads every retained row's weights beyond the applied
+duration and counts a cell populated unless it `IsEmpty`. **An explicit
+numeric 0 is populated.** A shrink may remove only blank cells. When a populated
+cell would be lost the command REFUSES BEFORE ANY MUTATION — before the
+transaction snapshot, before either owner runs — naming the permanent id, the
+project year index and, where the header can be read, the column header:
+"… has N populated weight cell(s) in project years the applied timeline no
+longer covers, the first on <id> in project year <n> (<header>). A typed zero counts
+as populated." The ordinary Timeline destructive-assessment semantics are NOT
+changed: `modProfiling.CountDataBeyond` and `modWorkbook.IsDataCell` are
+byte-identical to `ee6e9fb` and Apply / Update Timeline still uses them;
+`modRepair` simply no longer calls `CountDataBeyond`.
+
+### Blocker 2 — Repair semantic gate on every retained row (production: modRepair.bas only)
+
+§5 audit item 8 was OPEN because `RecognisedProfile` refused a non-100% total
+ONLY when the width changed, and read a 0% total as "no profile yet". That
+item is now CLOSED — corrected. The gate now runs on EVERY retained valid
+driver row (a row whose id is in its register), on both grids, independent of
+width drift. An all-blank row is allowed — an unmade assumption. A row with any
+populated weight must total 100% within the existing tolerance
+(`WithinTolerance(total, REPAIR_PROFILE_SUM_TARGET)`); anything else is
+refused, naming the id: "the weights for <id> are populated and total 0,
+which is not 100% … a row with weights typed in it is not an unprofiled
+driver, even when those weights total zero." **A populated row summing to 0 —
+[1, -1] or [0, 0] — is NOT blank.** `REPAIR_PROFILE_SUM_EMPTY` and
+`IsRecognisedSum` are removed; THERE IS NO "EMPTY TOTAL". No normalisation is
+performed: Repair restores structure and never rewrites a weight. The gate
+runs before the snapshot, so a refusal mutates nothing. Permanent-id
+semantics, reorder, missing-row and width-growth blank reconstruction,
+rollback through both failpoints, state and fingerprint are unchanged from
+`2372ab7`.
+
+Both corrections are declared in `tests/vba_repair_reconstruction.py`, whose
+hunks were regenerated from the diff against `ee6e9fb`: taking every declared
+fragment off the current `modRepair.bas` reproduces `ee6e9fb` byte for byte,
+and the structural-window reversal beneath still reproduces `58b2394`. No
+other production, spec or builder byte moved. Phases 6–9, the ordinary Timeline
+semantics, the kernels, state derivation, fingerprints and performance are
+untouched.
+
+### Blocker 3 — the final runner's protection check (runner only)
+
+The runner Windows executed at run 7 expected a COM `Value2` write to a locked
+cell on the Methodology sheet to FAIL, and read any exception in the `try` as
+that refusal. That was wrong twice: the accepted design protects with
+`UserInterfaceOnly:=True`, which the Phase-10 protection probe proved PERMITS
+a code-driven value write to a locked cell (recorded in `modProtection.bas`);
+and an unrelated COM exception would have counted as protection. The check is
+replaced by a pair that keeps the two facts apart. The target is established
+explicitly first: the Methodology sheet must be declared protected with no
+unlocked cells in the protection projection, and the cell is the Source
+Revision label. `protection.locked-cell.user-protected` proves the cell
+`Locked` on a sheet whose `ProtectContents` is true — the user-edit protection
+— and any read failure is a FAIL. `protection.locked-cell.code-write-permitted`
+writes the cell its own value and reads it back — the code-write capability —
+and any exception is a FAIL of that check, never evidence of protection.
+`protection.after-locked-cell` then re-asserts the whole projection.
+`protection.locked-refused` no longer exists.
+
+### Blocker 4 — runner coverage against contract §14 (runner only)
+
+Added as one delimited block after `repair.restored`, before the
+post-repair recalculation, driving production through `PCCM_RepairProfiling`
+with every precondition made inside the accepted setup window or through an
+unlocked weight cell:
+
+| scenario | precondition | expectation |
+|---|---|---|
+| `repair.width-growth` | row one [0.5, 0.5, 0, 0]; last project-year column deleted in the window | OK, wording says what was left blank; the regrown year is BLANK on every row; every existing cell unchanged |
+| `repair.shrink-blank` | a blank project-year column added in the window | OK; cost grid byte-identical to before the column was added |
+| `repair.shrink-zero-refused` (+ `.names`) | the added column holds a typed 0 on row one; the row still totals 100% | FAIL; both grids unchanged; names the id, "project year 5", "typed zero counts as populated" |
+| `repair.shrink-nonzero-refused` (+ `.names`) | row one [0.4, 0.5, 0, 0 \| 0.1]; totals 100% | FAIL; both grids unchanged; names the id and the project year |
+| `repair.semantic-non1-refused` (+ `.names`) | no width drift; row one's first weight 0.55 | FAIL; both grids unchanged; "populated and total", "not 100%", names the id |
+| `repair.blank-profile-allowed` | row one cleared entirely | OK, "Nothing was changed", grid unchanged |
+| `repair.signed-zero-total-refused` (+ `.names`) | row one [1, -1, 0, 0] | FAIL; both grids unchanged; "populated and total 0", "not 100%" — never read as blank |
+| `repair.rollback.Phase10RepairCost`, `repair.rollback.Phase10RepairRisk` | row two deleted in the window; each contracted failpoint injected | FAIL naming the failpoint, "restored to the state they were in before"; BOTH grids byte-identical to before the call |
+| `repair.rollback.then-repaired` | — | OK; the row recreated BLANK |
+| `repair.grids-restored` | weights put back; Apply Timeline resync | both grids equal their digests from before the block |
+
+Protection is asserted after every one of them (`protection.after-repair-growth`,
+`-shrink`, `-shrink-zero`, `-shrink-nonzero`, `-semantic`, `-signed`,
+`-rollback.<failpoint>`). The failpoint names are production's constants.
+Three helpers were added for the block: `Add-FaTableColumn`,
+`Remove-FaLastTableColumn` (structural; called only inside a window) and
+`Set-FaWeight` (one typed weight or a blank, through the accepted
+`Set-TableCell`). The grid-digest variables are initialised at script scope.
+
+**Contract row J — the distribution copy** is added as a second delimited block
+after the main session's `PCCM_AutomationEnd`: the original is closed unsaved
+and released; the BUILT Stage-B file is copied to a different folder under a
+different name (`distribution copy\PCCM distribution copy.xlsm`); the copy is
+opened in the same owned Excel instance, so `Workbook_Open` runs in it;
+`copy.compile`, `copy.source-revision` (the same expected `<short> (clean)`),
+`copy.protection`, `copy.fixture` (in the window), `copy.run` (Calculate and a
+1,000-iteration Simulation both CURRENT) and `copy.protection-after-run` are
+asserted; the copy's COM acquisition is counted and the accepted shutdown
+closes it unsaved. Nothing is saved in either session. **Contract row I**
+(preservation of populated publications and state) remains asserted by
+`modelcheck.worksheet-safety` and the Reset preservation digest.
+
+**Contract row O — an injected `Workbook_Open` failure — is NOT implemented and
+is reported instead.** `ThisWorkbook.Workbook_Open` calls only
+`modProtection.ProtectionApply`; there is no failpoint in that path, automation
+cannot be begun before the open handler runs, and a failure outside automation
+shows a message box, which no runner may dismiss. Implementing the row would
+require a production seam this round is not authorised to add. It stays open.
+
+### Test and oracle reconciliation (this round)
+
+`tests/test_phase10_repair_profiling.py` — the Python model gained
+`assess_refusal` (semantic gate on retained rows; strict trim), applied by
+`repair_grid` before any grid change; the width-only expectation (old test_18),
+the zero-total-as-empty expectation (old test_19) and the delegated-trim
+expectation (old test_14) are restated; test_32 (both grids: blank-only shrink
+accepted, typed zero refused naming id and year, nonzero refused), test_33
+(every retained row; [1, -1] and [0, 0] refused as "populated, total 0.0";
+an orphan is not assessed), test_34 (both gates before the snapshot;
+`CountDataBeyond` stays in modProfiling and is absent from modRepair).
+`tests/test_phase10_repair_profiling_validation.py` — mutations for a trim that
+ignores populated cells, a semantic gate that skips the register check,
+normalisation before the tolerance check, a populated zero total read as
+empty, the width-only gate restored, a zero beyond the duration trimmed, a
+trim refusal that stops naming the id and year.
+`tests/test_phase10_final_acceptance_source.py` — `protection.locked-refused`
+removed from the required scenarios and the new scenarios added; test_63
+restated for the separated pair; test_60c restated as the reversal against
+`347f42e` (two delimited insertions removed, the protection region substituted,
+the head insertions removed, byte-identical otherwise); test_60c2 keeps the
+historical chain from `9686baf`; test_11 and test_60g restated for the second
+session; tests 52–55 added for the new scenarios and the copy.
+`tests/test_phase10_final_acceptance_source_validation.py` — mutations 27–38:
+a refused shrink accepted, the typed-zero shrink expected to succeed, a
+populated zero total read as blank, a regrown year expected zero, a column
+added outside the window, the rollback digest comparison dropped, a COM
+exception counted as protection, the locked-cell write expected to fail, the
+user-edit half dropped, a saved copy, a copy opened from the original path, an
+undeclared edit to the executed tail.
+
+### Stage-A provenance
+
+`build/` is git-ignored: every host builds its own Stage A, and the artefact
+records the Source Revision of the tree it was built from. The reviewer's
+retained `PCCM_stageA.xlsx` and `phase10_methodology_inspection.json` identify
+`ee6e9fb`, so they were built on the Windows host at `ee6e9fb` — the tree run 7
+executed — and that host has not rebuilt since `2372ab7` and `347f42e` were
+pushed. They are STALE with respect to `347f42e` and to this round: they do not
+represent `347f42e`, and no claim is made that they do. The final Stage-A
+rebuild on the Windows host is deferred to the next authorised command sequence
+(`git pull --ff-only`, then `python pccm\builder\build_stage_a.py`, on a clean
+tree), and the runner will refuse a dirty tree or a mismatched Source Revision
+before Excel starts. The Linux container's own Stage A was rebuilt on the clean
+tree of this round's commit for the provenance controls only.

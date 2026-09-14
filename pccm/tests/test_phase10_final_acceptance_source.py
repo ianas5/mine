@@ -71,16 +71,39 @@ REQUIRED_SCENARIOS = (
     "reset.precondition", "reset.declined", "reset.confirmed", "reset.preserved",
     "reset.states", "modelcheck.after-reset", "modelcheck.after-reset.adapter", "reset.idempotent", "refused.outcome.annual",
     "reset.rollback", "protection.final", "protection.unlocked-writable",
-    "protection.locked-refused", "shutdown.workbook-close", "shutdown.application-quit",
+    "protection.locked-cell.user-protected", "protection.locked-cell.code-write-permitted",
+    "shutdown.workbook-close", "shutdown.application-quit",
     "shutdown.natural-exit", "shutdown.no-emergency", "shutdown.com-released",
+    # Added at the bounded correction round after the independent review: the
+    # Repair contract scenarios of section 5 / matrix rows F, G, G2, M, and the
+    # distribution-copy session of matrix row J.
+    "repair.width-growth", "repair.shrink-blank", "repair.shrink-zero-refused",
+    "repair.shrink-nonzero-refused", "repair.semantic-non1-refused", "repair.blank-profile-allowed",
+    "repair.signed-zero-total-refused", "repair.rollback.", "repair.grids-restored",
+    "copy.compile", "copy.source-revision", "copy.protection", "copy.fixture", "copy.run",
 )
+# The runner the starting authority of the bounded correction round carried, and
+# that Windows executed at final acceptance run 7 (ee6e9fb; the runner is
+# byte-identical between the two). Everything this round changed in the runner
+# is declared below and proved by reversal against it.
+STARTING_AUTHORITY = "347f42e"
+R2_BLOCKS = ("P10-R2 REPAIR CONTRACT SCENARIOS", "P10-R2 DISTRIBUTION COPY")
+# The one region of the executed tail that was SUBSTITUTED rather than inserted:
+# the final protection behaviour, from its heading to the automation end.
+PROTECTION_REGION = ("    # 18/19. FINAL PROTECTION AND ITS BEHAVIOUR.",
+                     "    $excel.Run('PCCM_AutomationEnd') | Out-Null\n")
 # Protection is asserted after every path that could leak a window.
 PROTECTION_AFTER = ("protection.initial", "protection.after-structural", "protection.after-commands",
                     "protection.after-refusal", "protection.after-repair-noop",
                     "protection.after-repair-missing", "protection.after-repair-order",
                     "protection.after-repair-refusal", "protection.after-reset",
                     "protection.after-refused-annual", "protection.after-rollback",
-                    "protection.final")
+                    "protection.final",
+                    "protection.after-repair-growth", "protection.after-repair-shrink",
+                    "protection.after-repair-shrink-zero", "protection.after-repair-shrink-nonzero",
+                    "protection.after-repair-semantic", "protection.after-repair-signed",
+                    "protection.after-repair-rollback.", "protection.after-locked-cell",
+                    "copy.protection", "copy.protection-after-run")
 
 _MEMO: dict = {}
 
@@ -123,6 +146,25 @@ def _function(name: str, source: str) -> str:
 def _git(*args: str) -> str:
     return subprocess.run(["git", *args], cwd=PCCM_ROOT.parent,
                           capture_output=True, text=True, check=True).stdout
+
+
+def _without_r2_blocks(text: str) -> str:
+    """The runner with the two delimited insertions of the bounded correction
+    round taken out - each must be present exactly once, begin and end."""
+    for name in R2_BLOCKS:
+        begin = f"    # --- {name}: begin"
+        end = f"    # --- {name}: end"
+        assert text.count(begin) == 1 and text.count(end) == 1, name
+        start = text.index(begin)
+        stop = text.index("\n", text.index(end)) + 1
+        text = text[:start] + text[stop:]
+    return text
+
+
+def _split_protection_region(tail: str) -> tuple[str, str, str]:
+    start = tail.index(PROTECTION_REGION[0])
+    stop = tail.index(PROTECTION_REGION[1], start)
+    return tail[:start], tail[start:stop], tail[stop:]
 
 
 def _scenario_labels() -> list[str]:
@@ -264,9 +306,19 @@ def test_11_states_are_read_through_accessors_that_write_nothing() -> None:
     assert "'SimReportDerivedStatus'" in states
     assert "'PCCM_AnnualDistributionState'" in states and "'PCCM_AnnualProfileState'" in states
     assert "PCCM_CalculationStatus" not in states and "PCCM_SimulationStatus" not in states
-    # THE ONE PCCM_CalculationStatus CALL IS THE ACCEPTED COMPILE CHECK.
-    assert _code().count("$excel.Run('PCCM_CalculationStatus')") == 1
-    assert "PCCM_SimulationStatus" not in _code()
+    # THE PCCM_CalculationStatus CALL IS THE ACCEPTED COMPILE CHECK: once per
+    # opened workbook - the original, and (since the bounded correction round)
+    # the distribution copy - each immediately after the open and before any
+    # state is observed in that session.
+    code = _code()
+    calls = [m.start() for m in re.finditer(re.escape("$excel.Run('PCCM_CalculationStatus')"), code)]
+    assert len(calls) == 2, len(calls)
+    opened = [m.start() for m in re.finditer(re.escape("$workbooks.Open("), code)]
+    assert len(opened) == 2
+    for open_at, call_at in zip(opened, calls):
+        assert open_at < call_at
+        assert "Get-FaStates" not in code[open_at: call_at] and "Get-FaPersistedStates" not in code[open_at: call_at]
+    assert "PCCM_SimulationStatus" not in code
 
 
 def test_12_the_runner_reaches_for_no_protection_of_its_own() -> None:
@@ -464,7 +516,9 @@ def test_50b_the_missing_row_expectation_requires_blank_weights_and_never_a_zero
 def test_51_every_repair_precondition_is_created_inside_the_window_and_repaired_outside_it() -> None:
     """THE WINDOW MAKES THE DEFECT; PRODUCTION REPAIRS UNDER ITS OWN PROTECTION."""
     code = _code()
-    for scenario in ("repair.missing-row", "repair.order", "repair.duplicate", "repair.duplicate-undo"):
+    for scenario in ("repair.missing-row", "repair.order", "repair.duplicate", "repair.duplicate-undo",
+                     "repair.width-growth", "repair.shrink-blank", "repair.shrink-zero", "repair.shrink-zero-clear",
+                     "repair.shrink-nonzero", "repair.shrink-nonzero-clear", "repair.rollback"):
         open_at = code.index(f"Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario '{scenario}'")
         close_at = code.index(f"Close-FaFixtureWindow -Excel $excel -Protection $protection -Scenario '{scenario}'")
         assert open_at < close_at
@@ -472,6 +526,146 @@ def test_51_every_repair_precondition_is_created_inside_the_window_and_repaired_
         # The window closes BEFORE the next repair invocation.
         next_repair = code.index("'PCCM_RepairProfiling'", close_at)
         assert "Open-FaFixtureWindow" not in code[close_at: next_repair], scenario
+    # The two column helpers are structural and are called ONLY inside a window.
+    for helper in ("Add-FaTableColumn -Workbook", "Remove-FaLastTableColumn -Workbook"):
+        for match in re.finditer(re.escape(helper), code):
+            opened = code.rfind("Open-FaFixtureWindow", 0, match.start())
+            closed = code.rfind("Close-FaFixtureWindow", 0, match.start())
+            assert opened > closed, (helper, match.start())
+
+
+def test_52_width_growth_regrows_blank_and_the_blank_only_shrink_changes_nothing_else() -> None:
+    """MATRIX ROWS F AND G, ADDED AT THE BOUNDED CORRECTION ROUND. A project
+    year lost inside the window is regrown BLANK on every row with no existing
+    cell touched; a blank project year added inside the window is trimmed and
+    the grid is byte-identical to before it was added."""
+    code = _code()
+    growth = code[code.index("$growthBefore = @(Get-TableBody"): code.index("Add-FaCheck 'repair.width-growth'") + 300]
+    assert "Remove-FaLastTableColumn -Workbook $wb -SheetName $gridSheet -TableName $gridTable" in growth
+    assert "$grown = Invoke-FaEndpoint -Excel $excel -Operation 'PCCM_RepairProfiling'" in growth
+    assert "if ($grown -notlike 'OK|*')" in growth and "if ($grown -notlike '*left blank*')" in growth
+    assert "if ([string]$after[$c] -cne [string]$before[$c])" in growth
+    assert "if ([string]$after[$before.Count - 1] -ne '') { $growthProblems += ([string]$before[0] + ' regrown project year '" in growth
+    assert "-ne '0'" not in growth and "-ne 0)" not in growth
+    assert "Add-FaCheck 'repair.width-growth' ($growthProblems.Count -eq 0)" in growth
+    assert "are left blank for you to complete" in _src("repair", REPAIR_VBA)
+    shrink = code[code.index("Scenario 'repair.shrink-blank'"): code.index("Add-FaCheck 'repair.shrink-blank'") + 200]
+    assert "$null = Add-FaTableColumn -Workbook $wb -SheetName $gridSheet -TableName $gridTable" in shrink
+    assert "Add-FaCheck 'repair.shrink-blank' (($shrunkBlank -like 'OK|*') -and ($costAfterShrink -ceq $script:FaCostBefore))" in shrink
+    # the setup for growth leaves every retained row at 100%, so only structure is repaired
+    setup = code[code.index("# (a) WIDTH GROWTH") if "# (a) WIDTH GROWTH" in code else code.index("$rowOneId = [string]$rowOneWeights[0]"): code.index("$growthBefore = @(Get-TableBody")]
+    assert "-RowIndex 1 -Year 1 -Weight 0.5" in setup and "-RowIndex 1 -Year 2 -Weight 0.5" in setup
+
+
+def test_53_every_repair_refusal_is_asserted_with_both_grids_unchanged_and_names_the_id_and_year() -> None:
+    """MATRIX ROWS G2 AND M, ADDED AT THE BOUNDED CORRECTION ROUND. A typed
+    zero beyond the applied duration, a nonzero weight beyond it, a populated
+    fixed-width row that is not 100%, and a populated signed row totalling zero
+    are each REFUSED - the announcement is a FAIL, both profiling grids are
+    byte-identical to before the call, and the refusal names the permanent id
+    (and, for a trim, the project year). An all-blank row passes. Every wording
+    the runner expects is production's."""
+    code = _code()
+    unchanged = _function("Assert-FaGridsUnchanged", code)
+    assert "($Announcement -like 'FAIL|*')" in unchanged
+    assert "($costNow -ceq $script:FaCostBefore) -and ($riskNow -ceq $script:FaRiskBefore)" in unchanged
+    saver = _function("Save-FaGridsBefore", code)
+    assert "$script:FaCostBefore = Get-FaTableDigest -Workbook $wb -SheetName $gridSheet -TableName $gridTable" in saver
+    assert "$script:FaRiskBefore = Get-FaTableDigest -Workbook $wb -SheetName $riskSheet -TableName $riskTable" in saver
+    repair = _src("repair", REPAIR_VBA)
+    for scenario, variable, wordings in (
+            ("repair.shrink-zero-refused", "$zeroRefused",
+             ("('*project year ' + [string]($durationYears + 1) + '*')", "'*typed zero counts as populated*'")),
+            ("repair.shrink-nonzero-refused", "$nonzeroRefused",
+             ("('*project year ' + [string]($durationYears + 1) + '*')",)),
+            ("repair.semantic-non1-refused", "$non1Refused", ("'*populated and total*'", "'*not 100%*'")),
+            ("repair.signed-zero-total-refused", "$signedRefused", ("'*populated and total 0*'", "'*not 100%*'"))):
+        assert f"Assert-FaGridsUnchanged -Scenario '{scenario}' -Announcement {variable}" in code, scenario
+        names = code[code.index(f"Add-FaCheck '{scenario}.names'"):]
+        names = names[: names.index("Assert-FaProtectionApplied")]
+        assert f"({variable} -like ('*' + $rowOneId + '*'))" in names, scenario
+        for wording in wordings:
+            assert f"({variable} -like {wording})" in names, (scenario, wording)
+        # the digests are saved AFTER the precondition and BEFORE the call
+        call = code.index(f"{variable} = Invoke-FaEndpoint -Excel $excel -Operation 'PCCM_RepairProfiling'")
+        saved = max(code.rfind("Save-FaGridsBefore\n", 0, call), code.rfind("$script:FaCostBefore = $costWithZero", 0, call))
+        assert saved > 0 and "Set-FaWeight" not in code[saved: call], scenario
+    assert "A typed zero counts as populated." in repair
+    assert "are populated and total " in repair and "which is not 100%." in repair
+    assert "even when those weights total zero" in repair
+    # the signed row is [1, -1, 0, 0]: populated, zero total, never blank
+    signed = code[code.index("# (g) POPULATED ZERO-TOTAL SIGNED PROFILE") if "# (g)" in code else code.index("Add-FaCheck 'repair.blank-profile-allowed'"): code.index("$signedRefused = Invoke-FaEndpoint")]
+    assert "-RowIndex 1 -Year 1 -Weight 1.0" in signed and "-RowIndex 1 -Year 2 -Weight -1.0" in signed
+    blank = code[code.index("Add-FaCheck 'repair.blank-profile-allowed'"):]
+    blank = blank[: blank.index("\n")]
+    assert "(($blankAllowed -like 'OK|*') -and ($blankAllowed -like '*Nothing was changed*') -and ($costAfterBlank -ceq $script:FaCostBefore))" in blank
+    # the fixed-width non-100% case has no width drift: no column helper between the weight and the call
+    non1 = code[code.rfind("Set-FaWeight", 0, code.index("$non1Refused = Invoke-FaEndpoint")): code.index("$non1Refused = Invoke-FaEndpoint")]
+    assert "TableColumn" not in non1 and "-Weight 0.55" in code[: code.index("$non1Refused = Invoke-FaEndpoint")]
+
+
+def test_54_both_repair_failpoints_roll_back_and_the_grids_return_to_their_baseline() -> None:
+    """CONTRACT SECTION 5 TRANSACTION, ADDED AT THE BOUNDED CORRECTION ROUND.
+    Both contracted Repair failpoints - the runner's names are production's
+    constants - turn a repairable fault into a FAIL whose rollback leaves BOTH
+    grids byte-identical to before the call; the real repair then recreates the
+    row blank; and after the scenarios both grids equal their baseline digests."""
+    code = _code()
+    repair = _src("repair", REPAIR_VBA)
+    for script_name, constant in (("RepairFailpointCost", "FAILPOINT_REPAIR_COST"),
+                                  ("RepairFailpointRisk", "FAILPOINT_REPAIR_RISK")):
+        value = re.search(rf'^Public Const {constant} As String = "([^"]+)"', repair, re.M).group(1)
+        assert f"$script:{script_name} = '{value}'" in code, (script_name, value)
+    rollback = code[code.index("foreach ($failpoint in @($script:RepairFailpointCost, $script:RepairFailpointRisk))"):]
+    rollback = rollback[: rollback.index("Add-FaCheck 'repair.grids-restored'") + 400]
+    assert "Save-FaGridsBefore" in rollback
+    assert "-Operation 'PCCM_RepairProfiling' -FailAfterStage $failpoint" in rollback
+    assert "(($rolledBack -like 'FAIL|*') -and ($rolledBack -like ('*' + $failpoint + '*')) -and ($rolledBack -like '*restored to the state they were in before*')" in rollback
+    assert "($costNow -ceq $script:FaCostBefore) -and ($riskNow -ceq $script:FaRiskBefore)" in rollback
+    assert "restored to the state they were in before the" in repair
+    assert "-Scenario ('protection.after-repair-rollback.' + $failpoint)" in rollback
+    assert "Add-FaCheck 'repair.rollback.then-repaired' (($repairedAfterRollback -like 'OK|*') -and $rowTwoBlank)" in rollback
+    assert "if ([string]$rowTwo[$c] -ne '') { $rowTwoBlank = $false }" in rollback
+    assert "Add-FaCheck 'repair.grids-restored' (($costRestored -ceq $baselineCost) -and ($riskRestored -ceq $baselineRisk))" in rollback
+    assert "$baselineCost = Get-FaTableDigest -Workbook $wb -SheetName $gridSheet -TableName $gridTable" in code
+    assert "$baselineRisk = Get-FaTableDigest -Workbook $wb -SheetName $riskSheet -TableName $riskTable" in code
+    # the grid variables are initialised at script scope before any helper runs
+    preamble = code[: code.index("function ")]
+    assert "$script:FaCostBefore = ''" in preamble and "$script:FaRiskBefore = ''" in preamble
+
+
+def test_55_the_distribution_copy_is_a_renamed_copy_of_the_built_file_run_in_a_second_session_and_never_saved() -> None:
+    """MATRIX ROW J, ADDED AT THE BOUNDED CORRECTION ROUND. The original is
+    closed unsaved; the BUILT Stage-B file is copied under a different name in a
+    different folder; the copy is opened in the same owned Excel (so
+    Workbook_Open runs in it), proved to compile, to carry the expected Source
+    Revision, to be protected, to take the fixture and to run to CURRENT; it is
+    closed unsaved by the accepted shutdown, and its COM acquisition is counted."""
+    code = _code()
+    copy = code[code.index("try { $wb.Close($false); $rel.WorkbookClosed = $true }"): code.index("Add-FaCheck 'copy.run'") + 600]
+    assert "Invoke-FaRelease -Ledger $rel -Obj $wb -Label 'Workbook(original)'" in copy
+    assert copy.index("$wb = $null") < copy.index("Copy-Item")
+    assert "$copyDir = Join-Path $tempRoot 'distribution copy'" in copy
+    assert "$copyPath = Join-Path $copyDir 'PCCM distribution copy.xlsm'" in copy
+    assert "Copy-Item -LiteralPath $stageBPath -Destination $copyPath -Force" in copy
+    assert "$wb = $workbooks.Open($copyPath)" in copy and "$comAcquired = $comAcquired + 1" in copy
+    assert copy.index("Copy-Item") < copy.index("$wb = $workbooks.Open($copyPath)") < copy.index("$comAcquired = $comAcquired + 1")
+    assert "try { $null = $excel.Run('PCCM_CalculationStatus') } catch { $copyCompile = (Format-Err $_) }" in copy
+    assert "Add-FaCheck 'copy.compile' ($copyCompile -eq '')" in copy
+    assert "Add-FaCheck 'copy.source-revision' ($copyRevision -ceq $revision.Expected)" in copy
+    assert "Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'copy.protection'" in copy
+    assert "Import-FaFixtureWindow -Excel $excel -Workbook $wb -Manifest $manifest -ScriptDir $scriptDir" in copy
+    assert copy.index("Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'copy.fixture'") \
+        < copy.index("Set-Phase5Fixture -Excel $excel -Workbook $wb") \
+        < copy.index("Close-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'copy.fixture'")
+    assert "Set-NamedValue -Workbook $wb -DefinedName $iterationsName -Value ([double]$acceptanceIterations)" in copy
+    assert "(($copyCalc -like 'OK|*') -and ($copySim -like 'OK|*') -and ($copyStates.Calculation -ceq $statusCurrent) -and ($copyStates.Simulation -ceq $statusCurrent))" in copy
+    assert "-Scenario 'copy.protection-after-run'" in copy
+    # nothing is ever saved, in either session
+    assert ".Save(" not in code and ".SaveAs(" not in code and ".SaveCopyAs(" not in code
+    # the copy is closed by the accepted shutdown: the finally still closes $wb unsaved
+    shutdown = code[code.rindex("} finally {"):]
+    assert "try { $wb.Close($false); $rel.WorkbookClosed = $true }" in shutdown
 
 
 # ===========================================================================
@@ -529,23 +723,57 @@ def test_60b_the_untouched_workbook_is_asserted_as_phase_9_accepted_it_live_and_
     assert code.index("Add-FaCheck 'calculate.current'") < code.index("Assert-FaModelCheck -Workbook $wb")
 
 
-def test_60c_every_scenario_from_the_fixture_onward_is_the_windows_tested_runner_plus_the_model_check_corrections() -> None:
-    """ONLY THE MODEL CHECK ASSERTIONS MOVED SINCE RUN 2. The tail of the runner
-    Windows executed at 9686baf, with exactly these four substitutions applied,
-    is the tail of the runner now - so every non-Model-Check scenario is
-    byte-identical, and the corrections are listed here in full."""
-    tested = _git("show", "9686baf:pccm/bootstrap/windows/phase10_final_acceptance.ps1").replace("\r\n", "\n")
+def test_60c_every_scenario_from_the_fixture_onward_is_the_executed_runner_plus_the_declared_round_changes() -> None:
+    """RESTATED at the bounded correction round after the independent review.
+    The tail of the runner Windows executed at run 7 (the starting authority's
+    runner; byte-identical to ee6e9fb's) is the tail of the runner now, with
+    exactly three declared changes: the Repair contract scenarios INSERTED as
+    one delimited block, the distribution-copy session INSERTED as one
+    delimited block, and the final protection behaviour SUBSTITUTED between its
+    heading and the automation end. Taking the insertions out and the
+    substitution aside reproduces the executed tail byte for byte."""
+    tested = _git("show", f"{STARTING_AUTHORITY}:pccm/bootstrap/windows/phase10_final_acceptance.ps1").replace("\r\n", "\n")
+    assert _git("diff", "--stat", "ee6e9fb", STARTING_AUTHORITY, "--",
+                "pccm/bootstrap/windows/phase10_final_acceptance.ps1").strip() == ""
     now = _runner().replace("\r\n", "\n")
+    marker = "    # 7. THE ACCEPTED W4 FIXTURE"
+    tested_tail = tested[tested.index(marker):]
+    now_tail = _without_r2_blocks(now[now.index(marker):])
+    assert now_tail != now[now.index(marker):], "the two declared insertions are absent"
+    tested_head, tested_protection, tested_rest = _split_protection_region(tested_tail)
+    now_head, now_protection, now_rest = _split_protection_region(now_tail)
+    assert now_head == tested_head
+    assert now_rest == tested_rest
+    assert now_protection != tested_protection, "the declared protection substitution is absent"
+    # The substitution keeps the unlocked half of the pair and replaces the
+    # locked half: the old "must be refused" expectation is gone with its variables.
+    assert "Add-FaCheck 'protection.unlocked-writable' ($unlockedFailure -eq '')" in now_protection
+    assert "protection.locked-refused" in tested_protection and "$lockedRefused" in tested_protection
+    assert "protection.locked-refused" not in now_protection and "lockedRefused" not in now_protection
+    assert "$lockedDetail" not in now_protection
+    # And before the fixture: the executed head plus the declared helper and
+    # preamble insertions, nothing else.
+    head_now = now[: now.index(marker)]
+    head_tested = tested[: tested.index(marker)]
+    for insertion in _runner_head_insertions():
+        assert head_now.count(insertion) == 1, insertion[:60]
+        head_now = head_now.replace(insertion, "")
+    assert head_now == head_tested
+
+
+def test_60c2_the_executed_runner_is_the_run_2_runner_plus_the_model_check_corrections() -> None:
+    """THE HISTORICAL CHAIN, KEPT. The runner Windows executed at run 7 is the
+    runner Windows executed at 9686baf with exactly the four Model Check
+    substitutions applied to its tail, and the reader/expectation region moved
+    in its head - both sides now immutable in git."""
+    tested = _git("show", "9686baf:pccm/bootstrap/windows/phase10_final_acceptance.ps1").replace("\r\n", "\n")
+    now = _git("show", f"{STARTING_AUTHORITY}:pccm/bootstrap/windows/phase10_final_acceptance.ps1").replace("\r\n", "\n")
     marker = "    # 7. THE ACCEPTED W4 FIXTURE"
     tail = tested[tested.index(marker):]
     for old, new in MODEL_CHECK_CORRECTIONS:
         assert tail.count(old) == 1, old[:60]
         tail = tail.replace(old, new)
     assert now[now.index(marker):] == tail
-    # And before the session, everything but the Model Check reader region -
-    # the summary-only reader became the surface reader and the assertion - and
-    # the projected Model Check expectations added to the preflight is the
-    # Windows-tested runner too.
     head_marker = "$calcAttemptCell = ($calcValueColumn + [string]$calcStateBlock.rows.last_attempt_result)\n"
     preflight = "# ===========================================================================\n# PREFLIGHT"
 
@@ -559,6 +787,20 @@ def test_60c_every_scenario_from_the_fixture_onward_is_the_windows_tested_runner
     assert "$notCalculatedExpected = @{ AnyOf = $calcWarningIds" in expectations
     tested_expectations = tested_head[tested_head.index("$overallPass         = "): tested_head.index("# THE CALCULATION STATE BLOCK")]
     assert now_head.replace(expectations, "") == tested_head.replace(tested_expectations, "")
+
+
+def _runner_head_insertions() -> tuple[str, ...]:
+    """The exact text this round added before the fixture: two failpoint names,
+    two grid-digest variables, and three helpers (a column added, the last
+    column removed, one weight written) - read from the runner by their own
+    delimiters, so that the reversal in test_60c is a statement about THESE
+    fragments and nothing else."""
+    now = _runner().replace("\r\n", "\n")
+    preamble_start = now.index("# The two contracted Repair failpoints: after the cost grid and after the risk grid.\n")
+    preamble_stop = now.index("$script:FaRiskBefore = ''\n") + len("$script:FaRiskBefore = ''\n")
+    helpers_start = now.index("# A PROJECT-YEAR COLUMN ADDED TO OR REMOVED FROM A GRID")
+    helpers_stop = now.index("function Get-IdColumnValues {")
+    return (now[preamble_start:preamble_stop], now[helpers_start:helpers_stop])
 
 
 MODEL_CHECK_CORRECTIONS = (
@@ -692,10 +934,16 @@ def test_60g_the_after_reset_checkpoint_expects_the_not_calculated_warning_and_t
     assert "-Scenario 'modelcheck.after-reset' `\n        -Expected @($advisoryExpected, $notCalculatedExpected)" in after
     # The request is still the business minimum there: the only two writes of
     # the iterations name are the minimum and the minimum plus one, and the last
-    # write, which precedes the reset block, restores the minimum.
-    writes = [m.group(1) for m in re.finditer(r"Set-NamedValue -Workbook \$wb -DefinedName \$iterationsName -Value \(\[double\](\$\w+)\)", code)]
+    # write of the main session, which precedes the reset block, restores the
+    # minimum. The distribution-copy session (bounded correction round) writes
+    # the minimum once more, into the fresh copy.
+    pattern = r"Set-NamedValue -Workbook \$wb -DefinedName \$iterationsName -Value \(\[double\](\$\w+)\)"
+    main = code[: code.index("Copy-Item -LiteralPath $stageBPath")]
+    writes = [m.group(1) for m in re.finditer(pattern, main)]
     assert writes[-1] == "$acceptanceIterations"
-    assert code.rindex("Set-NamedValue -Workbook $wb -DefinedName $iterationsName") < code.index("Add-FaCheck 'reset.precondition'")
+    assert main.rindex("Set-NamedValue -Workbook $wb -DefinedName $iterationsName") < main.index("Add-FaCheck 'reset.precondition'")
+    copy_writes = [m.group(1) for m in re.finditer(pattern, code[len(main):])]
+    assert copy_writes == ["$acceptanceIterations"], copy_writes
     checks = _spec_checks()
     calc_warnings = {c["check_id"]: c["condition"] for c in checks if c["group"] == "Calculation" and c["severity"] == "WARNING"}
     assert calc_warnings == {"CAL-020": '{calculation_state}="NOT CALCULATED"', "CAL-030": '{calculation_state}="STALE"'}
@@ -989,6 +1237,38 @@ def test_60u_the_record_states_run_7_as_a_genuine_production_defect() -> None:
         assert fact in plain, fact
 
 
+def test_60v_the_record_states_the_bounded_correction_round_without_windows() -> None:
+    """THE RECORD: four blockers corrected at source, contract row O reported
+    not invented, the reviewer's Stage-A artefacts explained as stale, and no
+    Windows, benchmark or full sweep claimed."""
+    record = (PCCM_ROOT / "docs" / "phase10_windows_run_evidence.md").read_text(encoding="utf-8")
+    start = record.index("## Bounded correction round after the independent review — from 347f42e — NO WINDOWS EXECUTED")
+    plain = " ".join(record[start:].replace("`", "").replace("**", "").split())
+    for fact in ("Nothing was executed on Windows in this round", "No Excel was executed", "No benchmark was run",
+                 "No complete full static sweep was run", "byte-identical between ee6e9fb and 347f42e",
+                 "An explicit numeric 0 is populated", "REFUSES BEFORE ANY MUTATION", "A typed zero counts as populated",
+                 "modProfiling.CountDataBeyond and modWorkbook.IsDataCell are byte-identical to ee6e9fb",
+                 "item 5 as OPEN", "now CLOSED — corrected", "item 8 was OPEN",
+                 "EVERY retained valid driver row", "independent of width drift", "[1, -1] or [0, 0] — is NOT blank",
+                 'THERE IS NO "EMPTY TOTAL"', "No normalisation is performed",
+                 "reproduces ee6e9fb byte for byte", "still reproduces 58b2394",
+                 "UserInterfaceOnly:=True, which the Phase-10 protection probe proved PERMITS",
+                 "protection.locked-cell.user-protected", "protection.locked-cell.code-write-permitted",
+                 "never evidence of protection", "protection.locked-refused no longer exists",
+                 "repair.width-growth", "repair.shrink-blank", "repair.shrink-zero-refused", "repair.shrink-nonzero-refused",
+                 "repair.semantic-non1-refused", "repair.blank-profile-allowed", "repair.signed-zero-total-refused",
+                 "repair.rollback.Phase10RepairCost", "repair.rollback.Phase10RepairRisk", "repair.grids-restored",
+                 "Contract row J", "PCCM distribution copy.xlsm", "Nothing is saved in either session",
+                 "Contract row O", "is NOT implemented and is reported instead", "It stays open",
+                 "build/ is git-ignored", "identify ee6e9fb", "STALE with respect to 347f42e",
+                 "do not represent 347f42e", "rebuild on the Windows host is deferred"):
+        assert fact in plain, fact
+    # THE DEFERRAL IS TRUE OF THE SOURCE: no failpoint sits in the open handler.
+    handler = (PCCM_ROOT / "src" / "vba" / "ThisWorkbook.vba").read_text(encoding="utf-8")
+    assert "FailPointCheck" not in handler and "modProtection.ProtectionApply(detail)" in handler
+    assert "Workbook_Open" not in _code()
+
+
 def test_60o_the_record_states_run_4_as_a_runner_matcher_defect() -> None:
     record = (PCCM_ROOT / "docs" / "phase10_windows_run_evidence.md").read_text(encoding="utf-8")
     start = record.index("## Final acceptance run 4 — 95e322f — TERMINATED IN THE MODEL CHECK MATCHER — RUNNER MATCHER DEFECT")
@@ -1063,13 +1343,40 @@ def test_62_protection_is_asserted_after_every_success_refusal_and_error_path() 
         assert f"-Scenario '{assertion}'" in code[start: start + 1500], assertion
 
 
-def test_63_the_protection_behaviour_pair_is_asserted() -> None:
+def test_63_the_protection_behaviour_pair_separates_user_edit_protection_from_code_write_capability() -> None:
+    """RESTATED at the bounded correction round after the independent review.
+    The accepted design protects with UserInterfaceOnly:=True, which the
+    protection probe proved PERMITS a code-driven value write to a locked cell.
+    So the runner may not expect that write to fail. It establishes the target
+    sheet and cell explicitly, proves the cell LOCKED on a sheet with
+    ProtectContents (the user-edit protection), then proves the code write
+    SUCCEEDS and reads back (the code-write capability); any exception on either
+    path is a FAIL of that check and never counts as a refusal."""
     code = _code()
     assert "foreach ($candidate in @($setupProtection.unlocked))" in code
     assert "Add-FaCheck 'protection.unlocked-writable' ($unlockedFailure -eq '')" in code
-    assert "$lockedAddress = [string]$methodology.label_column + [string]$sourceRevisionRow.row" in code
-    assert "catch { $lockedRefused = $true" in code
-    assert "Add-FaCheck 'protection.locked-refused' $lockedRefused $lockedDetail" in code
+    region = code[code.index("Add-FaCheck 'protection.unlocked-writable'"):]
+    region = region[: region.index("-Scenario 'protection.after-locked-cell'")]
+    # the target, established from the projection before any COM call
+    assert "if (-not [bool]$methodologyProtection.protect) { throw" in region
+    assert "if (@($methodologyProtection.unlocked).Count -ne 0) { throw" in region
+    assert "$lockedAddress = [string]$methodology.label_column + [string]$sourceRevisionRow.row" in region
+    # the user-edit protection: Locked on a protected sheet, read failure = FAIL
+    assert "$sheetIsProtected = [bool]$methodWs.ProtectContents" in region
+    assert "$lockedIsLocked = [bool]$lockedCell.Locked" in region
+    assert "} catch { $lockedReadFailure = (Format-Err $_) }" in region
+    assert "Add-FaCheck 'protection.locked-cell.user-protected' (($lockedReadFailure -eq '') -and $lockedIsLocked -and $sheetIsProtected)" in region
+    # the code-write capability: the write succeeds and reads back, exception = FAIL
+    assert "$lockedCell.Value2 = [string]$sourceRevisionRow.label" in region
+    assert "$valueAfterWrite = [string]$lockedCell.Value2" in region
+    assert "} catch { $codeWriteFailure = (Format-Err $_) }" in region
+    assert "Add-FaCheck 'protection.locked-cell.code-write-permitted' (($codeWriteFailure -eq '') -and ($valueAfterWrite -ceq [string]$sourceRevisionRow.label))" in region
+    assert region.index("'protection.locked-cell.user-protected'") < region.index("$lockedCell.Value2 = ")
+    # no exception is ever read as protection, and the old expectation is gone
+    assert "protection.locked-refused" not in code and "lockedRefused" not in code
+    assert not re.search(r"catch \{[^}]*=\s*\$true", region), "an exception sets a success flag"
+    assert "UserInterfaceOnly:=True" in (PCCM_ROOT / "src" / "vba" / "modProtection.bas").read_text(encoding="utf-8")
+    assert "-Scenario 'protection.after-locked-cell'" in code
 
 
 def test_64_every_required_scenario_line_is_recorded_and_fail_fast_holds() -> None:

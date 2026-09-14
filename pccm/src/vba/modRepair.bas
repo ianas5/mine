@@ -64,7 +64,7 @@ Option Explicit
 Public Const FAILPOINT_REPAIR_COST As String = "Phase10RepairCost"
 Public Const FAILPOINT_REPAIR_RISK As String = "Phase10RepairRisk"
 
-' THE TWO PROFILE SUMS THIS COMMAND RECOGNISES.
+' THE ONE PROFILE SUM THIS COMMAND RECOGNISES.
 '
 ' 100% is the value modCalcCheck compares a resolved profile against, and it is
 ' expressed here as a literal for the same reason it is expressed there: the
@@ -72,17 +72,16 @@ Public Const FAILPOINT_REPAIR_RISK As String = "Phase10RepairRisk"
 ' TOL_PROFILING_SUM_ABSOLUTE below, and nobody owns the target because it is what
 ' "a profile" means. A control asserts the two literals agree.
 '
-' 0% is the total this command RECOGNISES as "no profile yet": a row whose
-' weights are all zero or blank is a driver nobody has profiled, so restructuring
-' it moves no allocation. Zero is the profiling owner's ordinary initial value,
-' the one the Add and Apply / Update Timeline path seeds a new driver and a new
-' project year with. It is NOT what this command writes: a row or a project year
-' Repair Profiling has to reconstruct is left BLANK (see Apply), because a blank
-' is an unmade assumption and a zero is a typed one. Neither recognised total is
-' a semantic choice this command could get wrong. Anything between them is a
-' half-entered profile, and restructuring one is refused rather than guessed at.
+' THERE IS NO "EMPTY TOTAL". A row whose every weight is BLANK is an unmade
+' assumption and is allowed through as one. A row with any weight typed in it is
+' a POPULATED profile, and a populated profile is recognised only when it totals
+' 100%: a row of typed zeros, or a signed pair like +1 and -1, totals zero and is
+' NOT an unprofiled driver - it is an allocation the user made or half-made, and
+' this command will not read it as nothing. This is the Phase-10 Repair contract,
+' settled at the bounded correction round after the independent review; it is
+' narrower than the ordinary profiling path, which seeds a new driver with a zero,
+' and it is why what this command itself reconstructs is left BLANK (see Apply).
 Private Const REPAIR_PROFILE_SUM_TARGET As Double = 1#
-Private Const REPAIR_PROFILE_SUM_EMPTY As Double = 0#
 
 ' How many offending identifiers a refusal names before it stops listing. A
 ' refusal that printed four hundred ids would be as unusable as one that named
@@ -490,9 +489,11 @@ Private Function Assess(ByVal kind As String, ByVal label As String, _
     ' its way past, so reporting both would report one fault as two.
     If Not plan.WidthDrift Then plan.HeaderDrift = headerDrift
 
-    ' --- a shrink that would trim data is a refusal, never a repair -------
+    ' --- a shrink that would trim a populated cell is a refusal, never a
+    ' repair; a typed zero is populated ---------------------------------------
     If plan.TargetYears < plan.ActualYears Then
-        If Not TrimIsEmpty(kind, label, plan.TargetYears, detail) Then Exit Function
+        If Not TrimIsEmpty(kind, label, plan.TargetYears, plan.ActualYears, gridIds, _
+                           gridOrder, gridCount, detail) Then Exit Function
     End If
 
     plan.NeedsRepair = plan.WidthDrift Or plan.HeaderDrift Or plan.OrderDrift _
@@ -589,13 +590,14 @@ Private Function ReadGridIds(ByVal grid As ListObject, ByVal kind As String, _
                 count = count + 1
                 ordered(count) = idText
             End If
-            ' --- the semantic gate, and it applies ONLY where restructuring
-            ' would move this row's weights between two different sets of
-            ' project-year positions. A half-entered profile is the user's to
-            ' finish; normalising it here would be this command inventing an
-            ' allocation, and moving it silently would make the result look like
-            ' this command's work.
-            If plan.WidthDrift And registerIds.Exists(idText) Then
+            ' --- the semantic gate, on EVERY retained valid driver row, whether
+            ' or not the project-year columns are changing. A profile this
+            ' command hands back must be one it can vouch for: all blank, or
+            ' totalling 100%. A half-entered or ambiguous profile is the user's
+            ' to finish; normalising it here would be inventing an allocation,
+            ' and carrying it through a repair would make the result look like
+            ' this command's work. An orphan row is not assessed: it is removed.
+            If registerIds.Exists(idText) Then
                 If Not RecognisedProfile(weights, label, idText, detail) Then Exit Function
             End If
         End If
@@ -658,11 +660,13 @@ End Function
 ' ==========================================================================
 ' THE SEMANTIC GATE
 ' ==========================================================================
-' TWO RECOGNISED TOTALS AND NOTHING BETWEEN THEM. 100% is a profile; 0% is the
-' absence of one, which is what the contract seeds a new driver and a new project
-' year with. Anything else is half-entered, and restructuring it would hand the
-' user back an allocation this command had a part in without being able to say
-' what part.
+' ALL BLANK, OR 100%, AND NOTHING ELSE. A row with no weight typed in it is an
+' unmade assumption and passes as one. A row with any weight typed in it is a
+' populated profile, recognised only when it totals 100%; a populated row that
+' totals zero - typed zeros, or +1 beside -1 - is NOT blank and is refused like
+' any other total that is not 100%, because restructuring it would hand the user
+' back an allocation this command had a part in without being able to say what
+' part.
 '
 ' THE ARITHMETIC IS NOT THIS MODULE'S. The sum goes through the accepted signed
 ' summation primitive and the comparison through the accepted subtraction, with
@@ -673,6 +677,7 @@ Private Function RecognisedProfile(ByRef weights As Variant, ByVal label As Stri
     Dim terms() As Double
     Dim index As Long, count As Long
     Dim total As Double
+    Dim populated As Boolean
 
     count = UBound(weights) - LBound(weights) + 1
     ReDim terms(0 To IIf(count < 1, 0, count - 1))
@@ -680,34 +685,30 @@ Private Function RecognisedProfile(ByRef weights As Variant, ByVal label As Stri
         If IsEmpty(weights(LBound(weights) + index)) Then
             terms(index) = 0#
         Else
+            populated = True
             terms(index) = CDbl(weights(LBound(weights) + index))
         End If
     Next index
-
+    If Not populated Then
+        RecognisedProfile = True
+        Exit Function
+    End If
     If Not modCalcFactors.SafeSignedSum(terms, count, total) Then
         detail = label & ": the weights for " & idText & " cannot be summed, so this " & _
                  "command cannot tell whether restructuring them would change what " & _
                  "they mean."
         Exit Function
     End If
-    If IsRecognisedSum(total) Then
+    If WithinTolerance(total, REPAIR_PROFILE_SUM_TARGET) Then
         RecognisedProfile = True
         Exit Function
     End If
-
-    detail = label & ": the weights for " & idText & " total " & CStr(total) & _
-             ", which is neither 100% nor an empty profile, and the project-year " & _
-             "columns have to change. Repair Profiling restores structure and never " & _
-             "chooses weights, so it will not move a half-entered profile between two " & _
-             "different sets of project years. Complete or clear that row first."
-End Function
-
-Private Function IsRecognisedSum(ByVal total As Double) As Boolean
-    If WithinTolerance(total, REPAIR_PROFILE_SUM_EMPTY) Then
-        IsRecognisedSum = True
-        Exit Function
-    End If
-    IsRecognisedSum = WithinTolerance(total, REPAIR_PROFILE_SUM_TARGET)
+    detail = label & ": the weights for " & idText & " are populated and total " & _
+             CStr(total) & ", which is not 100%. Repair Profiling restores structure " & _
+             "and never chooses weights, so it will not carry a profile it cannot vouch " & _
+             "for through a repair; a row with weights typed in it is not an unprofiled " & _
+             "driver, even when those weights total zero. Complete that row to 100%, or " & _
+             "clear every weight in it, then run Repair Profiling again."
 End Function
 
 Private Function WithinTolerance(ByVal total As Double, ByVal target As Double) As Boolean
@@ -719,24 +720,57 @@ End Function
 ' ==========================================================================
 ' THE LAST STRUCTURAL QUESTION
 ' ==========================================================================
-' A SHRINK THAT WOULD TRIM DATA IS A REFUSAL. The count and the affected
-' identifiers come from the profiling owner's own destructive assessment - the
-' one Apply / Update Timeline warns from - so there is no second definition here
-' of what counts as data worth keeping.
+' A SHRINK MAY REMOVE ONLY GENUINELY BLANK CELLS. This is Repair's own
+' assessment, over the weights the grid side has already read: under this
+' command's contract a typed zero is a populated cell - blank and zero are
+' different assumptions - so a project year the applied timeline no longer
+' covers may be trimmed only if every retained driver's cell in it is blank.
+' The ordinary profiling owner's destructive assessment, which Apply / Update
+' Timeline warns from and which treats a zero as nothing, is deliberately not
+' consulted here; ordinary timeline semantics are unchanged. The refusal names
+' the first offending permanent id and project year, and how many more there are.
 Private Function TrimIsEmpty(ByVal kind As String, ByVal label As String, _
-                             ByVal targetYears As Long, ByRef detail As String) As Boolean
-    Dim affected() As String
-    Dim affectedCount As Long, hits As Long
+                             ByVal targetYears As Long, ByVal actualYears As Long, _
+                             ByRef gridIds As Object, ByRef gridOrder() As String, _
+                             ByVal gridCount As Long, ByRef detail As String) As Boolean
+    Dim headers() As String
+    Dim index As Long, year As Long, hits As Long
+    Dim weights As Variant
+    Dim firstId As String, firstYear As Long
 
-    hits = modProfiling.CountDataBeyond(kind, targetYears, affected, affectedCount)
+    headers = Split(modProfiling.YearHeaders(kind), ",")
+    For index = 1 To gridCount
+        weights = gridIds(gridOrder(index))
+        For year = targetYears + 1 To actualYears
+            If Not IsEmpty(weights(year - 1)) Then
+                hits = hits + 1
+                If hits = 1 Then
+                    firstId = gridOrder(index)
+                    firstYear = year
+                End If
+            End If
+        Next year
+    Next index
     If hits = 0 Then
         TrimIsEmpty = True
         Exit Function
     End If
-    detail = label & " has " & CStr(hits) & " weight(s) in project years the applied " & _
-             "timeline no longer covers, on " & Named(affected, affectedCount) & _
-             ". Repairing the width would delete them. Clear those cells, or apply a " & _
-             "timeline that covers them, then run Repair Profiling again."
+    detail = label & " has " & CStr(hits) & " populated weight cell(s) in project years " & _
+             "the applied timeline no longer covers, the first on " & firstId & " in " & _
+             "project year " & CStr(firstYear) & YearHeaderText(headers, firstYear) & _
+             ". A typed zero counts as populated. Repairing the width would delete " & _
+             "them. Clear those cells, or apply a timeline that covers them, then run " & _
+             "Repair Profiling again."
+End Function
+
+' " (2029)" for a project year whose header the grid still carries; nothing when
+' the grid does not (it is the header that is being repaired).
+Private Function YearHeaderText(ByRef headers() As String, ByVal year As Long) As String
+    If UBound(headers) - LBound(headers) + 1 >= year Then
+        If Len(headers(LBound(headers) + year - 1)) > 0 Then
+            YearHeaderText = " (" & headers(LBound(headers) + year - 1) & ")"
+        End If
+    End If
 End Function
 
 Private Function Named(ByRef ids() As String, ByVal count As Long) As String

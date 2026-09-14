@@ -261,6 +261,89 @@ def test_26_letting_one_row_satisfy_both_historical_expectations_is_refused() ->
     _mutate("test_60h", removal, "")
 
 
+# ---------------------------------------------------------------------------
+# THE BOUNDED CORRECTION ROUND AFTER THE INDEPENDENT REVIEW
+# ---------------------------------------------------------------------------
+def test_27_accepting_a_refused_shrink_as_success_is_refused() -> None:
+    """THE GRID COMPARISON AROUND A REFUSAL REQUIRES A FAIL ANNOUNCEMENT."""
+    _mutate("test_53",
+            "        $null = Add-FaCheck $Scenario (($Announcement -like 'FAIL|*') -and ($costNow -ceq $script:FaCostBefore) -and ($riskNow -ceq $script:FaRiskBefore)) `\n",
+            "        $null = Add-FaCheck $Scenario (($Announcement -like '*|*') -and ($costNow -ceq $script:FaCostBefore) -and ($riskNow -ceq $script:FaRiskBefore)) `\n")
+
+
+def test_28_expecting_the_typed_zero_shrink_to_succeed_is_refused() -> None:
+    _mutate("test_53",
+            "    Assert-FaGridsUnchanged -Scenario 'repair.shrink-zero-refused' -Announcement $zeroRefused\n",
+            "    $null = Add-FaCheck 'repair.shrink-zero-refused' ($zeroRefused -like 'OK|*') $zeroRefused\n")
+
+
+def test_29_reading_a_populated_zero_total_as_blank_is_refused() -> None:
+    """THE SIGNED ROW MUST BE REFUSED AS POPULATED, NOT ALLOWED AS EMPTY."""
+    _mutate("test_53",
+            "    Assert-FaGridsUnchanged -Scenario 'repair.signed-zero-total-refused' -Announcement $signedRefused\n",
+            "    $null = Add-FaCheck 'repair.signed-zero-total-refused' ($signedRefused -like 'OK|*') $signedRefused\n")
+
+
+def test_30_a_regrown_project_year_expected_to_hold_zero_is_refused() -> None:
+    _mutate("test_52",
+            "        if ([string]$after[$before.Count - 1] -ne '') { $growthProblems += ([string]$before[0] + ' regrown project year '",
+            "        if ([string]$after[$before.Count - 1] -ne '0') { $growthProblems += ([string]$before[0] + ' regrown project year '")
+
+
+def test_31_a_column_added_outside_the_window_is_refused() -> None:
+    _mutate("test_51",
+            "    try { $null = Add-FaTableColumn -Workbook $wb -SheetName $gridSheet -TableName $gridTable }\n"
+            "    finally { $null = Close-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.shrink-blank' }\n",
+            "    $null = Add-FaTableColumn -Workbook $wb -SheetName $gridSheet -TableName $gridTable\n")
+
+
+def test_32_dropping_the_rollback_digest_comparison_is_refused() -> None:
+    _mutate("test_54",
+            "             ($costNow -ceq $script:FaCostBefore) -and ($riskNow -ceq $script:FaRiskBefore)) `\n",
+            "             $true) `\n")
+
+
+def test_33_a_com_exception_counted_as_protection_is_refused() -> None:
+    """THE OLD DEFECT, RE-INTRODUCED: an exception on the write path sets the
+    check's success. The restated control refuses it."""
+    _mutate("test_63",
+            "    } catch { $codeWriteFailure = (Format-Err $_) }\n",
+            "    } catch { $codeWriteFailure = '' }\n")
+
+
+def test_34_expecting_the_locked_cell_write_to_fail_is_refused() -> None:
+    """THE INDEPENDENT REVIEW'S FINDING: UserInterfaceOnly permits the write."""
+    _mutate("test_63",
+            "    $null = Add-FaCheck 'protection.locked-cell.code-write-permitted' (($codeWriteFailure -eq '') -and ($valueAfterWrite -ceq [string]$sourceRevisionRow.label)) `\n",
+            "    $null = Add-FaCheck 'protection.locked-cell.code-write-permitted' ($codeWriteFailure -ne '') `\n")
+
+
+def test_35_dropping_the_user_edit_protection_half_is_refused() -> None:
+    _mutate("test_63",
+            "    $null = Add-FaCheck 'protection.locked-cell.user-protected' (($lockedReadFailure -eq '') -and $lockedIsLocked -and $sheetIsProtected) `\n",
+            "    $null = Add-FaCheck 'protection.locked-cell.user-protected' ($lockedReadFailure -eq '') `\n")
+
+
+def test_36_a_saved_distribution_copy_is_refused() -> None:
+    _mutate("test_55",
+            "    $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'copy.protection-after-run'\n",
+            "    $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'copy.protection-after-run'\n    $wb.Save()\n")
+
+
+def test_37_a_copy_opened_from_the_original_path_is_refused() -> None:
+    _mutate("test_55",
+            "    Copy-Item -LiteralPath $stageBPath -Destination $copyPath -Force\n    $wb = $workbooks.Open($copyPath)\n",
+            "    $wb = $workbooks.Open($stageBPath)\n")
+
+
+def test_38_an_undeclared_edit_to_the_executed_tail_is_refused() -> None:
+    """THE REVERSAL: any byte moved outside the two delimited insertions and
+    the protection substitution breaks the identity with the executed runner."""
+    _mutate("test_60c",
+            "    $null = Add-FaCheck 'repair.fingerprint' (($recalc2 -like 'OK|*') -and ($fingerprintAfterRepairs -ceq $fingerprint)) `\n",
+            "    $null = Add-FaCheck 'repair.fingerprint' ($recalc2 -like 'OK|*') `\n")
+
+
 if __name__ == "__main__":
     failures = 0
     for name in sorted(n for n in dir() if n.startswith("test_")):

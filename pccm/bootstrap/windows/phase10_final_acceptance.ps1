@@ -81,6 +81,12 @@ $script:FixtureWindowSource = 'phase10_fixture_window.bas'
 # The contracted Reset failpoint this runner injects: after the simulation clear,
 # so both the calculation and the simulation owners have something to put back.
 $script:ResetFailpoint = 'Phase10ResetSimulation'
+# The two contracted Repair failpoints: after the cost grid and after the risk grid.
+$script:RepairFailpointCost = 'Phase10RepairCost'
+$script:RepairFailpointRisk = 'Phase10RepairRisk'
+# The grid digests the Repair contract scenarios compare against; set by Save-FaGridsBefore.
+$script:FaCostBefore = ''
+$script:FaRiskBefore = ''
 
 # ===========================================================================
 # THE HELPERS THE DOT-SOURCED FILES CALL, AND THIS RUNNER DEFINES
@@ -276,6 +282,61 @@ function Remove-TableRow {
         if ($null -ne $los)             { Release-Transient $los             'ListObjects'; $los             = $null }
         if ($null -ne $ws)              { Release-Transient $ws              'Worksheet';   $ws              = $null }
         if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';  $localWorksheets = $null }
+    }
+}
+
+# A PROJECT-YEAR COLUMN ADDED TO OR REMOVED FROM A GRID - used ONLY inside the
+# accepted setup window to create the width preconditions Repair Profiling is
+# asked to repair or refuse. Structural, so production's own window guards it.
+function Add-FaTableColumn {
+    param($Workbook, [string]$SheetName, [string]$TableName)
+    $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null; $cols = $null; $added = $null
+    try {
+        $localWorksheets = $Workbook.Worksheets
+        $ws = $localWorksheets.Item($SheetName)
+        $los = $ws.ListObjects
+        $lo = $los.Item($TableName)
+        $cols = $lo.ListColumns
+        $added = $cols.Add()
+        return [int]$added.Index
+    } finally {
+        if ($null -ne $added)           { Release-Transient $added           'ListColumn';  $added           = $null }
+        if ($null -ne $cols)            { Release-Transient $cols            'ListColumns'; $cols            = $null }
+        if ($null -ne $lo)              { Release-Transient $lo              'ListObject';  $lo              = $null }
+        if ($null -ne $los)             { Release-Transient $los             'ListObjects'; $los             = $null }
+        if ($null -ne $ws)              { Release-Transient $ws              'Worksheet';   $ws              = $null }
+        if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';  $localWorksheets = $null }
+    }
+}
+
+function Remove-FaLastTableColumn {
+    param($Workbook, [string]$SheetName, [string]$TableName)
+    $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null; $cols = $null; $victim = $null
+    try {
+        $localWorksheets = $Workbook.Worksheets
+        $ws = $localWorksheets.Item($SheetName)
+        $los = $ws.ListObjects
+        $lo = $los.Item($TableName)
+        $cols = $lo.ListColumns
+        $victim = $cols.Item([int]$cols.Count)
+        $victim.Delete()
+    } finally {
+        if ($null -ne $victim)          { Release-Transient $victim          'ListColumn';  $victim          = $null }
+        if ($null -ne $cols)            { Release-Transient $cols            'ListColumns'; $cols            = $null }
+        if ($null -ne $lo)              { Release-Transient $lo              'ListObject';  $lo              = $null }
+        if ($null -ne $los)             { Release-Transient $los             'ListObjects'; $los             = $null }
+        if ($null -ne $ws)              { Release-Transient $ws              'Worksheet';   $ws              = $null }
+        if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';  $localWorksheets = $null }
+    }
+}
+
+# One typed weight, or a blank, written to a grid cell by (row, project year).
+function Set-FaWeight {
+    param($Workbook, [string]$SheetName, [string]$TableName, [int]$FixedColumns, [int]$RowIndex, [int]$Year, $Weight)
+    if ($null -eq $Weight) {
+        Set-TableCell -Workbook $Workbook -SheetName $SheetName -TableName $TableName -RowIndex $RowIndex -ColumnIndex ($FixedColumns + $Year) -Value $null
+    } else {
+        Set-TableCell -Workbook $Workbook -SheetName $SheetName -TableName $TableName -RowIndex $RowIndex -ColumnIndex ($FixedColumns + $Year) -Value ([double]$Weight)
     }
 }
 
@@ -1518,6 +1579,205 @@ try {
     $undoneDigest = Get-FaTableDigest -Workbook $wb -SheetName $gridSheet -TableName $gridTable
     $null = Add-FaCheck 'repair.restored' (($repairAfterUndo -like 'OK|*') -and ($undoneDigest -ceq $gridDigest2)) `
         ($repairAfterUndo + '; grid byte-identical to before the duplicate')
+    # --- P10-R2 REPAIR CONTRACT SCENARIOS: begin ------------------------------
+    # Added at the bounded correction round after the independent review, against
+    # the settled contract (section 5 and matrix rows F, G, G2, M): width growth,
+    # a blank-only shrink, a typed-zero shrink refused, a nonzero shrink refused,
+    # a fixed-width populated non-100% profile refused, an all-blank profile
+    # allowed, a populated zero-total signed profile refused, both Repair
+    # failpoints rolled back, both grids compared around every refusal, and
+    # protection after each. Every precondition is made inside the setup window
+    # or through an unlocked weight cell; every repair or refusal is production's.
+    $riskGrid = Get-FaGrid -Manifest $manifest -Key 'risk_profiling'
+    $riskSheet = [string]$riskGrid.sheet; $riskTable = [string]$riskGrid.table_name
+    $baselineCost = Get-FaTableDigest -Workbook $wb -SheetName $gridSheet -TableName $gridTable
+    $baselineRisk = Get-FaTableDigest -Workbook $wb -SheetName $riskSheet -TableName $riskTable
+    $rowOneWeights = @($gridBody2[0])
+    $rowOneYears = @()
+    for ($c = $fixedColumns; $c -lt $rowOneWeights.Count; $c++) { $rowOneYears += [string]$rowOneWeights[$c] }
+    $rowOneId = [string]$rowOneWeights[0]
+    if ($rowOneYears.Count -ne $durationYears) { throw ('the cost profiling grid holds ' + [string]$rowOneYears.Count + ' project years, the applied timeline ' + [string]$durationYears) }
+
+    function Restore-FaRowOne {
+        for ($y = 1; $y -le $rowOneYears.Count; $y++) {
+            $w = $rowOneYears[$y - 1]
+            if ($w -eq '') { Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year $y -Weight $null }
+            else { Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year $y -Weight ([double]$w) }
+        }
+    }
+    function Assert-FaGridsUnchanged {
+        param([string]$Scenario, [string]$Announcement)
+        $costNow = Get-FaTableDigest -Workbook $wb -SheetName $gridSheet -TableName $gridTable
+        $riskNow = Get-FaTableDigest -Workbook $wb -SheetName $riskSheet -TableName $riskTable
+        $null = Add-FaCheck $Scenario (($Announcement -like 'FAIL|*') -and ($costNow -ceq $script:FaCostBefore) -and ($riskNow -ceq $script:FaRiskBefore)) `
+            ($Announcement + '; both profiling grids byte-identical to before the refusal')
+    }
+    function Save-FaGridsBefore {
+        $script:FaCostBefore = Get-FaTableDigest -Workbook $wb -SheetName $gridSheet -TableName $gridTable
+        $script:FaRiskBefore = Get-FaTableDigest -Workbook $wb -SheetName $riskSheet -TableName $riskTable
+    }
+
+    # (a) WIDTH GROWTH: row one becomes [0.5, 0.5, 0, 0]-shaped so that losing the
+    # last project year leaves every retained row totalling 100%; the last year
+    # column is deleted inside the window; Repair must re-add it BLANK for every
+    # row and touch no existing cell.
+    Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year 1 -Weight 0.5
+    Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year 2 -Weight 0.5
+    for ($y = 3; $y -le $durationYears; $y++) { Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year $y -Weight 0.0 }
+    $growthBefore = @(Get-TableBody -Workbook $wb -SheetName $gridSheet -TableName $gridTable)
+    $null = Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.width-growth'
+    try { Remove-FaLastTableColumn -Workbook $wb -SheetName $gridSheet -TableName $gridTable }
+    finally { $null = Close-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.width-growth' }
+    $grown = Invoke-FaEndpoint -Excel $excel -Operation 'PCCM_RepairProfiling'
+    $growthAfter = @(Get-TableBody -Workbook $wb -SheetName $gridSheet -TableName $gridTable)
+    $growthProblems = @()
+    if ($grown -notlike 'OK|*') { $growthProblems += ('the growth repair did not succeed: ' + $grown) }
+    if ($grown -notlike '*left blank*') { $growthProblems += 'the success wording does not say what was left blank' }
+    for ($r = 0; $r -lt $growthBefore.Count; $r++) {
+        $before = @($growthBefore[$r]); $after = @($growthAfter[$r])
+        if ([string]$before[0] -eq '') { continue }
+        if ($after.Count -ne $before.Count) { $growthProblems += ([string]$before[0] + ' has ' + [string]$after.Count + ' columns, expected ' + [string]$before.Count); continue }
+        for ($c = 0; $c -lt $before.Count - 1; $c++) {
+            if ([string]$after[$c] -cne [string]$before[$c]) { $growthProblems += ([string]$before[0] + ' column ' + [string]($c + 1) + ' changed from ' + [string]$before[$c] + ' to ' + [string]$after[$c]) }
+        }
+        if ([string]$after[$before.Count - 1] -ne '') { $growthProblems += ([string]$before[0] + ' regrown project year ' + [string]$durationYears + ' is ' + [string]$after[$before.Count - 1] + ', not blank') }
+    }
+    $null = Add-FaCheck 'repair.width-growth' ($growthProblems.Count -eq 0) `
+        $(if ($growthProblems.Count -eq 0) { ($grown + '; the regrown project year is blank on every row and every existing cell is unchanged') } else { $growthProblems -join '; ' })
+    $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'protection.after-repair-growth'
+    # row one's last year is regrown blank; the 0.0 it held is a typed weight and is put back, then the original weights.
+    Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year $durationYears -Weight 0.0
+
+    # (b) BLANK-ONLY SHRINK: a fifth project-year column added inside the window,
+    # left blank; Repair trims it and changes nothing else.
+    Save-FaGridsBefore
+    $null = Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.shrink-blank'
+    try { $null = Add-FaTableColumn -Workbook $wb -SheetName $gridSheet -TableName $gridTable }
+    finally { $null = Close-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.shrink-blank' }
+    $shrunkBlank = Invoke-FaEndpoint -Excel $excel -Operation 'PCCM_RepairProfiling'
+    $costAfterShrink = Get-FaTableDigest -Workbook $wb -SheetName $gridSheet -TableName $gridTable
+    $null = Add-FaCheck 'repair.shrink-blank' (($shrunkBlank -like 'OK|*') -and ($costAfterShrink -ceq $script:FaCostBefore)) `
+        ($shrunkBlank + '; the blank project year was trimmed and the grid is byte-identical to before it was added')
+    $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'protection.after-repair-shrink'
+
+    # (c) TYPED-ZERO SHRINK REFUSED: the extra column holds 0 on row one; the
+    # row still totals 100%, so only the trim gate can refuse - and must, naming
+    # the id and the project year.
+    Save-FaGridsBefore
+    $null = Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.shrink-zero'
+    try {
+        $null = Add-FaTableColumn -Workbook $wb -SheetName $gridSheet -TableName $gridTable
+        Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year ($durationYears + 1) -Weight 0.0
+    } finally { $null = Close-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.shrink-zero' }
+    $costWithZero = Get-FaTableDigest -Workbook $wb -SheetName $gridSheet -TableName $gridTable
+    $script:FaCostBefore = $costWithZero
+    $zeroRefused = Invoke-FaEndpoint -Excel $excel -Operation 'PCCM_RepairProfiling'
+    Assert-FaGridsUnchanged -Scenario 'repair.shrink-zero-refused' -Announcement $zeroRefused
+    $null = Add-FaCheck 'repair.shrink-zero-refused.names' `
+        (($zeroRefused -like ('*' + $rowOneId + '*')) -and ($zeroRefused -like ('*project year ' + [string]($durationYears + 1) + '*')) -and ($zeroRefused -like '*typed zero counts as populated*')) `
+        ('the refusal names ' + $rowOneId + ' and project year ' + [string]($durationYears + 1))
+    $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'protection.after-repair-shrink-zero'
+    # the zero is cleared inside the window (the column's cells are not declared inputs) and the blank column trimmed
+    $null = Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.shrink-zero-clear'
+    try { Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year ($durationYears + 1) -Weight $null }
+    finally { $null = Close-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.shrink-zero-clear' }
+    $trimmedAgain = Invoke-FaEndpoint -Excel $excel -Operation 'PCCM_RepairProfiling'
+    if ($trimmedAgain -notlike 'OK|*') { throw ('the blank column could not be trimmed after the zero was cleared: ' + $trimmedAgain) }
+
+    # (d) NONZERO SHRINK REFUSED: row one becomes [0.15, 0.25, 0.25, 0.25 | 0.1]
+    # so it still totals 100% and only the trim gate refuses.
+    $null = Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.shrink-nonzero'
+    try {
+        $null = Add-FaTableColumn -Workbook $wb -SheetName $gridSheet -TableName $gridTable
+        Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year 1 -Weight 0.4
+        Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year ($durationYears + 1) -Weight 0.1
+    } finally { $null = Close-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.shrink-nonzero' }
+    Save-FaGridsBefore
+    $nonzeroRefused = Invoke-FaEndpoint -Excel $excel -Operation 'PCCM_RepairProfiling'
+    Assert-FaGridsUnchanged -Scenario 'repair.shrink-nonzero-refused' -Announcement $nonzeroRefused
+    $null = Add-FaCheck 'repair.shrink-nonzero-refused.names' `
+        (($nonzeroRefused -like ('*' + $rowOneId + '*')) -and ($nonzeroRefused -like ('*project year ' + [string]($durationYears + 1) + '*'))) `
+        ('the refusal names ' + $rowOneId + ' and project year ' + [string]($durationYears + 1))
+    $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'protection.after-repair-shrink-nonzero'
+    $null = Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.shrink-nonzero-clear'
+    try {
+        Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year ($durationYears + 1) -Weight $null
+        Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year 1 -Weight 0.5
+    } finally { $null = Close-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.shrink-nonzero-clear' }
+    $trimmedAgain = Invoke-FaEndpoint -Excel $excel -Operation 'PCCM_RepairProfiling'
+    if ($trimmedAgain -notlike 'OK|*') { throw ('the blank column could not be trimmed after the weight was cleared: ' + $trimmedAgain) }
+
+    # (e) FIXED-WIDTH POPULATED NON-100%: no width drift at all; row one's first
+    # weight becomes 0.55 through its unlocked cell; Repair must refuse by the
+    # semantic gate, naming the id, and change nothing.
+    Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year 1 -Weight 0.55
+    Save-FaGridsBefore
+    $non1Refused = Invoke-FaEndpoint -Excel $excel -Operation 'PCCM_RepairProfiling'
+    Assert-FaGridsUnchanged -Scenario 'repair.semantic-non1-refused' -Announcement $non1Refused
+    $null = Add-FaCheck 'repair.semantic-non1-refused.names' `
+        (($non1Refused -like ('*' + $rowOneId + '*')) -and ($non1Refused -like '*populated and total*') -and ($non1Refused -like '*not 100%*')) `
+        ('the refusal names ' + $rowOneId + ' as populated and not 100%')
+    $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'protection.after-repair-semantic'
+
+    # (f) ALL-BLANK PROFILE: row one cleared entirely; an unmade assumption is
+    # allowed through, and with nothing structural to repair the command is a no-op.
+    for ($y = 1; $y -le $durationYears; $y++) { Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year $y -Weight $null }
+    Save-FaGridsBefore
+    $blankAllowed = Invoke-FaEndpoint -Excel $excel -Operation 'PCCM_RepairProfiling'
+    $costAfterBlank = Get-FaTableDigest -Workbook $wb -SheetName $gridSheet -TableName $gridTable
+    $null = Add-FaCheck 'repair.blank-profile-allowed' (($blankAllowed -like 'OK|*') -and ($blankAllowed -like '*Nothing was changed*') -and ($costAfterBlank -ceq $script:FaCostBefore)) `
+        ($blankAllowed + '; the all-blank row passed as an unmade assumption and nothing moved')
+
+    # (g) POPULATED ZERO-TOTAL SIGNED PROFILE: row one becomes [1, -1, 0, 0]; it
+    # totals zero and must be refused as populated, never read as blank.
+    Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year 1 -Weight 1.0
+    Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year 2 -Weight -1.0
+    for ($y = 3; $y -le $durationYears; $y++) { Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year $y -Weight 0.0 }
+    Save-FaGridsBefore
+    $signedRefused = Invoke-FaEndpoint -Excel $excel -Operation 'PCCM_RepairProfiling'
+    Assert-FaGridsUnchanged -Scenario 'repair.signed-zero-total-refused' -Announcement $signedRefused
+    $null = Add-FaCheck 'repair.signed-zero-total-refused.names' `
+        (($signedRefused -like ('*' + $rowOneId + '*')) -and ($signedRefused -like '*populated and total 0*') -and ($signedRefused -like '*not 100%*')) `
+        ('the refusal names ' + $rowOneId + ' as populated, total 0, not 100% - not as blank')
+    $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'protection.after-repair-signed'
+    Restore-FaRowOne
+
+    # (h) BOTH FAILPOINTS ROLL BACK: with row two deleted (a repairable fault),
+    # the contracted failpoint after the cost grid and the one after the risk grid
+    # each turn a repair into a FAIL whose rollback leaves BOTH grids byte-identical
+    # to before the call; then the real repair recreates the row blank.
+    $null = Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.rollback'
+    try { Remove-TableRow -Workbook $wb -SheetName $gridSheet -TableName $gridTable -RowIndex 2 }
+    finally { $null = Close-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.rollback' }
+    foreach ($failpoint in @($script:RepairFailpointCost, $script:RepairFailpointRisk)) {
+        Save-FaGridsBefore
+        $rolledBack = Invoke-FaEndpoint -Excel $excel -Operation 'PCCM_RepairProfiling' -FailAfterStage $failpoint
+        $costNow = Get-FaTableDigest -Workbook $wb -SheetName $gridSheet -TableName $gridTable
+        $riskNow = Get-FaTableDigest -Workbook $wb -SheetName $riskSheet -TableName $riskTable
+        $null = Add-FaCheck ('repair.rollback.' + $failpoint) `
+            (($rolledBack -like 'FAIL|*') -and ($rolledBack -like ('*' + $failpoint + '*')) -and ($rolledBack -like '*restored to the state they were in before*') -and
+             ($costNow -ceq $script:FaCostBefore) -and ($riskNow -ceq $script:FaRiskBefore)) `
+            ($rolledBack + '; both profiling grids byte-identical to before the call')
+        $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario ('protection.after-repair-rollback.' + $failpoint)
+    }
+    $repairedAfterRollback = Invoke-FaEndpoint -Excel $excel -Operation 'PCCM_RepairProfiling'
+    $bodyAfterRollback = @(Get-TableBody -Workbook $wb -SheetName $gridSheet -TableName $gridTable)
+    $rowTwoIndex = Find-FaTableRow -Body $bodyAfterRollback -Id $missingId
+    $rowTwoBlank = $true
+    if ($rowTwoIndex -lt 1) { $rowTwoBlank = $false }
+    else { $rowTwo = @($bodyAfterRollback[$rowTwoIndex - 1]); for ($c = $fixedColumns; $c -lt $rowTwo.Count; $c++) { if ([string]$rowTwo[$c] -ne '') { $rowTwoBlank = $false } } }
+    $null = Add-FaCheck 'repair.rollback.then-repaired' (($repairedAfterRollback -like 'OK|*') -and $rowTwoBlank) `
+        ($repairedAfterRollback + '; ' + $missingId + ' recreated blank after the rolled-back attempts')
+    for ($c = $fixedColumns; $c -lt $missingRowBefore.Count; $c++) {
+        $weight = [string]$missingRowBefore[$c]
+        if ($weight -ne '') { Set-TableCell -Workbook $wb -SheetName $gridSheet -TableName $gridTable -RowIndex $rowTwoIndex -ColumnIndex ($c + 1) -Value ([double]$weight) }
+    }
+    $null = Invoke-Phase5ProductionOperation -Excel $excel -Operation 'PCCM_ApplyTimeline' -Stage 'resync after the repair contract scenarios'
+    $costRestored = Get-FaTableDigest -Workbook $wb -SheetName $gridSheet -TableName $gridTable
+    $riskRestored = Get-FaTableDigest -Workbook $wb -SheetName $riskSheet -TableName $riskTable
+    $null = Add-FaCheck 'repair.grids-restored' (($costRestored -ceq $baselineCost) -and ($riskRestored -ceq $baselineRisk)) `
+        'both profiling grids byte-identical to before the repair contract scenarios'
+    # --- P10-R2 REPAIR CONTRACT SCENARIOS: end --------------------------------
     $recalc2 = [string](Invoke-Phase5ProductionOperation -Excel $excel -Operation 'PCCM_Calculate' -Stage 'calculate after the repairs')
     $fingerprintAfterRepairs = Get-FaRunText -Excel $excel -Procedure 'PCCM_CalculationFingerprint'
     $null = Add-FaCheck 'repair.fingerprint' (($recalc2 -like 'OK|*') -and ($fingerprintAfterRepairs -ceq $fingerprint)) `
@@ -1618,7 +1878,15 @@ try {
     $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'protection.after-rollback'
 
     # 18/19. FINAL PROTECTION AND ITS BEHAVIOUR. One declared unlocked input cell
-    # accepts its own value back; one locked reference cell refuses the same.
+    # accepts its own value back. One locked reference cell is proved LOCKED on a
+    # PROTECTED sheet - the user-edit protection - and then proved WRITABLE by
+    # code, because the accepted design protects with UserInterfaceOnly:=True so
+    # that production can write while a user cannot. Corrected at the bounded
+    # correction round: the earlier runner expected the code write to be refused,
+    # which is not what the accepted contract says, and would have read an
+    # unrelated COM exception as a protection refusal. The target sheet and cell
+    # are established explicitly first, and any exception on the way is a FAIL of
+    # the check, never evidence of protection.
     $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'protection.final'
     $setupProtection = $null
     foreach ($entry in @($protection.sheets)) { if ([string]$entry.sheet -ceq 'Setup') { $setupProtection = $entry } }
@@ -1646,25 +1914,92 @@ try {
     }
     $null = Add-FaCheck 'protection.unlocked-writable' ($unlockedFailure -eq '') `
         $(if ($unlockedFailure -eq '') { ('Setup!' + $unlockedAddress + ' accepted its own value under protection') } else { $unlockedFailure })
+    # THE LOCKED CELL: the Source Revision label on the Methodology sheet, which
+    # the protection projection declares protected with nothing unlocked.
+    $methodologyProtection = $null
+    foreach ($entry in @($protection.sheets)) { if ([string]$entry.sheet -ceq [string]$methodology.sheet) { $methodologyProtection = $entry } }
+    if ($null -eq $methodologyProtection) { throw ('the protection projection declares no ' + [string]$methodology.sheet + ' sheet') }
+    if (-not [bool]$methodologyProtection.protect) { throw ([string]$methodology.sheet + ' is not declared protected') }
+    if (@($methodologyProtection.unlocked).Count -ne 0) { throw ([string]$methodology.sheet + ' declares unlocked cells; the locked-cell check needs a sheet with none') }
     $lockedAddress = [string]$methodology.label_column + [string]$sourceRevisionRow.row
-    $lockedRefused = $false
-    $lockedDetail = ''
+    $lockedIsLocked = $false; $sheetIsProtected = $false
+    $lockedReadFailure = ''
+    $codeWriteFailure = ''
+    $valueAfterWrite = ''
+    $worksheets = $null; $methodWs = $null; $lockedCell = $null
+    try {
+        $worksheets = $wb.Worksheets
+        $methodWs = $worksheets.Item([string]$methodology.sheet)
+        $sheetIsProtected = [bool]$methodWs.ProtectContents
+        $lockedCell = $methodWs.Range($lockedAddress)
+        $lockedIsLocked = [bool]$lockedCell.Locked
+    } catch { $lockedReadFailure = (Format-Err $_) }
+    finally {
+        if ($null -ne $lockedCell) { Release-Transient $lockedCell 'Range(locked)'; $lockedCell = $null }
+        if ($null -ne $methodWs)   { Release-Transient $methodWs   'Worksheet';     $methodWs   = $null }
+        if ($null -ne $worksheets) { Release-Transient $worksheets 'Worksheets';    $worksheets = $null }
+    }
+    $null = Add-FaCheck 'protection.locked-cell.user-protected' (($lockedReadFailure -eq '') -and $lockedIsLocked -and $sheetIsProtected) `
+        $(if ($lockedReadFailure -eq '') { ([string]$methodology.sheet + '!' + $lockedAddress + ' Locked=' + [string]$lockedIsLocked + ' on a sheet with ProtectContents=' + [string]$sheetIsProtected) } else { $lockedReadFailure })
     $worksheets = $null; $methodWs = $null; $lockedCell = $null
     try {
         $worksheets = $wb.Worksheets
         $methodWs = $worksheets.Item([string]$methodology.sheet)
         $lockedCell = $methodWs.Range($lockedAddress)
         $lockedCell.Value2 = [string]$sourceRevisionRow.label
-        $lockedDetail = 'the write to ' + [string]$methodology.sheet + '!' + $lockedAddress + ' was NOT refused'
-    } catch { $lockedRefused = $true; $lockedDetail = ([string]$methodology.sheet + '!' + $lockedAddress + ' refused: ' + [string]$_.Exception.Message) }
+        $valueAfterWrite = [string]$lockedCell.Value2
+    } catch { $codeWriteFailure = (Format-Err $_) }
     finally {
         if ($null -ne $lockedCell) { Release-Transient $lockedCell 'Range(locked)'; $lockedCell = $null }
         if ($null -ne $methodWs)   { Release-Transient $methodWs   'Worksheet';     $methodWs   = $null }
         if ($null -ne $worksheets) { Release-Transient $worksheets 'Worksheets';    $worksheets = $null }
     }
-    $null = Add-FaCheck 'protection.locked-refused' $lockedRefused $lockedDetail
+    $null = Add-FaCheck 'protection.locked-cell.code-write-permitted' (($codeWriteFailure -eq '') -and ($valueAfterWrite -ceq [string]$sourceRevisionRow.label)) `
+        $(if ($codeWriteFailure -eq '') { ('code wrote the locked cell its own value under the accepted protection; user-edit protection and code-write capability are different facts') } else { $codeWriteFailure })
+    $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'protection.after-locked-cell'
 
     $excel.Run('PCCM_AutomationEnd') | Out-Null
+    # --- P10-R2 DISTRIBUTION COPY: begin ----------------------------------------
+    # Contract matrix row J: a distribution copy runs from a different path and
+    # name. The main workbook is closed unsaved; the BUILT file is copied to a
+    # different folder under a different name, opened in the same owned Excel
+    # instance - so Workbook_Open re-applies protection in the copy - and the
+    # copy is proved to compile, carry the same Source Revision, report itself
+    # protected, take the accepted fixture and run Calculate and a 1,000-iteration
+    # Simulation to CURRENT. Closed unsaved like the original.
+    try { $wb.Close($false); $rel.WorkbookClosed = $true }
+    catch { $null = $rel.Failed.Add('Workbook.Close(original)') }
+    Invoke-FaRelease -Ledger $rel -Obj $wb -Label 'Workbook(original)'
+    $wb = $null
+    $copyDir = Join-Path $tempRoot 'distribution copy'
+    $null = New-Item -ItemType Directory -Path $copyDir -Force
+    $copyPath = Join-Path $copyDir 'PCCM distribution copy.xlsm'
+    Copy-Item -LiteralPath $stageBPath -Destination $copyPath -Force
+    $wb = $workbooks.Open($copyPath)
+    $comAcquired = $comAcquired + 1
+    $copyCompile = ''
+    try { $null = $excel.Run('PCCM_CalculationStatus') } catch { $copyCompile = (Format-Err $_) }
+    $null = Add-FaCheck 'copy.compile' ($copyCompile -eq '') $(if ($copyCompile -eq '') { ('opened from ' + $copyPath + ' and the VBAProject compiles') } else { $copyCompile })
+    $copyRevision = Format-FaCell ((Get-FaBlock -Workbook $wb -SheetName ([string]$methodology.sheet) -Address ([string]$methodology.text_column + [string]$sourceRevisionRow.row)).Rect)
+    $null = Add-FaCheck 'copy.source-revision' ($copyRevision -ceq $revision.Expected) ('expected ' + $revision.Expected + '; observed ' + $copyRevision)
+    Import-FaFixtureWindow -Excel $excel -Workbook $wb -Manifest $manifest -ScriptDir $scriptDir
+    $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'copy.protection'
+    $null = Save-Phase5LockedFxSeed -Workbook $wb -Inspection $inspection
+    $null = Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'copy.fixture'
+    $copyApplied = ''
+    try { $copyApplied = [string](Set-Phase5Fixture -Excel $excel -Workbook $wb -Manifest $manifest -Inspection $inspection -Model $model) }
+    finally { $null = Close-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'copy.fixture' }
+    $null = Add-FaCheck 'copy.fixture' ($copyApplied -like 'OK|*') $copyApplied
+    Set-NamedValue -Workbook $wb -DefinedName $iterationsName -Value ([double]$acceptanceIterations)
+    Set-NamedValue -Workbook $wb -DefinedName $seedName -Value $suppliedSeed
+    $copyCalc = [string](Invoke-Phase5ProductionOperation -Excel $excel -Operation 'PCCM_Calculate' -Stage 'calculate in the distribution copy')
+    $copySim = [string](Invoke-Phase6Simulation -Excel $excel)
+    $copyStates = Get-FaStates -Excel $excel
+    $null = Add-FaCheck 'copy.run' (($copyCalc -like 'OK|*') -and ($copySim -like 'OK|*') -and ($copyStates.Calculation -ceq $statusCurrent) -and ($copyStates.Simulation -ceq $statusCurrent)) `
+        ($copyCalc + '; ' + $copySim + '; ' + (Format-FaStates $copyStates))
+    $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'copy.protection-after-run'
+    $excel.Run('PCCM_AutomationEnd') | Out-Null
+    # --- P10-R2 DISTRIBUTION COPY: end ------------------------------------------
 } catch {
     $fatal = (Format-Err $_)
     Write-FaLine ''

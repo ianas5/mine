@@ -151,6 +151,41 @@ def blank_reconstructed(before: dict[str, list[object]], before_years: int,
     return out
 
 
+TOLERANCE = 1e-9  # stand-in for TOL_PROFILING_SUM_ABSOLUTE; the source control ties the gate to the real one
+
+
+def assess_refusal(register_ids: list[str], grid: dict[str, list[object]],
+                   target_years: int) -> str | None:
+    """THE TWO GATES REPAIR APPLIES BEFORE IT MUTATES, stated in Python beside
+    the oracle - modRepair's RecognisedProfile and TrimIsEmpty, as settled at
+    the bounded correction round after the independent review:
+
+      the semantic gate, on EVERY retained valid driver row, width drift or
+      not: all blank passes as an unmade assumption; any typed weight makes the
+      row populated, and a populated row must total 100% - a populated row
+      totalling zero (typed zeros, +1 beside -1) is NOT blank and is refused;
+
+      the trim gate, Repair's own: a project year the applied timeline no longer
+      covers may be trimmed only if every retained driver's cell in it is BLANK -
+      a typed zero is populated and refuses, naming the id and the project year.
+
+    Returns the refusal, or None when Repair may proceed.
+    """
+    width = max((len(v) for v in grid.values()), default=target_years)
+    for permanent_id, weights in grid.items():
+        if permanent_id not in register_ids:
+            continue  # an orphan is removed, not assessed
+        populated = [w for w in weights if w is not None]
+        if populated and abs(sum(populated) - 1.0) > TOLERANCE:
+            return f"{permanent_id}: populated, total {sum(populated)}, not 100%"
+    if target_years < width:
+        for permanent_id in register_ids:
+            for index, value in enumerate(grid.get(permanent_id, [])[target_years:], start=target_years + 1):
+                if value is not None:
+                    return f"{permanent_id}: populated cell in project year {index}; a typed zero counts as populated"
+    return None
+
+
 def repair_grid(register_ids: list[str], grid: dict[str, list[object]],
                 target_years: int) -> dict[str, list[object]]:
     """SetYearColumns then SyncRows, in that order, over the accepted oracle,
@@ -161,6 +196,8 @@ def repair_grid(register_ids: list[str], grid: dict[str, list[object]],
     calls for before ownership is re-established over it. Reversing these two
     would preserve weights into positions that are about to be reshaped.
     """
+    refusal = assess_refusal(register_ids, grid, target_years)
+    assert refusal is None, f"Repair refuses before mutation: {refusal}"
     before_years = max((len(v) for v in grid.values()), default=target_years)
     reshaped = remap_profiling(grid, target_years, INITIAL)
     ordered, _added, _removed = sync_rows(register_ids, reshaped)
@@ -279,7 +316,7 @@ def test_08_every_attributable_weight_survives_a_width_repair() -> None:
     assert grown["CL-002"] == [1.0, 0.0, 0.0, BLANK, BLANK]
     # AND A SHRINK KEEPS THE POSITIONS THAT SURVIVE. The command only reaches
     # this case when the trimmed tail carries no data - test_14 is that gate.
-    shrunk = repair_grid(["CL-001"], {"CL-001": [0.6, 0.4, BLANK, 0.0]}, 2)
+    shrunk = repair_grid(["CL-001"], {"CL-001": [0.6, 0.4, BLANK, BLANK]}, 2)
     assert shrunk["CL-001"] == [0.6, 0.4]
 
 
@@ -289,12 +326,12 @@ def test_09_a_repair_of_several_faults_at_once_is_still_value_preserving() -> No
     surviving driver and a surviving project year comes through unchanged."""
     grid = {
         "R-003": [0.1, 0.9],
-        "R-001": [0.5, BLANK],
+        "R-001": [BLANK, BLANK],
         "R-404": [1.0, 0.0],
     }
     repaired = repair_grid(["R-001", "R-002", "R-003"], grid, 3)
     assert list(repaired) == ["R-001", "R-002", "R-003"]
-    assert repaired["R-001"] == [0.5, BLANK, BLANK]
+    assert repaired["R-001"] == [BLANK, BLANK, BLANK]
     assert repaired["R-002"] == [BLANK, BLANK, BLANK]
     assert repaired["R-003"] == [0.1, 0.9, BLANK]
 
@@ -380,10 +417,19 @@ def test_14_unattributable_data_is_refused_by_the_accepted_owners() -> None:
     body = _procedure("RepairProfiling")
     assert "modStructuralCheck.PreMutationCheck()" in body
     assert body.index("PreMutationCheck") < body.index("OnlyRepairableFaults")
+    # THE TRIM GATE IS REPAIR'S OWN since the bounded correction round: it reads
+    # the weights the grid side already read, a typed zero is populated, and the
+    # ordinary owner's destructive assessment - which treats a zero as nothing
+    # and is what Apply / Update Timeline warns from - is not consulted.
     trim = _procedure("TrimIsEmpty")
-    assert "modProfiling.CountDataBeyond" in trim
-    assert "hits = 0" in trim
-    # AND THE ORACLE AGREES ABOUT WHAT EITHER OF THEM FINDS.
+    assert "modProfiling.CountDataBeyond" not in trim and "IsDataCell" not in _code()
+    assert "For year = targetYears + 1 To actualYears" in trim
+    assert "If Not IsEmpty(weights(year - 1)) Then" in trim
+    assert "A typed zero counts as populated" in trim
+    assert "the first on \" & firstId & \" in \" & _" in trim and "project year \" & CStr(firstYear)" in trim
+    assert "If hits = 0 Then" in trim
+    assert "TrimIsEmpty(kind, label, plan.TargetYears, plan.ActualYears, gridIds, _" in _procedure("Assess")
+    # AND THE ORACLE STILL DESCRIBES THE ORDINARY OWNER, which is unchanged.
     assert orphan_rows([(None, [0.5]), ("CL-001", [0.5])]) == [1]
     assert removed_profiling_values({"CL-001": [0.5, 0.5]}, 1) == [("CL-001", 2, 0.5)]
     assert removed_profiling_values({"CL-001": [1.0, BLANK, 0.0]}, 1) == []
@@ -429,17 +475,20 @@ def test_17_a_repeated_register_identifier_is_refused() -> None:
 def test_18_a_half_entered_profile_is_never_restructured_or_normalised() -> None:
     """13. THE SEMANTIC GATE, AND THE ONE THIS COMMAND MOST HAD TO GET RIGHT.
 
-    Two totals are recognised: 100% is a profile, and 0% is the ABSENCE of one -
-    which is what the contract seeds a new driver and a new project year with,
-    so refusing on it would block every workbook with an unprofiled driver.
-    Anything between them is half-entered, and it is refused only when the
-    project-year columns are actually changing, because that is the only case
-    where restructuring would move those weights between two different sets of
-    positions.
+    RESTATED at the bounded correction round: ONE total is recognised, 100%, and
+    it is asked of EVERY retained valid driver row, whether or not the
+    project-year columns are changing. All blank passes as an unmade assumption.
+    Any typed weight makes the row populated, and a populated row that does not
+    total 100% is refused - including one totalling zero, which is not blank.
     """
     gate = _procedure("RecognisedProfile")
     caller = _procedure("ReadGridIds")
-    assert "plan.WidthDrift And registerIds.Exists(idText)" in caller
+    assert "plan.WidthDrift And registerIds.Exists(idText)" not in caller
+    assert "            If registerIds.Exists(idText) Then\n                If Not RecognisedProfile(weights, label, idText, detail) Then Exit Function" in caller
+    assert "populated = True" in gate and "If Not populated Then" in gate
+    assert "If WithinTolerance(total, REPAIR_PROFILE_SUM_TARGET) Then" in gate
+    assert "are populated and total" in gate and "even when those weights total zero" in gate
+    assert "REPAIR_PROFILE_SUM_EMPTY" not in _module().raw and "IsRecognisedSum" not in _code()
     # THE ARITHMETIC IS NOT THIS MODULE'S. Same summation primitive, same
     # subtraction and same contract tolerance the Model Check uses to ask the
     # same question.
@@ -463,17 +512,12 @@ def test_19_the_two_recognised_totals_are_the_ones_the_model_check_uses() -> Non
                      _module().raw)
     assert theirs and ours, (theirs, ours)
     assert theirs.group(1) == ours.group(1), (theirs.group(1), ours.group(1))
-    # AND THE EMPTY TOTAL IS THE PROFILING OWNER'S INITIAL VALUE - what the Add
-    # and Apply Timeline path seeds a new driver and a new project year with - so
-    # a row of zeros is RECOGNISED as "no profile yet" by this command as by the
-    # owner. Recognised, not written: what Repair itself reconstructs is BLANK
-    # (test_04, test_07, test_27). The trailing "#" is VBA's Double type
-    # character and is not part of the number.
-    empty = re.search(r"Private Const REPAIR_PROFILE_SUM_EMPTY As Double = (\S+)",
-                      _module().raw)
-    assert empty, _module().raw
-    assert float(empty.group(1).rstrip("#")) == float(
-        _generated_constants()["PROFILE_INITIAL_VALUE"])
+    # AND THERE IS NO EMPTY TOTAL. A populated row of zeros is not "no profile
+    # yet" to this command; the only row that passes without totalling 100% is
+    # one with no weight typed in it at all. What Repair itself reconstructs is
+    # BLANK (test_04, test_07, test_27), which is exactly that row.
+    assert re.search(r"REPAIR_PROFILE_SUM_EMPTY", _module().raw) is None
+    assert 'THERE IS NO "EMPTY TOTAL"' in _module().raw
 
 
 # ===========================================================================
@@ -660,19 +704,23 @@ def test_28_existing_blank_zero_and_nonzero_weights_survive_exactly() -> None:
     zero and a number stays that number, through a no-op, a reorder, a missing
     row beside them, and a width growth - because the rule touches only cells
     the owners had to reconstruct."""
-    grid = {"CL-002": [BLANK, 0.0, 0.7], "CL-001": [0.3, BLANK, 0.0]}
+    grid = {"CL-002": [BLANK, 0.3, 0.7], "CL-001": [0.3, BLANK, 0.7]}
     same = repair_grid(["CL-002", "CL-001"], grid, 3)
     assert same == grid
     reordered = repair_grid(["CL-001", "CL-002"], grid, 3)
-    assert reordered == {"CL-001": [0.3, BLANK, 0.0], "CL-002": [BLANK, 0.0, 0.7]}
+    assert reordered == {"CL-001": [0.3, BLANK, 0.7], "CL-002": [BLANK, 0.3, 0.7]}
     with_missing = repair_grid(["CL-001", "CL-003", "CL-002"], grid, 3)
-    assert with_missing == {"CL-001": [0.3, BLANK, 0.0], "CL-003": [BLANK, BLANK, BLANK],
-                            "CL-002": [BLANK, 0.0, 0.7]}
+    assert with_missing == {"CL-001": [0.3, BLANK, 0.7], "CL-003": [BLANK, BLANK, BLANK],
+                            "CL-002": [BLANK, 0.3, 0.7]}
     grown = repair_grid(["CL-001", "CL-002"], grid, 5)
-    assert grown == {"CL-001": [0.3, BLANK, 0.0, BLANK, BLANK], "CL-002": [BLANK, 0.0, 0.7, BLANK, BLANK]}
+    assert grown == {"CL-001": [0.3, BLANK, 0.7, BLANK, BLANK], "CL-002": [BLANK, 0.3, 0.7, BLANK, BLANK]}
+    # AND AN EXPLICIT ZERO INSIDE A 100% ROW IS PRESERVED AS A ZERO.
+    zero_inside = {"CL-001": [0.0, 1.0, BLANK]}
+    assert repair_grid(["CL-001", "CL-002"], zero_inside, 4) == {"CL-001": [0.0, 1.0, BLANK, BLANK],
+                                                                 "CL-002": [BLANK, BLANK, BLANK, BLANK]}
     # A shrink of empty positions keeps every surviving cell exactly.
-    shrunk = repair_grid(["CL-001", "CL-002"], {"CL-001": [0.3, BLANK, 0.0, BLANK], "CL-002": [BLANK, 0.0, 0.7, 0.0]}, 3)
-    assert shrunk == {"CL-001": [0.3, BLANK, 0.0], "CL-002": [BLANK, 0.0, 0.7]}
+    shrunk = repair_grid(["CL-001", "CL-002"], {"CL-001": [0.3, BLANK, 0.7, BLANK], "CL-002": [BLANK, 0.3, 0.7, BLANK]}, 3)
+    assert shrunk == {"CL-001": [0.3, BLANK, 0.7], "CL-002": [BLANK, 0.3, 0.7]}
 
 
 def test_29_the_ordinary_profiling_owners_are_unchanged_and_still_seed_the_initial_value() -> None:
@@ -715,6 +763,67 @@ def test_30_the_declared_correction_reverses_exactly_to_the_tree_run_7_executed(
     changed = subprocess.run(["git", "diff", "--name-only", ACCEPTED_BEFORE_REPAIR_RECONSTRUCTION, "--", "pccm/src", "pccm/spec", "pccm/builder"],
                              cwd=PCCM_ROOT.parent, capture_output=True, text=True, check=True).stdout.split()
     assert changed in ([], ["pccm/src/vba/modRepair.bas"]), changed
+
+
+def test_32_a_shrink_removes_only_blank_cells_and_a_typed_zero_refuses_naming_id_and_year() -> None:
+    """THE STRICT TRIM CONTRACT, both grids. Blank-only shrink accepted; a typed
+    zero beyond the duration refused; a nonzero weight beyond it refused; the
+    refusal names the permanent id and the project year."""
+    for register, blank_grid, zero_grid, nonzero_grid in (
+            (["CL-001", "CL-002"], {"CL-001": [0.5, 0.5, BLANK], "CL-002": [1.0, BLANK, BLANK]},
+             {"CL-001": [0.5, 0.5, 0.0], "CL-002": [1.0, BLANK, BLANK]},
+             {"CL-001": [0.5, 0.5, BLANK], "CL-002": [0.8, BLANK, 0.2]}),
+            (["R-001", "R-002"], {"R-001": [BLANK, 1.0, BLANK, BLANK], "R-002": [BLANK, BLANK, BLANK, BLANK]},
+             {"R-001": [BLANK, 1.0, BLANK, 0.0], "R-002": [BLANK, BLANK, BLANK, BLANK]},
+             {"R-001": [BLANK, 0.75, 0.25, BLANK], "R-002": [BLANK, 0.5, 0.5, BLANK]})):
+        target = 2
+        assert assess_refusal(register, blank_grid, target) is None
+        shrunk = repair_grid(register, blank_grid, target)
+        assert all(len(v) == target for v in shrunk.values())
+        zero = assess_refusal(register, zero_grid, target)
+        assert zero and zero.startswith(register[0]) and "typed zero counts as populated" in zero, zero
+        zero_year = 1 + [i for i, v in enumerate(zero_grid[register[0]]) if v == 0.0][0]
+        assert zero_year > target and f"project year {zero_year}" in zero, zero
+        nonzero = assess_refusal(register, nonzero_grid, target)
+        assert nonzero and "populated cell in project year 3" in nonzero, nonzero
+    # A ZERO INSIDE THE RETAINED WIDTH IS NOT A TRIM QUESTION.
+    assert assess_refusal(["CL-001"], {"CL-001": [0.0, 1.0, BLANK]}, 2) is None
+
+
+def test_33_the_semantic_gate_asks_every_retained_row_and_reads_a_populated_zero_total_as_populated() -> None:
+    """THE SEMANTIC GATE, WIDTH OR NO WIDTH, both grids: a populated row that
+    does not total 100% is refused even with no width drift; an all-blank row
+    passes; a signed [1, -1] row totals zero and is refused, never read as
+    blank; an orphan is not assessed."""
+    for register, rows in ((["CL-001", "CL-002"], "CL"), (["R-001", "R-002"], "R")):
+        a, b = register
+        # no width drift, out-of-order rows, one populated row totalling 1.05: refused
+        assert assess_refusal(register, {b: [0.5, 0.5], a: [0.55, 0.5]}, 2) == f"{a}: populated, total 1.05, not 100%"
+        # all blank: allowed, and reordered without touching anything
+        assert assess_refusal(register, {b: [BLANK, BLANK], a: [BLANK, BLANK]}, 2) is None
+        assert repair_grid(register, {b: [BLANK, BLANK], a: [BLANK, BLANK]}, 2) == {a: [BLANK, BLANK], b: [BLANK, BLANK]}
+        # populated zero total: NOT blank, refused
+        signed = assess_refusal(register, {a: [1.0, -1.0], b: [0.5, 0.5]}, 2)
+        assert signed == f"{a}: populated, total 0.0, not 100%", signed
+        zeros = assess_refusal(register, {a: [0.0, 0.0], b: [0.5, 0.5]}, 2)
+        assert zeros == f"{a}: populated, total 0.0, not 100%", zeros
+        # an orphan row is removed, not assessed
+        assert assess_refusal(register, {a: [0.5, 0.5], b: [1.0, BLANK], f"{rows}-404": [0.3, BLANK]}, 2) is None
+        # blank plus a typed weight is populated: 0.5 alone is refused
+        assert assess_refusal(register, {a: [0.5, BLANK], b: [1.0, BLANK]}, 2) == f"{a}: populated, total 0.5, not 100%"
+
+
+def test_34_the_gates_run_before_any_snapshot_or_mutation() -> None:
+    body = _procedure("RepairProfiling")
+    assert body.index("Assess(modProfiling.CostKind()") < body.index("Assess(modProfiling.RiskKind()") \
+        < body.index("costBefore = modWorkbook.SnapshotTable") < body.index("Apply cost")
+    assess = _procedure("Assess")
+    assert assess.index("ReadGridIds(grid, kind, label, registerIds, gridIds, gridOrder,") \
+        < assess.index("TrimIsEmpty(kind, label, plan.TargetYears, plan.ActualYears, gridIds, _")
+    # Ordinary timeline semantics are untouched: the owner's destructive
+    # assessment still exists for Apply / Update Timeline and Repair no longer names it.
+    assert "Public Function CountDataBeyond" in _profiling_raw()
+    assert "CountDataBeyond" not in _code()
 
 
 def test_31_the_success_wording_says_what_was_left_blank_only_when_something_was() -> None:
