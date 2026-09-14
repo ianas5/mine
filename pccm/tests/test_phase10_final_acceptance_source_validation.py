@@ -649,6 +649,66 @@ def test_79_a_stage_classification_that_no_longer_separates_the_cases_is_caught_
     assert conformance._grid_diff_lines()["case1.blank-tail"].startswith("Cost Profiling!tblCostProfiling: CASE 1:")
 
 
+# ---------------------------------------------------------------------------
+# FINAL ACCEPTANCE RUN 12: THE PHYSICAL-ROW CLEANUP
+# ---------------------------------------------------------------------------
+def test_80_removing_the_physical_row_cleanup_is_refused() -> None:
+    _mutate("test_54b",
+            "            for ($i = 0; $i -lt $plan.Append; $i++) { $null = Add-BlankTableRow -Workbook $wb -SheetName $capacity.Sheet -TableName $capacity.Table }\n",
+            "")
+
+
+def test_81_deleting_rows_on_an_excess_is_refused() -> None:
+    _mutate("test_54b",
+            "                $capacityProblems += ($capacity.Label + ' holds ' + [string]$currentRows + ' body rows where the baseline held ' + [string]$capacity.Baseline + '; an excess is not the runner''s to delete')\n                continue\n",
+            "                for ($i = $currentRows; $i -gt $capacity.Baseline; $i--) { Remove-TableRow -Workbook $wb -SheetName $capacity.Sheet -TableName $capacity.Table -RowIndex $i }\n                continue\n")
+
+
+def test_82_appending_one_row_too_many_is_refused() -> None:
+    _mutate("test_54b",
+            "            for ($i = 0; $i -lt $plan.Append; $i++) { $null = Add-BlankTableRow",
+            "            for ($i = 0; $i -le $plan.Append; $i++) { $null = Add-BlankTableRow")
+
+
+def test_83_writing_into_an_appended_row_is_refused() -> None:
+    _mutate("test_54b",
+            "            $afterAppend = @(Get-TableBody -Workbook $wb -SheetName $capacity.Sheet -TableName $capacity.Table)\n",
+            "            Set-TableCell -Workbook $wb -SheetName $capacity.Sheet -TableName $capacity.Table -RowIndex $capacity.Baseline -ColumnIndex 1 -Value 'CL-999'\n            $afterAppend = @(Get-TableBody -Workbook $wb -SheetName $capacity.Sheet -TableName $capacity.Table)\n")
+
+
+def test_84_a_cleanup_outside_the_window_is_refused() -> None:
+    _mutate("test_54b",
+            "    $null = Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.grids-restored.capacity'\n    try {\n",
+            "    try {\n")
+
+
+def test_85_dropping_the_protection_assertion_after_the_cleanup_is_refused() -> None:
+    _mutate("test_54b",
+            "    $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'protection.after-repair-capacity'\n",
+            "")
+
+
+def test_86_a_capacity_plan_that_deletes_the_excess_is_caught_by_the_executed_harness() -> None:
+    import pytest as _pytest
+    if not Path(conformance.PWSH).exists():
+        _pytest.skip("no PowerShell on this host")
+    swap = ("        return [pscustomobject]@{ Append = 0; Excess = ($Current - $Baseline) }\n",
+            "        return [pscustomobject]@{ Append = ($Baseline - $Current); Excess = 0 }\n")
+    original = conformance._runner()
+    assert original.count(swap[0]) == 1
+    import tempfile
+    scratch = Path(tempfile.mkdtemp(prefix="pccm-fa-capacity-")) / "phase10_final_acceptance.ps1"
+    scratch.write_text(original.replace(swap[0], swap[1], 1), encoding="utf-8")
+    assert conformance._grid_diff_lines(scratch)["capacity.excess"] != "append=0 excess=1"
+    _mutate("test_54b", swap[0], swap[1])
+
+
+def test_87_an_undeclared_runner_edit_since_the_run_12_head_is_refused() -> None:
+    _mutate("test_60c7",
+            "    $null = Add-FaCheck 'repair.rollback.then-repaired' (($repairedAfterRollback -like 'OK|*') -and $rowTwoBlank) `\n",
+            "    $null = Add-FaCheck 'repair.rollback.then-repaired' ($repairedAfterRollback -like 'OK|*') `\n")
+
+
 if __name__ == "__main__":
     failures = 0
     for name in sorted(n for n in dir() if n.startswith("test_")):

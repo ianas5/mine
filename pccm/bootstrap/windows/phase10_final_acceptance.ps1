@@ -623,6 +623,24 @@ function Format-FaGridDifferences {
     return $text
 }
 
+# THE CAPACITY PLAN FOR A GRID THE RUNNER'S OWN FIXTURE SHORTENED. Pure: two
+# counts in, a plan out. Final acceptance run 12 at 01b9a1a diagnosed
+# repair.grids-restored as CASE 1 with rows 23/22/22 and no value or column
+# difference: the runner had deleted a physical profiling ListRow to make the
+# rollback precondition, production recreated the driver in an existing blank
+# row - SyncRows promises one row per identified id in register order and a
+# cleared tail, never a prior physical count - and the runner then demanded
+# byte-identical equality without undoing its own deletion. So the runner
+# appends exactly the blank rows it owes, and never deletes: an excess is not
+# the runner's to explain away.
+function Get-FaCapacityPlan {
+    param([int]$Current, [int]$Baseline)
+    if ($Current -gt $Baseline) {
+        return [pscustomobject]@{ Append = 0; Excess = ($Current - $Baseline) }
+    }
+    return [pscustomobject]@{ Append = ($Baseline - $Current); Excess = 0 }
+}
+
 function Get-FaRegister {
     param($Manifest, [string]$Key)
     foreach ($register in @($Manifest.registers)) {
@@ -2006,6 +2024,42 @@ try {
         $weight = [string]$missingRowBefore[$c]
         if ($weight -ne '') { Set-TableCell -Workbook $wb -SheetName $gridSheet -TableName $gridTable -RowIndex $rowTwoIndex -ColumnIndex ($c + 1) -Value ([double]$weight) }
     }
+    # FIXTURE CLEANUP: THE PHYSICAL ROWS THE RUNNER DELETED, PUT BACK. The
+    # rollback precondition deleted a profiling ListRow; production recreated the
+    # driver in an existing blank row, so each grid may now hold fewer physical
+    # body rows than the repair-contract baseline. Inside the accepted window the
+    # runner appends exactly the blank rows it owes - no id, no trace text, no
+    # weight - and refuses an excess rather than deleting anything.
+    $baselineCostRows = @($baselineCostBody).Count
+    $baselineRiskRows = @($baselineRiskBody).Count
+    $capacityProblems = @()
+    $capacityDetails = @()
+    $null = Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.grids-restored.capacity'
+    try {
+        foreach ($capacity in @(
+                [pscustomobject]@{ Label = ($gridSheet + '!' + $gridTable); Sheet = $gridSheet; Table = $gridTable; Baseline = $baselineCostRows },
+                [pscustomobject]@{ Label = ($riskSheet + '!' + $riskTable); Sheet = $riskSheet; Table = $riskTable; Baseline = $baselineRiskRows })) {
+            $currentRows = Get-TableRowCount -Workbook $wb -SheetName $capacity.Sheet -TableName $capacity.Table
+            $plan = Get-FaCapacityPlan -Current $currentRows -Baseline $capacity.Baseline
+            if ($plan.Excess -gt 0) {
+                $capacityProblems += ($capacity.Label + ' holds ' + [string]$currentRows + ' body rows where the baseline held ' + [string]$capacity.Baseline + '; an excess is not the runner''s to delete')
+                continue
+            }
+            for ($i = 0; $i -lt $plan.Append; $i++) { $null = Add-BlankTableRow -Workbook $wb -SheetName $capacity.Sheet -TableName $capacity.Table }
+            $afterAppend = @(Get-TableBody -Workbook $wb -SheetName $capacity.Sheet -TableName $capacity.Table)
+            if ($afterAppend.Count -ne $capacity.Baseline) { $capacityProblems += ($capacity.Label + ' holds ' + [string]$afterAppend.Count + ' body rows after appending ' + [string]$plan.Append + ', expected ' + [string]$capacity.Baseline) }
+            for ($r = $currentRows + 1; $r -le $afterAppend.Count; $r++) {
+                $appendedRow = @($afterAppend[$r - 1])
+                for ($c = 0; $c -lt $appendedRow.Count; $c++) {
+                    if ([string]$appendedRow[$c] -ne '') { $capacityProblems += ($capacity.Label + ' appended row ' + [string]$r + ' column ' + [string]($c + 1) + ' holds ' + [string]$appendedRow[$c] + ', not blank') }
+                }
+            }
+            $capacityDetails += ($capacity.Label + ' ' + [string]$currentRows + '->' + [string]$afterAppend.Count + ' rows (baseline ' + [string]$capacity.Baseline + ', appended ' + [string]$plan.Append + ' blank)')
+        }
+    } finally { $null = Close-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.grids-restored.capacity' }
+    $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'protection.after-repair-capacity'
+    $null = Add-FaCheck 'repair.grids-restored.capacity' ($capacityProblems.Count -eq 0) `
+        $(if ($capacityProblems.Count -eq 0) { ($capacityDetails -join '; ') } else { ($capacityProblems -join '; ') })
     # DIAGNOSTIC SNAPSHOT A: both grids as plain data after the runner's own
     # restoration writes and BEFORE the final resync. Reads only.
     $preResyncCostBody = @(Get-TableBody -Workbook $wb -SheetName $gridSheet -TableName $gridTable)

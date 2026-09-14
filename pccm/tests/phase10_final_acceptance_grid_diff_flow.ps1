@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 
 $source = Get-Content -LiteralPath $Runner -Raw
 $ast = [System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$null, [ref]$null)
-foreach ($name in @('ConvertTo-FaBodyKey', 'Get-FaBodyCell', 'Get-FaBodyWidth', 'Format-FaGridDifferences')) {
+foreach ($name in @('ConvertTo-FaBodyKey', 'Get-FaBodyCell', 'Get-FaBodyWidth', 'Format-FaGridDifferences', 'Get-FaCapacityPlan')) {
     $definition = $ast.FindAll({ param($node)
         ($node -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and ($node.Name -eq $name) }, $true)
     if (@($definition).Count -ne 1) { throw ('the runner defines ' + $name + ' ' + [string]@($definition).Count + ' times') }
@@ -53,3 +53,12 @@ Emit 'note.restored-by-resync' (Format-FaGridDifferences -Label 'Cost Profiling!
 Emit 'width.narrow-before-resync' (Format-FaGridDifferences -Label 'Risk Profiling!tblRiskProfiling' -Baseline $baseline -BeforeResync $narrow -AfterResync $baseline -BaselineColumns $columns -BeforeColumns $narrowColumns -AfterColumns $columns)
 Emit 'limit.many' (Format-FaGridDifferences -Label 'Cost Profiling!tblCostProfiling' -Baseline $baseline -BeforeResync $manyDiffs -AfterResync $manyDiffs -BaselineColumns $columns -BeforeColumns $columns -AfterColumns $columns -Limit 2)
 Emit 'rows.fewer-after-resync' (Format-FaGridDifferences -Label 'Cost Profiling!tblCostProfiling' -Baseline $baseline -BeforeResync $baseline -AfterResync (New-Body @(, @('CL-001', 'Civils', '0.25', '0.25', '0.25', '0.25'))) -BaselineColumns $columns -BeforeColumns $columns -AfterColumns $columns)
+
+# THE CAPACITY PLAN: append exactly what is owed, never delete an excess.
+foreach ($shape in @(@{ Case = 'capacity.equal'; Current = 23; Baseline = 23 },
+                     @{ Case = 'capacity.short-by-one'; Current = 22; Baseline = 23 },
+                     @{ Case = 'capacity.short-by-three'; Current = 20; Baseline = 23 },
+                     @{ Case = 'capacity.excess'; Current = 24; Baseline = 23 })) {
+    $plan = Get-FaCapacityPlan -Current $shape.Current -Baseline $shape.Baseline
+    Emit $shape.Case ('append=' + [string]$plan.Append + ' excess=' + [string]$plan.Excess)
+}

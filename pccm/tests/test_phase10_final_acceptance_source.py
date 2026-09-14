@@ -86,7 +86,7 @@ REQUIRED_SCENARIOS = (
     "repair.width-growth", "repair.width-growth.fixture", "repair.width-growth.lock-state", "repair.width-growth.restored",
     "repair.shrink-blank", "repair.shrink-zero-refused",
     "repair.shrink-nonzero-refused", "repair.semantic-non1-refused", "repair.blank-profile-allowed",
-    "repair.signed-zero-total-refused", "repair.rollback.", "repair.grids-restored",
+    "repair.signed-zero-total-refused", "repair.rollback.", "repair.grids-restored.capacity", "repair.grids-restored",
     "copy.compile", "copy.source-revision", "copy.protection", "copy.fixture", "copy.run",
     # Added at the P10-R3 closure: contract matrix row O, the injected
     # Workbook_Open failure, in a third disposable session.
@@ -118,7 +118,7 @@ PROTECTION_AFTER = ("protection.initial", "protection.after-structural", "protec
                     "protection.after-repair-growth", "protection.after-repair-shrink",
                     "protection.after-repair-shrink-zero", "protection.after-repair-shrink-nonzero",
                     "protection.after-repair-semantic", "protection.after-repair-signed",
-                    "protection.after-repair-rollback.", "protection.after-locked-cell",
+                    "protection.after-repair-rollback.", "protection.after-repair-capacity", "protection.after-locked-cell",
                     "copy.protection", "copy.protection-after-run")
 
 _MEMO: dict = {}
@@ -855,6 +855,59 @@ def test_54_both_repair_failpoints_roll_back_and_the_grids_return_to_their_basel
     assert "$script:FaCostBefore = ''" in preamble and "$script:FaRiskBefore = ''" in preamble
 
 
+def test_54b_the_runner_puts_back_the_physical_rows_it_deleted_inside_the_window_and_never_deletes_an_excess() -> None:
+    """FINAL ACCEPTANCE RUN 12 (01b9a1a): repair.grids-restored was CASE 1 with
+    rows 23/22/22 and no value or column difference - the runner's own rollback
+    precondition had deleted a profiling ListRow, production recreated the
+    driver in an existing blank row (SyncRows promises one row per identified
+    id in register order and a cleared tail, never a prior physical count), and
+    the runner demanded byte-identical equality without undoing its deletion.
+    HARNESS-OWNED. Before the final resync, inside the accepted window, the
+    runner reads each grid's body-row count, appends exactly baseline minus
+    current BLANK rows, proves them blank, and refuses an excess rather than
+    deleting; protection is asserted after the window; the resync and the
+    exact digest equality follow unchanged."""
+    code = _code()
+    retype = code.index("if ($weight -ne '') { Set-TableCell -Workbook $wb -SheetName $gridSheet -TableName $gridTable -RowIndex $rowTwoIndex")
+    start = code.index("$baselineCostRows = @($baselineCostBody).Count")
+    snapshot = code.index("$preResyncCostBody = @(Get-TableBody")
+    resync = code.index("-Operation 'PCCM_ApplyTimeline' -Stage 'resync after the repair contract scenarios'")
+    cleanup = code[start: snapshot]
+    assert retype < start < snapshot < resync
+    # the baseline counts come from the baselines retained at the block start
+    assert "$baselineCostRows = @($baselineCostBody).Count" in cleanup and "$baselineRiskRows = @($baselineRiskBody).Count" in cleanup
+    # inside the accepted window, closed in a finally, protection asserted after
+    opened = cleanup.index("Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.grids-restored.capacity'")
+    closed = cleanup.index("finally { $null = Close-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.grids-restored.capacity' }")
+    assert opened < cleanup.index("Add-BlankTableRow") < closed
+    assert closed < cleanup.index("-Scenario 'protection.after-repair-capacity'") < cleanup.index("Add-FaCheck 'repair.grids-restored.capacity'")
+    # both grids, from their own baselines
+    assert "Sheet = $gridSheet; Table = $gridTable; Baseline = $baselineCostRows" in cleanup
+    assert "Sheet = $riskSheet; Table = $riskTable; Baseline = $baselineRiskRows" in cleanup
+    assert "$currentRows = Get-TableRowCount -Workbook $wb -SheetName $capacity.Sheet -TableName $capacity.Table" in cleanup
+    assert "$plan = Get-FaCapacityPlan -Current $currentRows -Baseline $capacity.Baseline" in cleanup
+    # an excess is a problem and a continue, never a deletion
+    assert "if ($plan.Excess -gt 0) {" in cleanup
+    excess = cleanup[cleanup.index("if ($plan.Excess -gt 0) {"): cleanup.index("for ($i = 0; $i -lt $plan.Append; $i++)")]
+    assert "$capacityProblems +=" in excess and "continue" in excess
+    for banned in ("Remove-TableRow", "ListRows(", ".Delete(", "Remove-FaLastTableColumn", "Set-TableCell", "Set-FaWeight", "Value2 =", "ClearContents"):
+        assert banned not in cleanup, banned
+    # exactly the plan's count of blank rows, proved blank and proved counted
+    assert "for ($i = 0; $i -lt $plan.Append; $i++) { $null = Add-BlankTableRow -Workbook $wb -SheetName $capacity.Sheet -TableName $capacity.Table }" in cleanup
+    assert "if ($afterAppend.Count -ne $capacity.Baseline) { $capacityProblems +=" in cleanup
+    assert "for ($r = $currentRows + 1; $r -le $afterAppend.Count; $r++) {" in cleanup
+    assert "if ([string]$appendedRow[$c] -ne '') { $capacityProblems +=" in cleanup
+    assert "Add-FaCheck 'repair.grids-restored.capacity' ($capacityProblems.Count -eq 0)" in cleanup
+    plan = _function("Get-FaCapacityPlan", code)
+    assert "if ($Current -gt $Baseline) {" in plan and "Append = 0; Excess = ($Current - $Baseline)" in plan
+    assert "Append = ($Baseline - $Current); Excess = 0" in plan
+    for forbidden in ("$Workbook", "$wb", ".Cells", "Add-BlankTableRow", "Remove-"):
+        assert forbidden not in plan, forbidden
+    # the resync and the exact equality follow, unchanged
+    assert code.count("Add-FaCheck 'repair.grids-restored' (($costRestored -ceq $baselineCost) -and ($riskRestored -ceq $baselineRisk))") == 1
+    assert code.index("Add-FaCheck 'repair.grids-restored.capacity'") < resync < code.index("Add-FaCheck 'repair.grids-restored' ((")
+
+
 def test_55_the_distribution_copy_is_a_renamed_copy_of_the_built_file_run_in_a_second_session_and_never_saved() -> None:
     """MATRIX ROW J, ADDED AT THE BOUNDED CORRECTION ROUND. The original is
     closed unsaved; the BUILT Stage-B file is copied under a different name in a
@@ -1235,10 +1288,31 @@ RUN11_FINAL_BEFORE = (
     "        'both profiling grids byte-identical to before the repair contract scenarios'\n")
 
 
+def _without_run12_changes(text: str) -> str:
+    """`text` (LF) with the run-12 fixture cleanup taken back out: the pure
+    capacity plan and the windowed physical-row cleanup removed."""
+    start = text.index("# THE CAPACITY PLAN FOR A GRID THE RUNNER'S OWN FIXTURE SHORTENED.")
+    stop = text.index("function Get-FaRegister {")
+    text = text[:start] + text[stop:]
+    start = text.index("    # FIXTURE CLEANUP: THE PHYSICAL ROWS THE RUNNER DELETED, PUT BACK.")
+    stop = text.index("    # DIAGNOSTIC SNAPSHOT A: both grids as plain data")
+    return text[:start] + text[stop:]
+
+
+def test_60c7_the_capacity_cleanup_is_the_only_runner_change_since_the_run_12_head() -> None:
+    """EXACT REVERSAL against 01b9a1a, the head final acceptance run 12 executed."""
+    tested = _git("show", "01b9a1a:pccm/bootstrap/windows/phase10_final_acceptance.ps1").replace("\r\n", "\n")
+    now = _runner().replace("\r\n", "\n")
+    assert _without_run12_changes(now) == tested
+    assert now != tested
+
+
 def _without_run11_changes(text: str) -> str:
-    """`text` (LF) with the run-11 diagnostics taken back out: the pure
-    formatter and its helpers removed, the plain-data baselines removed, and
-    the instrumented final restoration replaced by the five lines it grew from."""
+    """`text` (LF) with the run-12 cleanup and then the run-11 diagnostics taken
+    back out: the pure formatter and its helpers removed, the plain-data
+    baselines removed, and the instrumented final restoration replaced by the
+    five lines it grew from."""
+    text = _without_run12_changes(text)
     start = text.index("# THE DIAGNOSIS OF A GRID THAT DID NOT COME BACK TO ITS BASELINE.")
     stop = text.index("function Get-FaRegister {")
     text = text[:start] + text[stop:]
@@ -1628,6 +1702,11 @@ def test_60y_the_grids_restored_diagnosis_executes_and_separates_the_two_stages(
     fewer = lines["rows.fewer-after-resync"]
     assert "rows baseline/pre-resync/post-resync=3/3/1" in fewer and "CASE 2" in fewer
     assert "row 2 (CL-002) column 1 [Cost Line ID]: baseline <CL-002>, pre-resync <CL-002>, post-resync <>" in fewer
+    # RUN 12: the capacity plan appends exactly what is owed and never deletes
+    assert lines["capacity.equal"] == "append=0 excess=0"
+    assert lines["capacity.short-by-one"] == "append=1 excess=0"
+    assert lines["capacity.short-by-three"] == "append=3 excess=0"
+    assert lines["capacity.excess"] == "append=0 excess=1"
 
 
 @pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
