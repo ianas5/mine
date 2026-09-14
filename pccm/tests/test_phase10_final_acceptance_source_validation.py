@@ -780,6 +780,91 @@ def test_96_an_undeclared_runner_edit_since_the_run_13_head_is_refused() -> None
             "    $null = Add-FaCheck 'repair.rollback.then-repaired' ($repairedAfterRollback -like 'OK|*') `\n")
 
 
+# ---------------------------------------------------------------------------
+# FINAL ACCEPTANCE RUN 14: THE SEMANTIC POST-RESET STATE
+# ---------------------------------------------------------------------------
+def test_97_restoring_the_zero_row_count_demand_is_refused() -> None:
+    """RUN 14's DEFECT, RE-INTRODUCED."""
+    _mutate("test_41b",
+            "        $problems += @(Get-FaTableBodyProblems -Label ([string]$table) -Body $body -ExpectedRows ([int]$shape.Rows) -ExpectedColumns ([int]$shape.Columns))\n",
+            "        if (@($body).Count -ne 0) { $problems += ([string]$table + ' holds ' + [string]@($body).Count + ' row(s)') }\n")
+
+
+def test_98_allowing_populated_table_body_cells_is_refused() -> None:
+    _mutate("test_41b",
+            "            if ([string]$line[$c - 1] -eq '') { continue }\n",
+            "            continue\n")
+
+
+def test_99_ignoring_table_geometry_is_refused() -> None:
+    _mutate("test_41b",
+            "    if (@($Body).Count -ne $ExpectedRows) { $problems +=",
+            "    if ($false) { $problems +=")
+
+
+def test_100_accepting_a_blank_calculation_attempt_instead_of_none_is_refused() -> None:
+    _mutate("test_41b",
+            "            if ($value -cne $Sentinel) { $problems +=",
+            "            if (($value -cne $Sentinel) -and ($value -ne '')) { $problems +=")
+
+
+def test_101_dropping_the_simulation_sentinel_check_is_refused() -> None:
+    _mutate("test_41b",
+            "        -SentinelIndex (Get-FaCellOffset -Address $recordAddress -Cell $SimAttemptCell) -Sentinel $Sentinel)\n",
+            "        -SentinelIndex (Get-FaCellOffset -Address $recordAddress -Cell $SimAttemptCell) -Sentinel '')\n")
+
+
+def test_102_skipping_the_active_bank_and_the_other_record_fields_is_refused() -> None:
+    _mutate("test_41b",
+            "        } elseif ($value -ne '') {\n",
+            "        } elseif ($false) {\n")
+
+
+def test_103_dropping_the_ordinary_rectangle_check_is_refused() -> None:
+    _mutate("test_41",
+            "        if (-not (Test-FaBlockBlank -Workbook $Workbook -SheetName $rect.Sheet -Address $rect.Address)) {\n            $problems += ('publication rectangle ' + $rect.Sheet + '!' + $rect.Address + ' is not blank')\n        }\n",
+            "")
+
+
+def test_104_weakening_the_endpoint_success_string_is_refused() -> None:
+    _mutate("test_41",
+            "        (($confirmed -like 'OK|Results reset. Model inputs and identity counters were preserved.') -and\n         ($resetProblems.Count -eq 0)",
+            "        (($confirmed -like 'OK|*') -and\n         ($resetProblems.Count -eq 0)")
+
+
+def test_105_dropping_the_projection_cross_checks_is_refused() -> None:
+    _mutate("test_41b",
+            "if ([string]$resetAttemptInitial.value -cne $attemptNone) { throw",
+            "if ($false) { throw")
+
+
+def test_106_a_verifier_that_reaches_the_workbook_from_the_pure_layer_is_refused() -> None:
+    _mutate("test_41b",
+            "    $problems = @()\n    if (($SentinelIndex -lt 1)",
+            "    $problems = @()\n    $null = $wb.Worksheets\n    if (($SentinelIndex -lt 1)")
+
+
+def test_107_an_undeclared_runner_edit_since_the_run_14_head_is_refused() -> None:
+    _mutate("test_60c9",
+            "    $null = Add-FaCheck 'repair.rollback.then-repaired' (($repairedAfterRollback -like 'OK|*') -and $rowTwoBlank) `\n",
+            "    $null = Add-FaCheck 'repair.rollback.then-repaired' ($repairedAfterRollback -like 'OK|*') `\n")
+
+
+def test_108_a_blank_sentinel_accepted_is_caught_by_the_executed_reset_harness() -> None:
+    import pytest as _pytest
+    if not Path(conformance.PWSH).exists():
+        _pytest.skip("no PowerShell on this host")
+    original = conformance._runner()
+    old = "            if ($value -cne $Sentinel) { $problems +="
+    new = "            if (($value -cne $Sentinel) -and ($value -ne '')) { $problems +="
+    assert original.count(old) == 1
+    import tempfile
+    scratch = Path(tempfile.mkdtemp(prefix="pccm-fa-reset-")) / "phase10_final_acceptance.ps1"
+    scratch.write_text(original.replace(old, new, 1), encoding="utf-8")
+    assert conformance._reset_lines(scratch)["calc.sentinel-missing"][0] == 0
+    assert conformance._reset_lines()["calc.sentinel-missing"][0] == 1
+
+
 if __name__ == "__main__":
     failures = 0
     for name in sorted(n for n in dir() if n.startswith("test_")):

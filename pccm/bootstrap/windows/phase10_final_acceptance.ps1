@@ -985,20 +985,117 @@ function Get-FaPublicationDigest {
     return ($parts -join [char]29)
 }
 
-function Get-FaUnclearedRectangles {
-    param($Workbook, $Reset, [int]$Iterations)
+# THE SEMANTIC POST-RESET STATE, AS PRODUCTION DEFINES IT. Final acceptance run
+# 14 at 1e62de2 failed reset.confirmed although production had reset exactly as
+# its own source says it does: Reset clears CONTENTS and preserves table shape
+# (CalcReportClearPublication clears each _Calc table body by address and never
+# resizes it), clears the calculation state block and then writes the accepted
+# NONE attempt value back into its last-attempt field, and clears the simulation
+# publication record and then writes NONE into ITS last-attempt field. The old
+# verifier demanded zero ListRows and blank sentinel cells - conditions no
+# correct reset can meet. These helpers are pure - plain data in, problem
+# strings out - and the COM reader beneath them assembles the data. Every
+# ordinary publication rectangle is still required strictly blank.
+function ConvertTo-FaRectCells {
+    param($Rect)
+    $cells = @()
+    if ($Rect -is [array]) {
+        $rows = $Rect.GetLength(0); $cols = $Rect.GetLength(1)
+        for ($r = 1; $r -le $rows; $r++) {
+            for ($c = 1; $c -le $cols; $c++) {
+                $v = $Rect.GetValue($r, $c)
+                if ($null -eq $v) { $cells += '' } else { $cells += [string]$v }
+            }
+        }
+    } elseif ($null -eq $Rect) { $cells += '' } else { $cells += [string]$Rect }
+    return , $cells
+}
+
+function Get-FaSemanticBlockProblems {
+    param([string]$Label, [string[]]$Cells, [int]$SentinelIndex, [string]$Sentinel)
     $problems = @()
-    foreach ($rect in @(Get-FaClearedRectangles -Reset $Reset -Iterations $Iterations)) {
-        if (-not (Test-FaBlockBlank -Workbook $Workbook -SheetName $rect.Sheet -Address $rect.Address)) {
-            $problems += ($rect.Sheet + '!' + $rect.Address)
+    if (($SentinelIndex -lt 1) -or ($SentinelIndex -gt @($Cells).Count)) {
+        $problems += ($Label + ' sentinel index ' + [string]$SentinelIndex + ' is outside its ' + [string]@($Cells).Count + ' cell(s)')
+        return , $problems
+    }
+    for ($i = 1; $i -le @($Cells).Count; $i++) {
+        $value = [string]@($Cells)[$i - 1]
+        if ($i -eq $SentinelIndex) {
+            if ($value -cne $Sentinel) { $problems += ($Label + ' field ' + [string]$i + ' holds <' + $value + '>, expected the ' + $Sentinel + ' sentinel') }
+        } elseif ($value -ne '') {
+            $problems += ($Label + ' field ' + [string]$i + ' holds <' + $value + '>, expected blank')
         }
     }
-    $calc = $Reset.publications.calculation
-    foreach ($table in @($calc.cleared.tables)) {
-        $count = Get-TableRowCount -Workbook $Workbook -SheetName ([string]$calc.sheet) -TableName ([string]$table)
-        if ($count -ne 0) { $problems += ([string]$table + ' holds ' + [string]$count + ' row(s)') }
+    return , $problems
+}
+
+function Get-FaTableBodyProblems {
+    param([string]$Label, [object[]]$Body, [int]$ExpectedRows, [int]$ExpectedColumns)
+    $problems = @()
+    if (@($Body).Count -ne $ExpectedRows) { $problems += ($Label + ' holds ' + [string]@($Body).Count + ' row(s) where the precondition held ' + [string]$ExpectedRows + '; Reset owns contents, not geometry') }
+    $found = 0
+    for ($r = 1; $r -le @($Body).Count; $r++) {
+        $line = @(@($Body)[$r - 1])
+        if (($r -eq 1) -and ($line.Count -ne $ExpectedColumns)) { $problems += ($Label + ' holds ' + [string]$line.Count + ' column(s) where the precondition held ' + [string]$ExpectedColumns) }
+        for ($c = 1; $c -le $line.Count; $c++) {
+            if ([string]$line[$c - 1] -eq '') { continue }
+            $found = $found + 1
+            if ($found -le 5) { $problems += ($Label + ' row ' + [string]$r + ' column ' + [string]$c + ' holds <' + [string]$line[$c - 1] + '>, expected blank') }
+        }
     }
-    return $problems
+    if ($found -gt 5) { $problems += ($Label + ': ' + [string]($found - 5) + ' more populated cell(s)') }
+    return , $problems
+}
+
+function Get-FaCalcTableShapes {
+    param($Workbook, $Reset)
+    $calc = $Reset.publications.calculation
+    $shapes = @{}
+    foreach ($table in @($calc.cleared.tables)) {
+        $shapes[[string]$table] = [pscustomobject]@{
+            Rows    = (Get-TableRowCount -Workbook $Workbook -SheetName ([string]$calc.sheet) -TableName ([string]$table))
+            Columns = @(Get-TableColumnNames -Workbook $Workbook -SheetName ([string]$calc.sheet) -TableName ([string]$table)).Count
+        }
+    }
+    return $shapes
+}
+
+function Get-FaResetProblems {
+    param($Workbook, $Reset, [int]$Iterations, [string]$CalcAttemptCell, [string]$SimAttemptCell, [string]$Sentinel, $TableShapes)
+    $problems = @()
+    $calc = $Reset.publications.calculation
+    $sim = $Reset.publications.simulation
+    $stateAddress = [string]$calc.cleared.state
+    $recordAddress = [string]$sim.cleared.attempt_and_selector
+    foreach ($rect in @(Get-FaClearedRectangles -Reset $Reset -Iterations $Iterations)) {
+        if (($rect.Address -eq $stateAddress) -or ($rect.Address -eq $recordAddress)) { continue }
+        if (-not (Test-FaBlockBlank -Workbook $Workbook -SheetName $rect.Sheet -Address $rect.Address)) {
+            $problems += ('publication rectangle ' + $rect.Sheet + '!' + $rect.Address + ' is not blank')
+        }
+    }
+    $stateCells = ConvertTo-FaRectCells -Rect ((Get-FaBlock -Workbook $Workbook -SheetName ([string]$calc.sheet) -Address $stateAddress).Rect)
+    $problems += @(Get-FaSemanticBlockProblems -Label ('calculation state ' + [string]$calc.sheet + '!' + $stateAddress) -Cells $stateCells `
+        -SentinelIndex (Get-FaCellOffset -Address $stateAddress -Cell $CalcAttemptCell) -Sentinel $Sentinel)
+    $recordCells = ConvertTo-FaRectCells -Rect ((Get-FaBlock -Workbook $Workbook -SheetName ([string]$sim.sheet) -Address $recordAddress).Rect)
+    $problems += @(Get-FaSemanticBlockProblems -Label ('simulation record ' + [string]$sim.sheet + '!' + $recordAddress) -Cells $recordCells `
+        -SentinelIndex (Get-FaCellOffset -Address $recordAddress -Cell $SimAttemptCell) -Sentinel $Sentinel)
+    foreach ($table in @($calc.cleared.tables)) {
+        $shape = $TableShapes[[string]$table]
+        $body = @(Get-TableBody -Workbook $Workbook -SheetName ([string]$calc.sheet) -TableName ([string]$table))
+        $problems += @(Get-FaTableBodyProblems -Label ([string]$table) -Body $body -ExpectedRows ([int]$shape.Rows) -ExpectedColumns ([int]$shape.Columns))
+    }
+    return , $problems
+}
+
+# A cell's 1-based position inside a single-column block address: row minus the block's first row plus one.
+function Get-FaCellOffset {
+    param([string]$Address, [string]$Cell)
+    $firstRow = [int]($Address.Split(':')[0] -replace '[A-Za-z]', '')
+    $column = ($Address.Split(':')[0] -replace '[0-9]', '')
+    $cellRow = [int]($Cell -replace '[A-Za-z]', '')
+    $cellColumn = ($Cell -replace '[0-9]', '')
+    if ($cellColumn -ne $column) { return 0 }
+    return ($cellRow - $firstRow + 1)
 }
 
 # The live, DERIVED states, read through accessors that write nothing: the
@@ -1282,6 +1379,16 @@ $calcValueColumn = [string]$calcStateBlock.value_column
 $calcStatusRange = ($calcValueColumn + [string]$calcStateBlock.rows.calculation_status + ':' +
                     $calcValueColumn + [string]$calcStateBlock.rows.status_evaluated_at)
 $calcAttemptCell = ($calcValueColumn + [string]$calcStateBlock.rows.last_attempt_result)
+# THE SIMULATION RECORD'S LAST-ATTEMPT FIELD, from the Phase-6 run-identity
+# projection; the reset projection's attempt_and_selector span begins on it, and
+# the reset projection's calculation attempt_result_initial must name the same
+# calc cell and the same NONE the Phase-7 vocabulary names. Two contracts, one answer.
+$simRunIdentity = $simInspect.sim_data.run_identity
+$simAttemptCell = ([string]$simRunIdentity.value_column + [string]$simRunIdentity.rows.last_attempt_result)
+$resetAttemptInitial = $reset.publications.calculation.attempt_result_initial
+if ([string]$resetAttemptInitial.cell -cne $calcAttemptCell) { throw ('the reset projection seeds ' + [string]$resetAttemptInitial.cell + ' after a reset; the calculation state block names ' + $calcAttemptCell) }
+if ([string]$resetAttemptInitial.value -cne $attemptNone) { throw ('the reset projection seeds ' + [string]$resetAttemptInitial.value + ' after a reset; the accepted vocabulary names ' + $attemptNone) }
+if ([string]$reset.publications.simulation.cleared.attempt_and_selector -notlike ($simAttemptCell + ':*')) { throw ('the reset projection clears ' + [string]$reset.publications.simulation.cleared.attempt_and_selector + ', which does not begin on the simulation last-attempt field ' + $simAttemptCell) }
 $calcPersistedStatusCell = ($calcValueColumn + [string]$calcStateBlock.rows.calculation_status)
 $calcFingerprintCell = ($calcValueColumn + [string]$calcStateBlock.rows.last_successful_fingerprint)
 
@@ -2120,6 +2227,8 @@ try {
         ('every publication re-established; ' + (Format-FaStates $statesFull))
     $preservedBefore = Get-FaPreservedDigest -Workbook $wb -Reset $reset -Methodology $methodology -MetadataRange $metadataRange
     $publicationBefore = Get-FaPublicationDigest -Workbook $wb -Reset $reset -Iterations $acceptanceIterations
+    # THE _Calc TABLE GEOMETRY AT THE PRECONDITION: Reset owns contents, not shape.
+    $calcTableShapes = Get-FaCalcTableShapes -Workbook $wb -Reset $reset
     $simStateBefore = Format-Phase6State -State (Get-Phase6State -Workbook $wb -Inspection $simInspect) -Label 'before'
 
     # 15a. DECLINED, deterministically: the automation seam answers the destructive
@@ -2140,15 +2249,23 @@ try {
         ('endpoint=' + $declined + '; prompt=' + $promptExcerpt + '; publication unchanged=' + [string]($publicationDeclined -ceq $publicationBefore) +
          '; simulation=' + $statesDeclined.Simulation + '; ' + (Format-FaStates $statesDeclined))
 
-    # 15b. CONFIRMED.
+    # 15b. CONFIRMED. Verified against the SEMANTIC post-reset state production
+    # defines: every ordinary publication rectangle blank; the calculation state
+    # block blank except the projected last-attempt field, which holds NONE; the
+    # simulation publication record blank except its last-attempt field, which
+    # holds NONE; every _Calc table body blank with its geometry unchanged from
+    # the precondition. Each component is reported on its own.
     $confirmed = Invoke-FaEndpoint -Excel $excel -Operation 'PCCM_ResetResults'
-    $uncleared = @(Get-FaUnclearedRectangles -Workbook $wb -Reset $reset -Iterations $acceptanceIterations)
+    $resetProblems = @(Get-FaResetProblems -Workbook $wb -Reset $reset -Iterations $acceptanceIterations `
+        -CalcAttemptCell $calcAttemptCell -SimAttemptCell $simAttemptCell -Sentinel $attemptNone -TableShapes $calcTableShapes)
     $attemptCell = Format-FaCell ((Get-FaBlock -Workbook $wb -SheetName $calcSheet -Address $calcAttemptCell).Rect)
+    $calcStateActual = (ConvertTo-FaRectCells -Rect ((Get-FaBlock -Workbook $wb -SheetName $calcSheet -Address ([string]$reset.publications.calculation.cleared.state)).Rect)) -join ','
+    $simRecordActual = (ConvertTo-FaRectCells -Rect ((Get-FaBlock -Workbook $wb -SheetName ([string]$reset.publications.simulation.sheet) -Address ([string]$reset.publications.simulation.cleared.attempt_and_selector)).Rect)) -join ','
     $null = Add-FaCheck 'reset.confirmed' `
         (($confirmed -like 'OK|Results reset. Model inputs and identity counters were preserved.') -and
-         ($uncleared.Count -eq 0) -and ($attemptCell -ceq $attemptNone)) `
-        $(if ($uncleared.Count -eq 0) { ($confirmed + '; every projected publication rectangle and table blank; attempt result ' + $attemptCell) }
-          else { 'still holding a publication: ' + ($uncleared -join '; ') })
+         ($resetProblems.Count -eq 0) -and ($attemptCell -ceq $attemptNone)) `
+        ('endpoint=' + $confirmed + '; calc state [' + $calcStateActual + ']; sim record [' + $simRecordActual + ']; ' +
+         $(if ($resetProblems.Count -eq 0) { 'every ordinary publication rectangle blank, both sentinels NONE, every _Calc table body blank with its shape kept' } else { ($resetProblems -join '; ') }))
     $preservedAfter = Get-FaPreservedDigest -Workbook $wb -Reset $reset -Methodology $methodology -MetadataRange $metadataRange
     $null = Add-FaCheck 'reset.preserved' ($preservedAfter -ceq $preservedBefore) `
         'every declared editable input, the applied timeline, both permanent-id counters, the next AUTO nonce, the run-id, the pending nonce and the metadata block compare exactly'

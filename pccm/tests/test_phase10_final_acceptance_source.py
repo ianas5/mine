@@ -468,11 +468,132 @@ def test_41_the_cleared_rectangles_come_from_the_reset_projection_and_are_all_re
                      "$cleared.annual_blocks.$bank", "$cleared.sensitivity_records.$bank",
                      "$cleared.attempt_and_selector"):
         assert required in rects, required
-    uncleared = _function("Get-FaUnclearedRectangles", code)
-    assert "Test-FaBlockBlank" in uncleared and "$calc.cleared.tables" in uncleared
-    assert "Add-FaCheck 'reset.confirmed'" in code and "($uncleared.Count -eq 0)" in code
+    # RESTATED AT RUN 14: every ordinary rectangle is still required strictly
+    # blank; the two semantic ranges - the calculation state block and the
+    # simulation publication record - are verified field by field in test_41b.
+    verifier = _function("Get-FaResetProblems", code)
+    assert "Test-FaBlockBlank -Workbook $Workbook -SheetName $rect.Sheet -Address $rect.Address" in verifier
+    assert "if (($rect.Address -eq $stateAddress) -or ($rect.Address -eq $recordAddress)) { continue }" in verifier
+    assert "$calc.cleared.tables" in verifier
+    assert "Add-FaCheck 'reset.confirmed'" in code and "($resetProblems.Count -eq 0)" in code
     assert "'OK|Results reset. Model inputs and identity counters were preserved.'" in code
     assert "Results reset. Model inputs and identity counters were preserved." in _src("reset", RESET_VBA)
+
+
+def test_41b_reset_confirmed_verifies_the_semantic_post_reset_state_production_defines() -> None:
+    """FINAL ACCEPTANCE RUN 14 (1e62de2): reset.confirmed failed although
+    production had reset exactly as its source says - contents cleared, table
+    shape preserved, NONE written back into the calculation last-attempt field
+    (CalcReportClearPublication) and into the simulation record's last-attempt
+    field (SimReportClearPublication). The old verifier demanded zero ListRows
+    and blank sentinels. HARNESS-OWNED. Now: every _Calc table body is checked
+    for blank CONTENT with its geometry equal to the precondition's; the
+    calculation state block is blank except the projected last-attempt cell,
+    which must hold NONE; the simulation record is blank except its last-attempt
+    field, which must hold NONE; every other rectangle stays strictly blank; the
+    endpoint string and the attempt-cell predicate are unchanged."""
+    code = _code()
+    # the sentinel and the two cells come from the projections, cross-checked in the preflight
+    assert "$simAttemptCell = ([string]$simRunIdentity.value_column + [string]$simRunIdentity.rows.last_attempt_result)" in code
+    assert "$resetAttemptInitial = $reset.publications.calculation.attempt_result_initial" in code
+    assert "if ([string]$resetAttemptInitial.cell -cne $calcAttemptCell) { throw" in code
+    assert "if ([string]$resetAttemptInitial.value -cne $attemptNone) { throw" in code
+    assert "-notlike ($simAttemptCell + ':*')) { throw" in code
+    assert "$attemptNone         = [string]$p7.model_states.attempt_result[0]" in code
+    # the geometry snapshot at the precondition, before the declined reset
+    assert code.index("$calcTableShapes = Get-FaCalcTableShapes -Workbook $wb -Reset $reset") < code.index("$declinedObservation = Invoke-FaObservedEndpoint")
+    shapes = _function("Get-FaCalcTableShapes", code)
+    assert "Rows    = (Get-TableRowCount" in shapes and "Columns = @(Get-TableColumnNames" in shapes
+    # the verifier: content, not row count; geometry compared; both sentinels; both blocks
+    verifier = _function("Get-FaResetProblems", code)
+    assert "Get-TableRowCount" not in verifier and "-ne 0" not in verifier
+    assert "$body = @(Get-TableBody -Workbook $Workbook -SheetName ([string]$calc.sheet) -TableName ([string]$table))" in verifier
+    assert "Get-FaTableBodyProblems -Label ([string]$table) -Body $body -ExpectedRows ([int]$shape.Rows) -ExpectedColumns ([int]$shape.Columns)" in verifier
+    assert "Get-FaSemanticBlockProblems -Label ('calculation state ' + [string]$calc.sheet + '!' + $stateAddress) -Cells $stateCells" in verifier
+    assert "-SentinelIndex (Get-FaCellOffset -Address $stateAddress -Cell $CalcAttemptCell) -Sentinel $Sentinel" in verifier
+    assert "Get-FaSemanticBlockProblems -Label ('simulation record ' + [string]$sim.sheet + '!' + $recordAddress) -Cells $recordCells" in verifier
+    assert "-SentinelIndex (Get-FaCellOffset -Address $recordAddress -Cell $SimAttemptCell) -Sentinel $Sentinel" in verifier
+    semantic = _function("Get-FaSemanticBlockProblems", code)
+    assert "if ($value -cne $Sentinel) { $problems +=" in semantic and "} elseif ($value -ne '') {" in semantic
+    table = _function("Get-FaTableBodyProblems", code)
+    assert "if (@($Body).Count -ne $ExpectedRows) { $problems +=" in table
+    assert "if (($r -eq 1) -and ($line.Count -ne $ExpectedColumns)) { $problems +=" in table
+    assert "if ([string]$line[$c - 1] -eq '') { continue }" in table
+    for name in ("Get-FaSemanticBlockProblems", "Get-FaTableBodyProblems", "ConvertTo-FaRectCells", "Get-FaCellOffset"):
+        body = _function(name, code)
+        for forbidden in ("$Workbook", "$wb", ".Cells", "Value2", "ClearContents", "Set-", ".Run(", "Get-TableBody", "Release-Transient"):
+            assert forbidden not in body, (name, forbidden)
+    # the check: endpoint string, no problems, the attempt cell NONE - and a component-level detail
+    check = code[code.index("$confirmed = Invoke-FaEndpoint -Excel $excel -Operation 'PCCM_ResetResults'"): code.index("$preservedAfter = Get-FaPreservedDigest")]
+    assert "-CalcAttemptCell $calcAttemptCell -SimAttemptCell $simAttemptCell -Sentinel $attemptNone -TableShapes $calcTableShapes" in check
+    assert ("(($confirmed -like 'OK|Results reset. Model inputs and identity counters were preserved.') -and\n"
+            "         ($resetProblems.Count -eq 0) -and ($attemptCell -ceq $attemptNone))") in check
+    for part in ("'endpoint=' + $confirmed", "'; calc state [' + $calcStateActual + ']", "; sim record [' + $simRecordActual + ']", "($resetProblems -join '; ')"):
+        assert part in check, part
+    # production: contents cleared by address, shape kept, NONE seeded - the facts the rules mirror
+    calc = _src("calcreport", PCCM_ROOT / "src" / "vba" / "modCalcReport.bas")
+    assert "StateCell(CALC_STATE_ROW_LAST_ATTEMPT_RESULT).Value2 = CALC_ATTEMPT_NONE" in calc
+    assert "CalcSheet.Range(CStr(addresses(index))).ClearContents" in calc and "BodyAddress(TBL_CALC_YEARS)" in calc
+    sim = _src("simreport", PCCM_ROOT / "src" / "vba" / "modSimReport.bas")
+    assert "SharedCell(SIM_IDENTITY_ROW_LAST_ATTEMPT_RESULT).Value2 = SIM_ATTEMPT_NONE" in sim
+    assert "SIM_SHARED_VALUE_COLUMN & CStr(SIM_IDENTITY_ROW_LAST_ATTEMPT_RESULT) & \":\" & _" in sim
+    import yaml
+    contract = yaml.safe_load((PCCM_ROOT / "spec" / "sim_contract.yaml").read_text(encoding="utf-8"))
+
+    def attempt_vocabularies(node) -> list:
+        found = []
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "attempt_result" and isinstance(value, list):
+                    found.append(value)
+                found.extend(attempt_vocabularies(value))
+        elif isinstance(node, list):
+            for value in node:
+                found.extend(attempt_vocabularies(value))
+        return found
+
+    vocabularies = attempt_vocabularies(contract)
+    assert vocabularies and all(v[0] == "NONE" for v in vocabularies), vocabularies
+    import json
+    assert json.loads((PCCM_ROOT / "build" / "phase7_acceptance_inspection.json").read_text(encoding="utf-8"))["model_states"]["attempt_result"][0] == "NONE"
+    reset = json.loads((PCCM_ROOT / "build" / "phase10_reset_inspection.json").read_text(encoding="utf-8"))
+    assert reset["publications"]["calculation"]["attempt_result_initial"]["value"] == "NONE"
+    assert reset["publications"]["simulation"]["cleared"]["attempt_and_selector"].startswith("D23:")
+
+
+RESET_HARNESS = PCCM_ROOT / "tests" / "phase10_final_acceptance_reset_flow.ps1"
+
+
+def _reset_lines(runner: Path = RUNNER) -> dict[str, tuple[int, str]]:
+    done = subprocess.run([PWSH, "-NoProfile", "-File", str(RESET_HARNESS), "-Runner", str(runner)],
+                          capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stdout + done.stderr
+    lines = {}
+    for line in done.stdout.splitlines():
+        parts = line.split("|", 3)
+        if len(parts) == 4 and parts[0] == "RESET":
+            lines[parts[1]] = (int(parts[2]), parts[3])
+    assert lines, done.stdout
+    return lines
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_41c_the_semantic_reset_verifiers_execute_over_every_shape() -> None:
+    lines = _reset_lines()
+    assert lines["table.blank-with-rows"] == (0, "")
+    assert lines["table.one-populated"] == (1, "tblCalcYears row 2 column 2 holds <2029>, expected blank")
+    assert lines["table.rows-drifted"][0] == 1 and "Reset owns contents, not geometry" in lines["table.rows-drifted"][1]
+    assert lines["table.columns-drifted"][0] == 1
+    assert lines["table.zero-rows-would-be-drift"][0] == 1
+    assert lines["calc.exact"] == (0, "")
+    assert lines["calc.sentinel-missing"] == (1, "calculation state _Calc!C13:C20 field 5 holds <>, expected the NONE sentinel")
+    assert lines["calc.sentinel-wrong"][0] == 1 and "<SUCCESS>" in lines["calc.sentinel-wrong"][1]
+    assert lines["calc.fingerprint-left"] == (1, "calculation state _Calc!C13:C20 field 2 holds <abc123>, expected blank")
+    assert lines["sim.exact"] == (0, "")
+    assert lines["sim.active-bank-populated"] == (1, "simulation record _SimData!D23:D30 field 8 holds <A>, expected blank")
+    assert lines["sim.sentinel-blank"][0] == 1
+    assert lines["offset.wrong-column"][0] == 1
+    assert lines["rect.flatten"] == (3, "NONE; ; 4")
 
 
 def test_42_the_reset_scenarios_are_declined_confirmed_idempotent_and_rolled_back() -> None:
@@ -1386,10 +1507,69 @@ RUN13_DECLINED_BEFORE = (
     "        ('the destructive confirmation was asked and declined; every publication untouched; ' + (Format-FaStates $statesDeclined))\n")
 
 
+RUN14_VERIFIER_BEFORE = (
+    "function Get-FaUnclearedRectangles {\n"
+    "    param($Workbook, $Reset, [int]$Iterations)\n"
+    "    $problems = @()\n"
+    "    foreach ($rect in @(Get-FaClearedRectangles -Reset $Reset -Iterations $Iterations)) {\n"
+    "        if (-not (Test-FaBlockBlank -Workbook $Workbook -SheetName $rect.Sheet -Address $rect.Address)) {\n"
+    "            $problems += ($rect.Sheet + '!' + $rect.Address)\n"
+    "        }\n"
+    "    }\n"
+    "    $calc = $Reset.publications.calculation\n"
+    "    foreach ($table in @($calc.cleared.tables)) {\n"
+    "        $count = Get-TableRowCount -Workbook $Workbook -SheetName ([string]$calc.sheet) -TableName ([string]$table)\n"
+    "        if ($count -ne 0) { $problems += ([string]$table + ' holds ' + [string]$count + ' row(s)') }\n"
+    "    }\n"
+    "    return $problems\n"
+    "}\n\n")
+RUN14_CONFIRMED_BEFORE = (
+    "    # 15b. CONFIRMED.\n"
+    "    $confirmed = Invoke-FaEndpoint -Excel $excel -Operation 'PCCM_ResetResults'\n"
+    "    $uncleared = @(Get-FaUnclearedRectangles -Workbook $wb -Reset $reset -Iterations $acceptanceIterations)\n"
+    "    $attemptCell = Format-FaCell ((Get-FaBlock -Workbook $wb -SheetName $calcSheet -Address $calcAttemptCell).Rect)\n"
+    "    $null = Add-FaCheck 'reset.confirmed' `\n"
+    "        (($confirmed -like 'OK|Results reset. Model inputs and identity counters were preserved.') -and\n"
+    "         ($uncleared.Count -eq 0) -and ($attemptCell -ceq $attemptNone)) `\n"
+    "        $(if ($uncleared.Count -eq 0) { ($confirmed + '; every projected publication rectangle and table blank; attempt result ' + $attemptCell) }\n"
+    "          else { 'still holding a publication: ' + ($uncleared -join '; ') })\n")
+
+
+def _without_run14_changes(text: str) -> str:
+    """`text` (LF) with the run-14 semantic-reset correction taken back out:
+    the pure verifiers and the reader replaced by the blanket verifier they
+    grew from, the preflight cross-checks and the geometry snapshot removed,
+    and the confirmed scenario replaced by its earlier form."""
+    start = text.index("# THE SEMANTIC POST-RESET STATE, AS PRODUCTION DEFINES IT.")
+    stop = text.index("# The live, DERIVED states, read through accessors that write nothing")
+    text = text[:start] + RUN14_VERIFIER_BEFORE + text[stop:]
+    start = text.index("# THE SIMULATION RECORD'S LAST-ATTEMPT FIELD, from the Phase-6 run-identity")
+    last = text.index("which does not begin on the simulation last-attempt field ' + $simAttemptCell) }\n", start)
+    stop = last + len("which does not begin on the simulation last-attempt field ' + $simAttemptCell) }\n")
+    text = text[:start] + text[stop:]
+    shapes = ("    # THE _Calc TABLE GEOMETRY AT THE PRECONDITION: Reset owns contents, not shape.\n"
+              "    $calcTableShapes = Get-FaCalcTableShapes -Workbook $wb -Reset $reset\n")
+    assert text.count(shapes) == 1
+    text = text.replace(shapes, "")
+    start = text.index("    # 15b. CONFIRMED. Verified against the SEMANTIC post-reset state production")
+    stop = text.index("    $preservedAfter = Get-FaPreservedDigest", start)
+    return text[:start] + RUN14_CONFIRMED_BEFORE + text[stop:]
+
+
+def test_60c9_the_semantic_reset_correction_is_the_only_runner_change_since_the_run_14_head() -> None:
+    """EXACT REVERSAL against 1e62de2, the head final acceptance run 14 executed."""
+    tested = _git("show", "1e62de2:pccm/bootstrap/windows/phase10_final_acceptance.ps1").replace("\r\n", "\n")
+    now = _runner().replace("\r\n", "\n")
+    assert _without_run14_changes(now) == tested
+    assert now != tested
+
+
 def _without_run13_changes(text: str) -> str:
-    """`text` (LF) with the run-13 evidence-order correction taken back out:
-    the observing helper and the delegating wrapper replaced by the one
-    invoker they grew from, and the declined scenario by its earlier form."""
+    """`text` (LF) with the run-14 correction and then the run-13 evidence-order
+    correction taken back out: the observing helper and the delegating wrapper
+    replaced by the one invoker they grew from, and the declined scenario by
+    its earlier form."""
+    text = _without_run14_changes(text)
     start = text.index("# THE ENDPOINT, OBSERVED. Final acceptance run 13")
     wrapper = text.index("function Invoke-FaEndpoint {", start)
     stop = text.index("\n}\n", wrapper) + len("\n}\n")
