@@ -731,16 +731,33 @@ function Get-FaCellLockState {
 # Invoke-Phase5ProductionOperation (accepted) THROWS on a FAIL announcement. The
 # scenarios that EXPECT a refusal need the announcement itself, so this returns
 # it, exactly as Invoke-Phase6Simulation does, and clears the failpoint after.
-function Invoke-FaEndpoint {
+# THE ENDPOINT, OBSERVED. Final acceptance run 13 at 1cbcf5e failed
+# reset.declined although production had asked the destructive confirmation:
+# the prompt was read AFTER this helper's finally had re-begun the seam, and
+# PCCM_AutomationBegin clears the recorded prompt and result. So the evidence is
+# read inside the try - the result, then the prompt - and returned as plain
+# data; only then does the finally reset the seam, so no failpoint and no reply
+# ever outlive the call. Invoke-FaEndpoint is the same call for the callers
+# that need the result alone.
+function Invoke-FaObservedEndpoint {
     param($Excel, [string]$Operation, [bool]$ConfirmReply = $true,
           [string]$FailAfterStage = '')
     $Excel.Run('PCCM_AutomationBegin', $ConfirmReply, $FailAfterStage) | Out-Null
     try {
         $Excel.Run($Operation) | Out-Null
-        return [string]$Excel.Run('PCCM_AutomationResult')
+        $result = [string]$Excel.Run('PCCM_AutomationResult')
+        $prompt = [string]$Excel.Run('PCCM_AutomationPrompt')
+        return [pscustomobject]@{ Result = $result; Prompt = $prompt }
     } finally {
         $Excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
     }
+}
+
+function Invoke-FaEndpoint {
+    param($Excel, [string]$Operation, [bool]$ConfirmReply = $true,
+          [string]$FailAfterStage = '')
+    $observed = Invoke-FaObservedEndpoint -Excel $Excel -Operation $Operation -ConfirmReply $ConfirmReply -FailAfterStage $FailAfterStage
+    return [string]$observed.Result
 }
 
 function Get-FaRunText {
@@ -2106,15 +2123,22 @@ try {
     $simStateBefore = Format-Phase6State -State (Get-Phase6State -Workbook $wb -Inspection $simInspect) -Label 'before'
 
     # 15a. DECLINED, deterministically: the automation seam answers the destructive
-    # confirmation with False. No dialog exists, nothing is clicked.
-    $declined = Invoke-FaEndpoint -Excel $excel -Operation 'PCCM_ResetResults' -ConfirmReply $false
-    $prompt = Get-FaRunText -Excel $excel -Procedure 'PCCM_AutomationPrompt'
+    # confirmation with False. No dialog exists, nothing is clicked. The prompt is
+    # the one production recorded while the seam was live, captured with the
+    # result before the seam was reset (run 13 read it afterwards, and it was gone).
+    $declinedObservation = Invoke-FaObservedEndpoint -Excel $excel -Operation 'PCCM_ResetResults' -ConfirmReply $false
+    $declined = [string]$declinedObservation.Result
+    $prompt = [string]$declinedObservation.Prompt
     $publicationDeclined = Get-FaPublicationDigest -Workbook $wb -Reset $reset -Iterations $acceptanceIterations
     $statesDeclined = Get-FaStates -Excel $excel
+    $promptExcerpt = ($prompt -replace '[\r\n]+', ' ')
+    if ($promptExcerpt.Length -gt 160) { $promptExcerpt = $promptExcerpt.Substring(0, 160) + '...' }
+    if ($promptExcerpt -eq '') { $promptExcerpt = '<blank>' }
     $null = Add-FaCheck 'reset.declined' `
         (($declined -like 'OK|*') -and ($prompt -like '*Reset Results clears every published result*') -and
          ($publicationDeclined -ceq $publicationBefore) -and ($statesDeclined.Simulation -ceq $statusCurrent)) `
-        ('the destructive confirmation was asked and declined; every publication untouched; ' + (Format-FaStates $statesDeclined))
+        ('endpoint=' + $declined + '; prompt=' + $promptExcerpt + '; publication unchanged=' + [string]($publicationDeclined -ceq $publicationBefore) +
+         '; simulation=' + $statesDeclined.Simulation + '; ' + (Format-FaStates $statesDeclined))
 
     # 15b. CONFIRMED.
     $confirmed = Invoke-FaEndpoint -Excel $excel -Operation 'PCCM_ResetResults'

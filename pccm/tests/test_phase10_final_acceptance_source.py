@@ -306,10 +306,13 @@ def test_10_every_setup_and_structural_command_is_invoked_by_its_production_name
         assert f"'{command}'" in code, command
     # THROUGH THE ACCEPTED SEAM: the two invokers begin automation and read the
     # announcement; no Run on a command bypasses them.
-    invoker = _function("Invoke-FaEndpoint", code)
+    invoker = _function("Invoke-FaObservedEndpoint", code)
     assert "$Excel.Run('PCCM_AutomationBegin', $ConfirmReply, $FailAfterStage)" in invoker
     assert "$Excel.Run('PCCM_AutomationResult')" in invoker
     assert "$Excel.Run('PCCM_AutomationBegin', $true, '')" in invoker
+    wrapper = _function("Invoke-FaEndpoint", code)
+    assert "Invoke-FaObservedEndpoint -Excel $Excel -Operation $Operation -ConfirmReply $ConfirmReply -FailAfterStage $FailAfterStage" in wrapper
+    assert "return [string]$observed.Result" in wrapper and ".Run(" not in wrapper
     bare = re.findall(r"\$excel\.Run\('(PCCM_\w+)'\)", code)
     assert set(bare) <= {"PCCM_CalculationStatus", "PCCM_AutomationEnd"}, sorted(set(bare))
 
@@ -474,7 +477,7 @@ def test_41_the_cleared_rectangles_come_from_the_reset_projection_and_are_all_re
 
 def test_42_the_reset_scenarios_are_declined_confirmed_idempotent_and_rolled_back() -> None:
     code = _code()
-    assert "Invoke-FaEndpoint -Excel $excel -Operation 'PCCM_ResetResults' -ConfirmReply $false" in code
+    assert "$declinedObservation = Invoke-FaObservedEndpoint -Excel $excel -Operation 'PCCM_ResetResults' -ConfirmReply $false" in code
     assert "'*Reset Results clears every published result*'" in code
     assert "Add-FaCheck 'reset.declined'" in code and "($publicationDeclined -ceq $publicationBefore)" in code
     assert "Add-FaCheck 'reset.preserved' ($preservedAfter -ceq $preservedBefore)" in code
@@ -492,6 +495,76 @@ def test_42_the_reset_scenarios_are_declined_confirmed_idempotent_and_rolled_bac
         assert required in rollback, required
     assert "'*put back*'" in rollback
     assert "Every publication this command had cleared was put back" in _src("reset", RESET_VBA)
+
+
+def test_42b_the_declined_reset_reads_its_prompt_before_the_seam_is_reset_and_keeps_every_requirement() -> None:
+    """FINAL ACCEPTANCE RUN 13 (1cbcf5e): reset.declined failed although
+    production had asked the confirmation, because the prompt was read after the
+    invoker's finally had re-begun the seam, and PCCM_AutomationBegin clears the
+    recorded prompt and result. HARNESS-OWNED. The observing helper reads the
+    result and then the prompt INSIDE its try and returns them as plain data;
+    the finally still resets the seam; the scenario consumes the captured
+    prompt and never reads PCCM_AutomationPrompt afterwards. The four
+    requirements stand, and the detail names all four sub-results."""
+    code = _code()
+    helper = _function("Invoke-FaObservedEndpoint", code)
+    begin = helper.index("$Excel.Run('PCCM_AutomationBegin', $ConfirmReply, $FailAfterStage)")
+    run = helper.index("$Excel.Run($Operation)")
+    result = helper.index("$result = [string]$Excel.Run('PCCM_AutomationResult')")
+    prompt = helper.index("$prompt = [string]$Excel.Run('PCCM_AutomationPrompt')")
+    returned = helper.index("return [pscustomobject]@{ Result = $result; Prompt = $prompt }")
+    finally_at = helper.index("} finally {")
+    reset = helper.index("$Excel.Run('PCCM_AutomationBegin', $true, '')")
+    assert begin < helper.index("try {") < run < result < prompt < returned < finally_at < reset
+    assert helper.count("PCCM_AutomationPrompt") == 1 and helper.count("PCCM_AutomationResult") == 1
+    scenario = code[code.index("$declinedObservation = Invoke-FaObservedEndpoint"): code.index("$confirmed = Invoke-FaEndpoint")]
+    assert "$declined = [string]$declinedObservation.Result" in scenario
+    assert "$prompt = [string]$declinedObservation.Prompt" in scenario
+    assert "PCCM_AutomationPrompt" not in scenario and "Get-FaRunText -Excel $excel -Procedure 'PCCM_AutomationPrompt'" not in scenario
+    # the four requirements, unchanged, in the one predicate
+    assert ("(($declined -like 'OK|*') -and ($prompt -like '*Reset Results clears every published result*') -and\n"
+            "         ($publicationDeclined -ceq $publicationBefore) -and ($statesDeclined.Simulation -ceq $statusCurrent))") in scenario
+    # and the detail names each of them
+    detail = scenario[scenario.index("Add-FaCheck 'reset.declined'"):]
+    for part in ("'endpoint=' + $declined", "'; prompt=' + $promptExcerpt",
+                 "'; publication unchanged=' + [string]($publicationDeclined -ceq $publicationBefore)",
+                 "'; simulation=' + $statesDeclined.Simulation"):
+        assert part in detail, part
+    assert "if ($promptExcerpt.Length -gt 160) { $promptExcerpt = $promptExcerpt.Substring(0, 160) + '...' }" in scenario
+    assert "Reset Results clears every published result" in _src("reset", RESET_VBA)
+    # the only other prompt read is the row-O session's, before any Begin follows it
+    reads = [m.start() for m in re.finditer(re.escape("Get-FaRunText -Excel $excel -Procedure 'PCCM_AutomationPrompt'"), code)]
+    assert len(reads) == 1
+    row_o = code[code.index("$recorded = Get-FaRunText -Excel $excel -Procedure 'PCCM_AutomationResult'"): reads[0]]
+    assert "PCCM_AutomationBegin" not in row_o
+
+
+ENDPOINT_HARNESS = PCCM_ROOT / "tests" / "phase10_final_acceptance_endpoint_flow.ps1"
+
+
+def _endpoint_lines(runner: Path = RUNNER) -> dict[str, str]:
+    done = subprocess.run([PWSH, "-NoProfile", "-File", str(ENDPOINT_HARNESS), "-Runner", str(runner)],
+                          capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stdout + done.stderr
+    lines = {}
+    for line in done.stdout.splitlines():
+        parts = line.split("|", 2)
+        if len(parts) == 3 and parts[0] == "FLOW":
+            lines[parts[1]] = parts[2]
+    assert lines, done.stdout
+    return lines
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_42c_the_observed_endpoint_keeps_its_evidence_across_the_seam_reset_when_executed() -> None:
+    """EXECUTED against a stand-in seam modelled on modAppState: the captured
+    result and prompt survive as plain data, the seam is reset afterwards with
+    no reply and no failpoint left armed, and a post-cleanup read is blank."""
+    lines = _endpoint_lines()
+    assert lines["observed.declined"] == "result=OK||prompt=Reset Results clears every published result and keeps every input."
+    assert lines["after.cleanup"] == "seam.prompt=<>|seam.result=<>|reply=True|failpoint=<>|begins=2"
+    assert lines["post-cleanup.reader"] == "prompt=<>"
+    assert lines["wrapper.confirmed"] == "result=OK|Results reset.|type=String"
 
 
 # ===========================================================================
@@ -1288,9 +1361,59 @@ RUN11_FINAL_BEFORE = (
     "        'both profiling grids byte-identical to before the repair contract scenarios'\n")
 
 
+RUN13_INVOKER_BEFORE = (
+    "function Invoke-FaEndpoint {\n"
+    "    param($Excel, [string]$Operation, [bool]$ConfirmReply = $true,\n"
+    "          [string]$FailAfterStage = '')\n"
+    "    $Excel.Run('PCCM_AutomationBegin', $ConfirmReply, $FailAfterStage) | Out-Null\n"
+    "    try {\n"
+    "        $Excel.Run($Operation) | Out-Null\n"
+    "        return [string]$Excel.Run('PCCM_AutomationResult')\n"
+    "    } finally {\n"
+    "        $Excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null\n"
+    "    }\n"
+    "}\n")
+RUN13_DECLINED_BEFORE = (
+    "    # 15a. DECLINED, deterministically: the automation seam answers the destructive\n"
+    "    # confirmation with False. No dialog exists, nothing is clicked.\n"
+    "    $declined = Invoke-FaEndpoint -Excel $excel -Operation 'PCCM_ResetResults' -ConfirmReply $false\n"
+    "    $prompt = Get-FaRunText -Excel $excel -Procedure 'PCCM_AutomationPrompt'\n"
+    "    $publicationDeclined = Get-FaPublicationDigest -Workbook $wb -Reset $reset -Iterations $acceptanceIterations\n"
+    "    $statesDeclined = Get-FaStates -Excel $excel\n"
+    "    $null = Add-FaCheck 'reset.declined' `\n"
+    "        (($declined -like 'OK|*') -and ($prompt -like '*Reset Results clears every published result*') -and\n"
+    "         ($publicationDeclined -ceq $publicationBefore) -and ($statesDeclined.Simulation -ceq $statusCurrent)) `\n"
+    "        ('the destructive confirmation was asked and declined; every publication untouched; ' + (Format-FaStates $statesDeclined))\n")
+
+
+def _without_run13_changes(text: str) -> str:
+    """`text` (LF) with the run-13 evidence-order correction taken back out:
+    the observing helper and the delegating wrapper replaced by the one
+    invoker they grew from, and the declined scenario by its earlier form."""
+    start = text.index("# THE ENDPOINT, OBSERVED. Final acceptance run 13")
+    wrapper = text.index("function Invoke-FaEndpoint {", start)
+    stop = text.index("\n}\n", wrapper) + len("\n}\n")
+    text = text[:start] + RUN13_INVOKER_BEFORE + text[stop:]
+    start = text.index("    # 15a. DECLINED, deterministically:")
+    check = text.index("    $null = Add-FaCheck 'reset.declined'", start)
+    tail = "(Format-FaStates $statesDeclined))\n"
+    stop = text.index(tail, check) + len(tail)
+    return text[:start] + RUN13_DECLINED_BEFORE + text[stop:]
+
+
+def test_60c8_the_evidence_order_correction_is_the_only_runner_change_since_the_run_13_head() -> None:
+    """EXACT REVERSAL against 1cbcf5e, the head final acceptance run 13 executed."""
+    tested = _git("show", "1cbcf5e:pccm/bootstrap/windows/phase10_final_acceptance.ps1").replace("\r\n", "\n")
+    now = _runner().replace("\r\n", "\n")
+    assert _without_run13_changes(now) == tested
+    assert now != tested
+
+
 def _without_run12_changes(text: str) -> str:
-    """`text` (LF) with the run-12 fixture cleanup taken back out: the pure
-    capacity plan and the windowed physical-row cleanup removed."""
+    """`text` (LF) with the run-13 correction and then the run-12 fixture
+    cleanup taken back out: the pure capacity plan and the windowed
+    physical-row cleanup removed."""
+    text = _without_run13_changes(text)
     start = text.index("# THE CAPACITY PLAN FOR A GRID THE RUNNER'S OWN FIXTURE SHORTENED.")
     stop = text.index("function Get-FaRegister {")
     text = text[:start] + text[stop:]

@@ -709,6 +709,77 @@ def test_87_an_undeclared_runner_edit_since_the_run_12_head_is_refused() -> None
             "    $null = Add-FaCheck 'repair.rollback.then-repaired' ($repairedAfterRollback -like 'OK|*') `\n")
 
 
+# ---------------------------------------------------------------------------
+# FINAL ACCEPTANCE RUN 13: THE EVIDENCE ORDER
+# ---------------------------------------------------------------------------
+def test_88_reading_the_prompt_after_the_seam_reset_is_refused() -> None:
+    """RUN 13's DEFECT, RE-INTRODUCED inside the helper: the prompt read after the finally's Begin."""
+    _mutate("test_42b",
+            "        $prompt = [string]$Excel.Run('PCCM_AutomationPrompt')\n        return [pscustomobject]@{ Result = $result; Prompt = $prompt }\n    } finally {\n        $Excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null\n",
+            "        $prompt = ''\n        return [pscustomobject]@{ Result = $result; Prompt = $prompt }\n    } finally {\n        $Excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null\n        $prompt = [string]$Excel.Run('PCCM_AutomationPrompt')\n")
+
+
+def test_89_reading_the_result_after_the_seam_reset_is_refused() -> None:
+    _mutate("test_42b",
+            "        $result = [string]$Excel.Run('PCCM_AutomationResult')\n        $prompt = [string]$Excel.Run('PCCM_AutomationPrompt')\n",
+            "        $prompt = [string]$Excel.Run('PCCM_AutomationPrompt')\n        $Excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null\n        $result = [string]$Excel.Run('PCCM_AutomationResult')\n")
+
+
+def test_90_the_declined_scenario_reading_the_prompt_after_cleanup_is_refused() -> None:
+    """THE OLD SCENARIO SHAPE."""
+    _mutate("test_42b",
+            "    $prompt = [string]$declinedObservation.Prompt\n",
+            "    $prompt = Get-FaRunText -Excel $excel -Procedure 'PCCM_AutomationPrompt'\n")
+
+
+def test_91_dropping_the_prompt_requirement_is_refused() -> None:
+    _mutate("test_42",
+            "        (($declined -like 'OK|*') -and ($prompt -like '*Reset Results clears every published result*') -and\n         ($publicationDeclined -ceq $publicationBefore) -and ($statesDeclined.Simulation -ceq $statusCurrent)) `\n",
+            "        (($declined -like 'OK|*') -and\n         ($publicationDeclined -ceq $publicationBefore) -and ($statesDeclined.Simulation -ceq $statusCurrent)) `\n")
+
+
+def test_92_weakening_the_publication_equality_of_the_declined_reset_is_refused() -> None:
+    _mutate("test_42",
+            "         ($publicationDeclined -ceq $publicationBefore) -and ($statesDeclined.Simulation -ceq $statusCurrent)) `\n",
+            "         ($publicationDeclined -like $publicationBefore) -and ($statesDeclined.Simulation -ceq $statusCurrent)) `\n")
+
+
+def test_93_dropping_the_simulation_requirement_of_the_declined_reset_is_refused() -> None:
+    _mutate("test_42b",
+            "         ($publicationDeclined -ceq $publicationBefore) -and ($statesDeclined.Simulation -ceq $statusCurrent)) `\n",
+            "         ($publicationDeclined -ceq $publicationBefore)) `\n")
+
+
+def test_94_a_helper_that_no_longer_resets_the_seam_is_refused() -> None:
+    _mutate("test_10",
+            "    } finally {\n        $Excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null\n    }\n}\n\nfunction Invoke-FaEndpoint {",
+            "    } finally {\n        $null = $true\n    }\n}\n\nfunction Invoke-FaEndpoint {")
+
+
+def test_95_a_prompt_read_after_cleanup_is_caught_by_the_executed_seam_harness() -> None:
+    """THE TEXT CONTROL SEES THE ORDER; the executed harness sees the EVIDENCE:
+    with the prompt read moved after the seam reset, the returned prompt is blank."""
+    import pytest as _pytest
+    if not Path(conformance.PWSH).exists():
+        _pytest.skip("no PowerShell on this host")
+    original = conformance._runner()
+    old = ("        $prompt = [string]$Excel.Run('PCCM_AutomationPrompt')\n        return [pscustomobject]@{ Result = $result; Prompt = $prompt }\n")
+    new = ("        $Excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null\n        $prompt = [string]$Excel.Run('PCCM_AutomationPrompt')\n        return [pscustomobject]@{ Result = $result; Prompt = $prompt }\n")
+    assert original.count(old) == 1
+    import tempfile
+    scratch = Path(tempfile.mkdtemp(prefix="pccm-fa-seam-")) / "phase10_final_acceptance.ps1"
+    scratch.write_text(original.replace(old, new, 1), encoding="utf-8")
+    lines = conformance._endpoint_lines(scratch)
+    assert lines["observed.declined"].endswith("|prompt="), lines["observed.declined"]
+    assert conformance._endpoint_lines()["observed.declined"].endswith("keeps every input.")
+
+
+def test_96_an_undeclared_runner_edit_since_the_run_13_head_is_refused() -> None:
+    _mutate("test_60c8",
+            "    $null = Add-FaCheck 'repair.rollback.then-repaired' (($repairedAfterRollback -like 'OK|*') -and $rowTwoBlank) `\n",
+            "    $null = Add-FaCheck 'repair.rollback.then-repaired' ($repairedAfterRollback -like 'OK|*') `\n")
+
+
 if __name__ == "__main__":
     failures = 0
     for name in sorted(n for n in dir() if n.startswith("test_")):
