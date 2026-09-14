@@ -541,6 +541,88 @@ function Get-FaTableDigest {
     return ($TableName + '=' + ($rows -join [char]30))
 }
 
+# THE DIAGNOSIS OF A GRID THAT DID NOT COME BACK TO ITS BASELINE. Pure data in,
+# one string out: no workbook, no COM, no write. Final acceptance run 11 at
+# 34fcb69 reached 103 checks and failed exactly one, repair.grids-restored,
+# whose detail said only that the digests differed. The digest is the body's
+# Value2 content, so the mismatch is content - a value, a row or a column - and
+# this says WHICH, and at WHICH of the two stages the restoration passes
+# through: the grid as it stood after the runner's own restoration writes and
+# BEFORE the final PCCM_ApplyTimeline resync, and the grid AFTER it. The pass
+# predicate of the check is untouched; this only explains a failure.
+function ConvertTo-FaBodyKey {
+    param([object[]]$Body)
+    $rows = @()
+    foreach ($row in @($Body)) { $rows += (@($row) -join [char]31) }
+    return ($rows -join [char]30)
+}
+
+function Get-FaBodyCell {
+    param([object[]]$Body, [int]$Row, [int]$Column)
+    if (($Row -lt 1) -or ($Row -gt @($Body).Count)) { return '' }
+    $line = @(@($Body)[$Row - 1])
+    if (($Column -lt 1) -or ($Column -gt $line.Count)) { return '' }
+    return [string]$line[$Column - 1]
+}
+
+function Get-FaBodyWidth {
+    param([object[]]$Body)
+    $width = 0
+    foreach ($row in @($Body)) { if (@($row).Count -gt $width) { $width = @($row).Count } }
+    return $width
+}
+
+function Format-FaGridDifferences {
+    param([string]$Label, [object[]]$Baseline, [object[]]$BeforeResync, [object[]]$AfterResync,
+          [string[]]$BaselineColumns, [string[]]$BeforeColumns, [string[]]$AfterColumns, [int]$Limit = 5)
+    $baseKey = ConvertTo-FaBodyKey -Body $Baseline
+    $preKey = ConvertTo-FaBodyKey -Body $BeforeResync
+    $postKey = ConvertTo-FaBodyKey -Body $AfterResync
+    $preDiffers = ($preKey -cne $baseKey)
+    $postDiffers = ($postKey -cne $baseKey)
+    $resyncChanged = ($postKey -cne $preKey)
+    if ((-not $preDiffers) -and (-not $postDiffers)) { return '' }
+    $stage = ''
+    if ($preDiffers -and (-not $resyncChanged)) {
+        $stage = 'CASE 1: the mismatch already existed before the final PCCM_ApplyTimeline, which changed nothing - the restoration choreography did not return the grid to its baseline'
+    } elseif ((-not $preDiffers) -and $postDiffers) {
+        $stage = 'CASE 2: the final PCCM_ApplyTimeline introduced the mismatch on a grid that was baseline-identical before it'
+    } elseif ($preDiffers -and $postDiffers) {
+        $stage = 'MIXED: the grid was not at its baseline before the final PCCM_ApplyTimeline, and ApplyTimeline changed it further'
+    } else {
+        $stage = 'NOTE: the grid was not at its baseline before the final PCCM_ApplyTimeline, and ApplyTimeline returned it to the baseline'
+    }
+    $rowMax = [math]::Max([math]::Max(@($Baseline).Count, @($BeforeResync).Count), @($AfterResync).Count)
+    $colMax = [math]::Max([math]::Max((Get-FaBodyWidth -Body $Baseline), (Get-FaBodyWidth -Body $BeforeResync)), (Get-FaBodyWidth -Body $AfterResync))
+    $differences = @()
+    $extra = 0
+    for ($r = 1; $r -le $rowMax; $r++) {
+        for ($c = 1; $c -le $colMax; $c++) {
+            $b = Get-FaBodyCell -Body $Baseline -Row $r -Column $c
+            $q = Get-FaBodyCell -Body $BeforeResync -Row $r -Column $c
+            $a = Get-FaBodyCell -Body $AfterResync -Row $r -Column $c
+            if (($b -ceq $a) -and ($b -ceq $q)) { continue }
+            if ($differences.Count -ge $Limit) { $extra = $extra + 1; continue }
+            $key = Get-FaBodyCell -Body $Baseline -Row $r -Column 1
+            if ($key -eq '') { $key = Get-FaBodyCell -Body $BeforeResync -Row $r -Column 1 }
+            if ($key -eq '') { $key = Get-FaBodyCell -Body $AfterResync -Row $r -Column 1 }
+            if ($key -eq '') { $key = '<no key>' }
+            $header = '<no header>'
+            foreach ($names in @($BaselineColumns, $BeforeColumns, $AfterColumns)) {
+                if (($header -eq '<no header>') -and ($c -le @($names).Count)) { $header = [string]@($names)[$c - 1] }
+            }
+            $differences += ('row ' + [string]$r + ' (' + $key + ') column ' + [string]$c + ' [' + $header + ']: baseline <' + $b +
+                             '>, pre-resync <' + $q + '>, post-resync <' + $a + '>')
+        }
+    }
+    $text = ($Label + ': ' + $stage + '; rows baseline/pre-resync/post-resync=' + [string]@($Baseline).Count + '/' +
+             [string]@($BeforeResync).Count + '/' + [string]@($AfterResync).Count + '; columns baseline/pre-resync/post-resync=' +
+             [string]@($BaselineColumns).Count + '/' + [string]@($BeforeColumns).Count + '/' + [string]@($AfterColumns).Count +
+             '; ' + ($differences -join '; '))
+    if ($extra -gt 0) { $text = $text + '; ' + [string]$extra + ' more difference(s)' }
+    return $text
+}
+
 function Get-FaRegister {
     param($Manifest, [string]$Key)
     foreach ($register in @($Manifest.registers)) {
@@ -1645,6 +1727,11 @@ try {
     $riskSheet = [string]$riskGrid.sheet; $riskTable = [string]$riskGrid.table_name
     $baselineCost = Get-FaTableDigest -Workbook $wb -SheetName $gridSheet -TableName $gridTable
     $baselineRisk = Get-FaTableDigest -Workbook $wb -SheetName $riskSheet -TableName $riskTable
+    # THE SAME BASELINES AS PLAIN DATA, for the diagnosis of repair.grids-restored.
+    $baselineCostBody = @(Get-TableBody -Workbook $wb -SheetName $gridSheet -TableName $gridTable)
+    $baselineRiskBody = @(Get-TableBody -Workbook $wb -SheetName $riskSheet -TableName $riskTable)
+    $baselineCostColumns = @(Get-TableColumnNames -Workbook $wb -SheetName $gridSheet -TableName $gridTable)
+    $baselineRiskColumns = @(Get-TableColumnNames -Workbook $wb -SheetName $riskSheet -TableName $riskTable)
     $rowOneWeights = @($gridBody2[0])
     $rowOneYears = @()
     for ($c = $fixedColumns; $c -lt $rowOneWeights.Count; $c++) { $rowOneYears += [string]$rowOneWeights[$c] }
@@ -1919,11 +2006,30 @@ try {
         $weight = [string]$missingRowBefore[$c]
         if ($weight -ne '') { Set-TableCell -Workbook $wb -SheetName $gridSheet -TableName $gridTable -RowIndex $rowTwoIndex -ColumnIndex ($c + 1) -Value ([double]$weight) }
     }
+    # DIAGNOSTIC SNAPSHOT A: both grids as plain data after the runner's own
+    # restoration writes and BEFORE the final resync. Reads only.
+    $preResyncCostBody = @(Get-TableBody -Workbook $wb -SheetName $gridSheet -TableName $gridTable)
+    $preResyncRiskBody = @(Get-TableBody -Workbook $wb -SheetName $riskSheet -TableName $riskTable)
+    $preResyncCostColumns = @(Get-TableColumnNames -Workbook $wb -SheetName $gridSheet -TableName $gridTable)
+    $preResyncRiskColumns = @(Get-TableColumnNames -Workbook $wb -SheetName $riskSheet -TableName $riskTable)
     $null = Invoke-Phase5ProductionOperation -Excel $excel -Operation 'PCCM_ApplyTimeline' -Stage 'resync after the repair contract scenarios'
     $costRestored = Get-FaTableDigest -Workbook $wb -SheetName $gridSheet -TableName $gridTable
     $riskRestored = Get-FaTableDigest -Workbook $wb -SheetName $riskSheet -TableName $riskTable
+    # DIAGNOSTIC SNAPSHOT B: both grids AFTER the final resync, the same state
+    # the two digests above were read from. Reads only.
+    $postResyncCostBody = @(Get-TableBody -Workbook $wb -SheetName $gridSheet -TableName $gridTable)
+    $postResyncRiskBody = @(Get-TableBody -Workbook $wb -SheetName $riskSheet -TableName $riskTable)
+    $postResyncCostColumns = @(Get-TableColumnNames -Workbook $wb -SheetName $gridSheet -TableName $gridTable)
+    $postResyncRiskColumns = @(Get-TableColumnNames -Workbook $wb -SheetName $riskSheet -TableName $riskTable)
+    $gridsDiagnosis = @()
+    $costDiagnosis = Format-FaGridDifferences -Label ($gridSheet + '!' + $gridTable) -Baseline $baselineCostBody -BeforeResync $preResyncCostBody -AfterResync $postResyncCostBody `
+        -BaselineColumns $baselineCostColumns -BeforeColumns $preResyncCostColumns -AfterColumns $postResyncCostColumns
+    if ($costDiagnosis -ne '') { $gridsDiagnosis += $costDiagnosis }
+    $riskDiagnosis = Format-FaGridDifferences -Label ($riskSheet + '!' + $riskTable) -Baseline $baselineRiskBody -BeforeResync $preResyncRiskBody -AfterResync $postResyncRiskBody `
+        -BaselineColumns $baselineRiskColumns -BeforeColumns $preResyncRiskColumns -AfterColumns $postResyncRiskColumns
+    if ($riskDiagnosis -ne '') { $gridsDiagnosis += $riskDiagnosis }
     $null = Add-FaCheck 'repair.grids-restored' (($costRestored -ceq $baselineCost) -and ($riskRestored -ceq $baselineRisk)) `
-        'both profiling grids byte-identical to before the repair contract scenarios'
+        $(if ($gridsDiagnosis.Count -eq 0) { 'both profiling grids byte-identical to before the repair contract scenarios' } else { $gridsDiagnosis -join ' ~~ ' })
     # --- P10-R2 REPAIR CONTRACT SCENARIOS: end --------------------------------
     $recalc2 = [string](Invoke-Phase5ProductionOperation -Excel $excel -Operation 'PCCM_Calculate' -Stage 'calculate after the repairs')
     $fingerprintAfterRepairs = Get-FaRunText -Excel $excel -Procedure 'PCCM_CalculationFingerprint'

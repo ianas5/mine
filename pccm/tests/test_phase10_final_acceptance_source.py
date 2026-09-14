@@ -793,6 +793,63 @@ def test_54_both_repair_failpoints_roll_back_and_the_grids_return_to_their_basel
     assert "Add-FaCheck 'repair.grids-restored' (($costRestored -ceq $baselineCost) -and ($riskRestored -ceq $baselineRisk))" in rollback
     assert "$baselineCost = Get-FaTableDigest -Workbook $wb -SheetName $gridSheet -TableName $gridTable" in code
     assert "$baselineRisk = Get-FaTableDigest -Workbook $wb -SheetName $riskSheet -TableName $riskTable" in code
+    # RUN 11 DIAGNOSTICS (34fcb69 failed exactly here with an aggregate verdict).
+    # The pass predicate and the pass sentence are untouched; the baselines are
+    # ALSO retained as plain data beside the digests, both grids are captured as
+    # plain data at two points - after the runner's restoration writes and
+    # BEFORE the final PCCM_ApplyTimeline, and AFTER it - and a pure formatter
+    # explains a failure grid by grid. Nothing is written between the first
+    # snapshot and the check except the resync itself; no window opens.
+    assert "'both profiling grids byte-identical to before the repair contract scenarios'" in rollback
+    baseline_at = code.index("$baselineRisk = Get-FaTableDigest -Workbook $wb -SheetName $riskSheet -TableName $riskTable")
+    bodies = code[baseline_at: code.index("$rowOneWeights = @($gridBody2[0])")]
+    for line in ("$baselineCostBody = @(Get-TableBody -Workbook $wb -SheetName $gridSheet -TableName $gridTable)",
+                 "$baselineRiskBody = @(Get-TableBody -Workbook $wb -SheetName $riskSheet -TableName $riskTable)",
+                 "$baselineCostColumns = @(Get-TableColumnNames -Workbook $wb -SheetName $gridSheet -TableName $gridTable)",
+                 "$baselineRiskColumns = @(Get-TableColumnNames -Workbook $wb -SheetName $riskSheet -TableName $riskTable)"):
+        assert line in bodies, line
+    retype = code.index("if ($weight -ne '') { Set-TableCell -Workbook $wb -SheetName $gridSheet -TableName $gridTable -RowIndex $rowTwoIndex")
+    resync = code.index("-Operation 'PCCM_ApplyTimeline' -Stage 'resync after the repair contract scenarios'")
+    check = code.index("Add-FaCheck 'repair.grids-restored'")
+    pre = code[retype: resync]
+    post = code[resync: check]
+    for line in ("$preResyncCostBody = @(Get-TableBody -Workbook $wb -SheetName $gridSheet -TableName $gridTable)",
+                 "$preResyncRiskBody = @(Get-TableBody -Workbook $wb -SheetName $riskSheet -TableName $riskTable)",
+                 "$preResyncCostColumns = @(Get-TableColumnNames -Workbook $wb -SheetName $gridSheet -TableName $gridTable)",
+                 "$preResyncRiskColumns = @(Get-TableColumnNames -Workbook $wb -SheetName $riskSheet -TableName $riskTable)"):
+        assert line in pre, line
+    for line in ("$costRestored = Get-FaTableDigest -Workbook $wb -SheetName $gridSheet -TableName $gridTable",
+                 "$riskRestored = Get-FaTableDigest -Workbook $wb -SheetName $riskSheet -TableName $riskTable",
+                 "$postResyncCostBody = @(Get-TableBody -Workbook $wb -SheetName $gridSheet -TableName $gridTable)",
+                 "$postResyncRiskBody = @(Get-TableBody -Workbook $wb -SheetName $riskSheet -TableName $riskTable)",
+                 "$postResyncCostColumns = @(Get-TableColumnNames -Workbook $wb -SheetName $gridSheet -TableName $gridTable)",
+                 "$postResyncRiskColumns = @(Get-TableColumnNames -Workbook $wb -SheetName $riskSheet -TableName $riskTable)",
+                 "$costDiagnosis = Format-FaGridDifferences -Label ($gridSheet + '!' + $gridTable) -Baseline $baselineCostBody -BeforeResync $preResyncCostBody -AfterResync $postResyncCostBody",
+                 "$riskDiagnosis = Format-FaGridDifferences -Label ($riskSheet + '!' + $riskTable) -Baseline $baselineRiskBody -BeforeResync $preResyncRiskBody -AfterResync $postResyncRiskBody",
+                 "if ($costDiagnosis -ne '') { $gridsDiagnosis += $costDiagnosis }",
+                 "if ($riskDiagnosis -ne '') { $gridsDiagnosis += $riskDiagnosis }"):
+        assert line in post, line
+    assert post.index("$costRestored = Get-FaTableDigest") < post.index("$postResyncCostBody")
+    detail = code[check: code.index("\n", code.index("\n", check) + 1)]
+    assert "$(if ($gridsDiagnosis.Count -eq 0) { 'both profiling grids byte-identical to before the repair contract scenarios' } else { $gridsDiagnosis -join ' ~~ ' })" in detail
+    region = code[code.index("$preResyncCostBody = @(Get-TableBody"): check]
+    for write in ("Set-TableCell", "Set-FaWeight", "ClearContents", "Value2 =", "Add-FaTableColumn", "Remove-FaLastTableColumn",
+                  "Open-FaFixtureWindow", "P10FW_Begin", "Invoke-FaEndpoint"):
+        assert write not in region, write
+    assert region.count("Invoke-Phase5ProductionOperation") == 1
+    # the formatter and its two helpers are pure: plain data in, one string out
+    for name in ("Format-FaGridDifferences", "ConvertTo-FaBodyKey", "Get-FaBodyCell", "Get-FaBodyWidth"):
+        body = _function(name, code)
+        for forbidden in ("$Workbook", "$wb", "$excel", ".Cells", "Value2", "ClearContents", "Set-", ".Run(", "Get-TableBody",
+                          "Release-Transient", ".Locked", "Write-FaLine", "Add-FaCheck"):
+            assert forbidden not in body, (name, forbidden)
+    formatter = _function("Format-FaGridDifferences", code)
+    for phrase in ("CASE 1: the mismatch already existed before the final PCCM_ApplyTimeline, which changed nothing",
+                   "CASE 2: the final PCCM_ApplyTimeline introduced the mismatch on a grid that was baseline-identical before it",
+                   "MIXED: the grid was not at its baseline before the final PCCM_ApplyTimeline, and ApplyTimeline changed it further",
+                   "rows baseline/pre-resync/post-resync=", "columns baseline/pre-resync/post-resync=",
+                   "more difference(s)", "[int]$Limit = 5"):
+        assert phrase in formatter, phrase
     # the grid variables are initialised at script scope before any helper runs
     preamble = code[: code.index("function ")]
     assert "$script:FaCostBefore = ''" in preamble and "$script:FaRiskBefore = ''" in preamble
@@ -1170,9 +1227,43 @@ RUN9_CORRECTIONS = (
 )
 
 
+RUN11_FINAL_BEFORE = (
+    "    $null = Invoke-Phase5ProductionOperation -Excel $excel -Operation 'PCCM_ApplyTimeline' -Stage 'resync after the repair contract scenarios'\n"
+    "    $costRestored = Get-FaTableDigest -Workbook $wb -SheetName $gridSheet -TableName $gridTable\n"
+    "    $riskRestored = Get-FaTableDigest -Workbook $wb -SheetName $riskSheet -TableName $riskTable\n"
+    "    $null = Add-FaCheck 'repair.grids-restored' (($costRestored -ceq $baselineCost) -and ($riskRestored -ceq $baselineRisk)) `\n"
+    "        'both profiling grids byte-identical to before the repair contract scenarios'\n")
+
+
+def _without_run11_changes(text: str) -> str:
+    """`text` (LF) with the run-11 diagnostics taken back out: the pure
+    formatter and its helpers removed, the plain-data baselines removed, and
+    the instrumented final restoration replaced by the five lines it grew from."""
+    start = text.index("# THE DIAGNOSIS OF A GRID THAT DID NOT COME BACK TO ITS BASELINE.")
+    stop = text.index("function Get-FaRegister {")
+    text = text[:start] + text[stop:]
+    start = text.index("    # THE SAME BASELINES AS PLAIN DATA, for the diagnosis of repair.grids-restored.")
+    stop = text.index("    $rowOneWeights = @($gridBody2[0])")
+    text = text[:start] + text[stop:]
+    start = text.index("    # DIAGNOSTIC SNAPSHOT A: both grids as plain data")
+    check = text.index("    $null = Add-FaCheck 'repair.grids-restored'", start)
+    stop = text.index("\n", text.index("\n", check) + 1) + 1
+    return text[:start] + RUN11_FINAL_BEFORE + text[stop:]
+
+
+def test_60c6_the_grids_restored_diagnostics_are_the_only_runner_change_since_the_run_11_head() -> None:
+    """EXACT REVERSAL against 34fcb69, the head final acceptance run 11 executed."""
+    tested = _git("show", "34fcb69:pccm/bootstrap/windows/phase10_final_acceptance.ps1").replace("\r\n", "\n")
+    now = _runner().replace("\r\n", "\n")
+    assert _without_run11_changes(now) == tested
+    assert now != tested
+
+
 def _without_run9_changes(text: str) -> str:
-    """`text` (LF) with the run-9 correction taken back out: the lock-state
-    inspection block and the reader removed, each substitution reversed."""
+    """`text` (LF) with the run-11 diagnostics and then the run-9 correction
+    taken back out: the lock-state inspection block and the reader removed,
+    each substitution reversed."""
+    text = _without_run11_changes(text)
     for insertion in _run9_head_insertions():
         assert text.count(insertion) == 1
         text = text.replace(insertion, "")
@@ -1186,8 +1277,9 @@ def _without_run9_changes(text: str) -> str:
 
 
 def test_60c5_the_run_9_correction_is_the_only_runner_change_since_the_candidate_that_executed() -> None:
-    """EXACT REVERSAL against f16aaaa: the reader and the inspection removed and
-    the three substitutions reversed reproduce the executed runner byte for byte."""
+    """EXACT REVERSAL against f16aaaa: the run-11 diagnostics, then the reader
+    and the inspection removed and the three substitutions reversed, reproduce
+    the executed runner byte for byte."""
     tested = _git("show", "f16aaaa:pccm/bootstrap/windows/phase10_final_acceptance.ps1").replace("\r\n", "\n")
     now = _runner().replace("\r\n", "\n")
     assert _without_run9_changes(now) == tested
@@ -1490,6 +1582,52 @@ def _matcher_lines(runner: Path = RUNNER) -> dict[str, str]:
             lines[parts[1]] = line
     assert lines, done.stdout
     return lines
+
+
+GRID_DIFF_HARNESS = PCCM_ROOT / "tests" / "phase10_final_acceptance_grid_diff_flow.ps1"
+
+
+def _grid_diff_lines(runner: Path = RUNNER) -> dict[str, str]:
+    done = subprocess.run([PWSH, "-NoProfile", "-File", str(GRID_DIFF_HARNESS), "-Runner", str(runner)],
+                          capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stdout + done.stderr
+    lines = {}
+    for line in done.stdout.splitlines():
+        parts = line.split("|", 2)
+        if len(parts) == 3 and parts[0] == "DIAG":
+            lines[parts[1]] = parts[2]
+    assert lines, done.stdout
+    return lines
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_60y_the_grids_restored_diagnosis_executes_and_separates_the_two_stages() -> None:
+    """RUN 11's MISSING EVIDENCE, EXECUTED. The formatter is lifted out of the
+    runner by AST and driven over plain-data bodies under strict mode: an
+    identical grid says nothing; a grid the restoration left short of its
+    baseline that the resync did not touch is CASE 1; a baseline-identical grid
+    the resync changed is CASE 2; both is MIXED; row and column counts, the
+    first differing cells with key, header and the three values, and the bound
+    on how many are listed are all in the text."""
+    lines = _grid_diff_lines()
+    assert lines["identical"] == ""
+    case1 = lines["case1.blank-tail"]
+    assert case1.startswith("Cost Profiling!tblCostProfiling: CASE 1: the mismatch already existed before the final PCCM_ApplyTimeline, which changed nothing")
+    assert "rows baseline/pre-resync/post-resync=3/3/3; columns baseline/pre-resync/post-resync=6/6/6" in case1
+    assert "row 2 (CL-002) column 5 [2030]: baseline <0>, pre-resync <>, post-resync <>" in case1
+    assert "row 2 (CL-002) column 6 [2031]: baseline <0>, pre-resync <>, post-resync <>" in case1
+    case2 = lines["case2.zeroed-by-resync"]
+    assert "CASE 2: the final PCCM_ApplyTimeline introduced the mismatch on a grid that was baseline-identical before it" in case2
+    assert "row 3 (<no key>) column 3 [2028]: baseline <>, pre-resync <>, post-resync <0>" in case2
+    assert "MIXED: the grid was not at its baseline before the final PCCM_ApplyTimeline, and ApplyTimeline changed it further" in lines["mixed"]
+    assert "NOTE: the grid was not at its baseline before the final PCCM_ApplyTimeline, and ApplyTimeline returned it to the baseline" in lines["note.restored-by-resync"]
+    assert "columns baseline/pre-resync/post-resync=6/5/6" in lines["width.narrow-before-resync"]
+    assert lines["width.narrow-before-resync"].startswith("Risk Profiling!tblRiskProfiling: ")
+    many = lines["limit.many"]
+    assert many.count("row ") == 2 and many.endswith("; 6 more difference(s)"), many
+    fewer = lines["rows.fewer-after-resync"]
+    assert "rows baseline/pre-resync/post-resync=3/3/1" in fewer and "CASE 2" in fewer
+    assert "row 2 (CL-002) column 1 [Cost Line ID]: baseline <CL-002>, pre-resync <CL-002>, post-resync <>" in fewer
 
 
 @pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")

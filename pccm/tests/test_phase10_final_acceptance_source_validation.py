@@ -571,6 +571,84 @@ def test_69_an_undeclared_runner_edit_since_the_executed_candidate_is_refused() 
             "    $null = Add-FaCheck 'repair.shrink-blank' ($shrunkBlank -like 'OK|*') `\n")
 
 
+# ---------------------------------------------------------------------------
+# FINAL ACCEPTANCE RUN 11: THE GRIDS-RESTORED DIAGNOSTICS
+# ---------------------------------------------------------------------------
+def test_70_dropping_the_pre_resync_snapshot_is_refused() -> None:
+    _mutate("test_54",
+            "    $preResyncCostBody = @(Get-TableBody -Workbook $wb -SheetName $gridSheet -TableName $gridTable)\n",
+            "    $preResyncCostBody = @()\n")
+
+
+def test_71_dropping_the_post_resync_snapshot_is_refused() -> None:
+    _mutate("test_54",
+            "    $postResyncRiskBody = @(Get-TableBody -Workbook $wb -SheetName $riskSheet -TableName $riskTable)\n",
+            "    $postResyncRiskBody = @()\n")
+
+
+def test_72_weakening_the_grids_restored_equality_is_refused() -> None:
+    _mutate("test_54",
+            "    $null = Add-FaCheck 'repair.grids-restored' (($costRestored -ceq $baselineCost) -and ($riskRestored -ceq $baselineRisk)) `\n",
+            "    $null = Add-FaCheck 'repair.grids-restored' (($costRestored -like $baselineCost) -and ($riskRestored -like $baselineRisk)) `\n")
+
+
+def test_73_a_diagnosis_that_writes_a_cell_is_refused() -> None:
+    _mutate("test_54",
+            "    $baseKey = ConvertTo-FaBodyKey -Body $Baseline\n",
+            "    $baseKey = ConvertTo-FaBodyKey -Body $Baseline\n    Set-TableCell -Workbook $script:Wb -SheetName 'x' -TableName 'y' -RowIndex 1 -ColumnIndex 1 -Value 0\n")
+
+
+def test_74_a_diagnosis_that_reaches_the_workbook_is_refused() -> None:
+    _mutate("test_54",
+            "    $preKey = ConvertTo-FaBodyKey -Body $BeforeResync\n",
+            "    $preKey = ConvertTo-FaBodyKey -Body $BeforeResync\n    $null = $wb.Worksheets\n")
+
+
+def test_75_diagnosing_only_the_cost_grid_is_refused() -> None:
+    _mutate("test_54",
+            "    if ($riskDiagnosis -ne '') { $gridsDiagnosis += $riskDiagnosis }\n",
+            "")
+
+
+def test_76_a_write_between_the_snapshot_and_the_check_is_refused() -> None:
+    _mutate("test_54",
+            "    $null = Invoke-Phase5ProductionOperation -Excel $excel -Operation 'PCCM_ApplyTimeline' -Stage 'resync after the repair contract scenarios'\n    $costRestored",
+            "    $null = Invoke-Phase5ProductionOperation -Excel $excel -Operation 'PCCM_ApplyTimeline' -Stage 'resync after the repair contract scenarios'\n    Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year 1 -Weight 0.5\n    $costRestored")
+
+
+def test_77_a_window_opened_for_the_diagnosis_is_refused() -> None:
+    _mutate("test_54",
+            "    $postResyncCostBody = @(Get-TableBody -Workbook $wb -SheetName $gridSheet -TableName $gridTable)\n",
+            "    $null = Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'diagnosis'\n    $postResyncCostBody = @(Get-TableBody -Workbook $wb -SheetName $gridSheet -TableName $gridTable)\n")
+
+
+def test_78_an_undeclared_runner_edit_since_the_run_11_head_is_refused() -> None:
+    _mutate("test_60c6",
+            "    $null = Add-FaCheck 'repair.rollback.then-repaired' (($repairedAfterRollback -like 'OK|*') -and $rowTwoBlank) `\n",
+            "    $null = Add-FaCheck 'repair.rollback.then-repaired' ($repairedAfterRollback -like 'OK|*') `\n")
+
+
+def test_79_a_stage_classification_that_no_longer_separates_the_cases_is_caught_by_the_executed_harness() -> None:
+    """THE TEXT CONTROL CANNOT SEE THIS ONE - the CASE 1 sentence is still in
+    the source - so the executed harness is what refuses it: with the CASE 1
+    branch disabled, the case-1 fixture is misreported and test_60y's
+    expectation no longer holds on the damaged runner."""
+    import pytest as _pytest
+    if not Path(conformance.PWSH).exists():
+        _pytest.skip("no PowerShell on this host")
+    swap = ("    if ($preDiffers -and (-not $resyncChanged)) {\n", "    if ($false) {\n")
+    original = conformance._runner()
+    assert original.count(swap[0]) == 1
+    import tempfile
+    scratch = Path(tempfile.mkdtemp(prefix="pccm-fa-griddiff-")) / "phase10_final_acceptance.ps1"
+    scratch.write_text(original.replace(swap[0], swap[1], 1), encoding="utf-8")
+    lines = conformance._grid_diff_lines(scratch)
+    assert not lines["case1.blank-tail"].startswith("Cost Profiling!tblCostProfiling: CASE 1:"), lines["case1.blank-tail"]
+    assert "MIXED" in lines["case1.blank-tail"]
+    # and the undamaged runner still separates the cases
+    assert conformance._grid_diff_lines()["case1.blank-tail"].startswith("Cost Profiling!tblCostProfiling: CASE 1:")
+
+
 if __name__ == "__main__":
     failures = 0
     for name in sorted(n for n in dir() if n.startswith("test_")):
