@@ -42,6 +42,10 @@ P9_RUNNER = WINDOWS / "phase9_p1_model_check.ps1"
 BENCHMARK = WINDOWS / "phase10_benchmark.ps1"
 RESET_VBA = PCCM_ROOT / "src" / "vba" / "modReset.bas"
 REPAIR_VBA = PCCM_ROOT / "src" / "vba" / "modRepair.bas"
+WORKBOOK_VBA = PCCM_ROOT / "src" / "vba" / "modWorkbook.bas"
+PROFILING_VBA = PCCM_ROOT / "src" / "vba" / "modProfiling.bas"
+INFLATION_VBA = PCCM_ROOT / "src" / "vba" / "modInflation.bas"
+PROTECTION_VBA = PCCM_ROOT / "src" / "vba" / "modProtection.bas"
 HANDLER_VBA = PCCM_ROOT / "src" / "vba" / "ThisWorkbook.vba"
 APPSTATE_VBA = PCCM_ROOT / "src" / "vba" / "modAppState.bas"
 PWSH = "/opt/pwsh/pwsh"
@@ -79,7 +83,7 @@ REQUIRED_SCENARIOS = (
     # Added at the bounded correction round after the independent review: the
     # Repair contract scenarios of section 5 / matrix rows F, G, G2, M, and the
     # distribution-copy session of matrix row J.
-    "repair.width-growth", "repair.width-growth.fixture", "repair.width-growth.restored",
+    "repair.width-growth", "repair.width-growth.fixture", "repair.width-growth.lock-state", "repair.width-growth.restored",
     "repair.shrink-blank", "repair.shrink-zero-refused",
     "repair.shrink-nonzero-refused", "repair.semantic-non1-refused", "repair.blank-profile-allowed",
     "repair.signed-zero-total-refused", "repair.rollback.", "repair.grids-restored",
@@ -534,7 +538,7 @@ def test_51_every_repair_precondition_is_created_inside_the_window_and_repaired_
     code = _code()
     for scenario in ("repair.missing-row", "repair.order", "repair.duplicate", "repair.duplicate-undo",
                      "repair.width-growth", "repair.shrink-blank", "repair.shrink-zero", "repair.shrink-zero-clear",
-                     "repair.shrink-nonzero", "repair.shrink-nonzero-clear", "repair.rollback"):
+                     "repair.shrink-nonzero", "repair.shrink-nonzero-clear", "repair.rollback", "repair.blank-profile"):
         open_at = code.index(f"Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario '{scenario}'")
         close_at = code.index(f"Close-FaFixtureWindow -Excel $excel -Protection $protection -Scenario '{scenario}'")
         assert open_at < close_at
@@ -614,18 +618,93 @@ def test_58_production_is_byte_identical_to_the_candidate_the_width_growth_fixtu
     executed, 3af1837, is byte-identical in every production, spec and builder
     file; the semantic gate it refused with is exactly the one still there."""
     assert _git("diff", "--name-only", "3af1837", "--", "pccm/src", "pccm/spec", "pccm/builder").strip() == ""
-    for key, path in (("repair", REPAIR_VBA), ("handler", HANDLER_VBA), ("appstate", APPSTATE_VBA)):
+    for key, path in (("repair", REPAIR_VBA), ("handler", HANDLER_VBA), ("appstate", APPSTATE_VBA),
+                      ("workbook", WORKBOOK_VBA), ("profiling", PROFILING_VBA), ("inflation", INFLATION_VBA),
+                      ("protection", PROTECTION_VBA)):
         assert _src(key, path) == _git("show", f"3af1837:pccm/src/vba/{path.name}"), path.name
+    # RUN 9: the shared input-language owner paints a fill only. That is the
+    # accepted state - Stage A already unlocks the year columns over every
+    # reserved body row of the three grids - and no Repair-only lock rule exists.
+    paint = _src("workbook", WORKBOOK_VBA)
+    paint = paint[paint.index("Public Sub PaintYearCells"): paint.index("End Sub", paint.index("Public Sub PaintYearCells"))]
+    assert "CellIn(Target, r, c).Interior.Color = FILL_INPUT" in paint and "CellIn(Target, r, c).Interior.Color = FILL_LOCKED" in paint
+    assert ".Locked" not in paint
+    for key, path in (("repair", REPAIR_VBA), ("profiling", PROFILING_VBA), ("inflation", INFLATION_VBA)):
+        assert ".Locked" not in _src(key, path), path.name
     repair = _src("repair", REPAIR_VBA)
     assert "If WithinTolerance(total, REPAIR_PROFILE_SUM_TARGET) Then" in repair
     assert "If registerIds.Exists(idText) Then\n                If Not RecognisedProfile(weights, label, idText, detail) Then Exit Function" in repair
+
+
+def test_59_the_regrown_cells_lock_state_is_inspected_against_the_projection_and_every_clear_is_windowed() -> None:
+    """FINAL ACCEPTANCE RUN 9. Two things, both proved from the source.
+
+    THE LOCK STATE. After the width growth, with protection ON and no window
+    open, the runner READS Locked on the regrown keyed cell, an existing keyed
+    cell, the regrown cell of an unkeyed reserved row and the permanent-id cell,
+    and cross-checks each address against the protection projection's declared
+    unlocked set. The expectations are Stage A's rule - year columns over every
+    reserved body row unlocked, keyed or not; fixed columns locked - which is
+    what the builder's grid_year_columns rule resolves and the projection
+    declares. Nothing is inferred from a write, and the runner never assigns
+    Locked.
+
+    THE CLEARS. A ClearContents from the external COM client is refused on a
+    protected sheet even on an unlocked cell (Benchmark Run 4, an unlocked FX
+    row), so every clear the runner issues sits inside the accepted window."""
+    code = _code()
+    reader = _function("Get-FaCellLockState", code)
+    assert "Locked = [bool]$cell.Locked" in reader and "Address = [string]$cell.Address($false, $false)" in reader
+    assert not re.search(r"\.Locked\s*=[^=]", code), "the runner assigns Locked"
+    block = code[code.index("$costProtection = $null"): code.index("Add-FaCheck 'repair.width-growth.lock-state'") + 400]
+    assert "if ([string]$entry.sheet -ceq $gridSheet) { $costProtection = $entry }" in block
+    assert "$declaredUnlocked = @(@($costProtection.unlocked) | ForEach-Object { [string]$_ })" in block
+    assert "if ([string]$growthAfter[$r][0] -eq '') { $unkeyedRowIndex = $r + 1; break }" in block
+    for label, row, column, expect in (("regrown keyed weight", "1", "($fixedColumns + $durationYears)", "$false"),
+                                       ("existing keyed weight", "1", "($fixedColumns + 1)", "$false"),
+                                       ("regrown unkeyed reserved weight", "$unkeyedRowIndex", "($fixedColumns + $durationYears)", "$false"),
+                                       ("permanent id", "1", "1", "$true")):
+        probe = re.search(r"Label = '" + re.escape(label) + r"';\s+Row = ([^;]+?);\s+Column = ([^;]+?);\s+ExpectLocked = (\$\w+)", block)
+        assert probe, label
+        assert probe.group(1).strip() == row and probe.group(2).strip() == column and probe.group(3) == expect, (label, probe.groups())
+    assert "$state = Get-FaCellLockState -Workbook $wb -SheetName $gridSheet -TableName $gridTable -RowIndex $probe.Row -ColumnIndex $probe.Column" in block
+    assert "$declared = ($declaredUnlocked -ccontains $state.Address)" in block
+    assert "if ($state.Locked -ne $probe.ExpectLocked) { $lockProblems +=" in block
+    assert "if ($declared -eq $probe.ExpectLocked) { $lockProblems +=" in block
+    assert "Add-FaCheck 'repair.width-growth.lock-state' ($lockProblems.Count -eq 0)" in block
+    # protection is ON and no window is open across the inspection
+    between = code[code.index("-Scenario 'protection.after-repair-growth'"): code.index("Add-FaCheck 'repair.width-growth.lock-state'")]
+    assert "Open-FaFixtureWindow" not in between and "P10FW_Begin" not in between
+    # the accepted rule, from the builder and the contract
+    builder = (PCCM_ROOT / "builder" / "pccm_builder" / "protection.py").read_text(encoding="utf-8")
+    assert "for row in range(grid.first_data_row, grid.last_data_row + 1)]" in builder
+    assert "Unlocking the DECLARED MAXIMUM rather than the currently applied duration is" in builder
+    contract = (PCCM_ROOT / "spec" / "structure_contract.yaml").read_text(encoding="utf-8")
+    assert 'grid_year_columns: "structure_contract.grids[key] -> the year columns over the reserved body rows; fixed_columns stay locked"' in contract
+    # every clear is inside a window: an Open precedes each with no Close between
+    for match in re.finditer(re.escape("-Weight $null"), code):
+        opened = code.rfind("Open-FaFixtureWindow", 0, match.start())
+        closed = code.rfind("Close-FaFixtureWindow", 0, match.start())
+        function_start = code.rfind("function ", 0, match.start())
+        inside_helper = function_start > code.rfind("\n    $", 0, match.start()) and "Restore-Fa" in code[function_start: match.start()]
+        if inside_helper:
+            continue  # the two restore helpers are proved windowed at their call sites below
+        assert opened > closed, code[match.start() - 120: match.start() + 20]
+    for call in ("Restore-FaCostRows -Original $originalCostBody", "Restore-FaRowOne"):
+        site = code.index("try { " + call + " }")
+        assert code.rfind("Open-FaFixtureWindow", 0, site) > code.rfind("Close-FaFixtureWindow", 0, site), call
+        assert "finally { $null = Close-FaFixtureWindow" in code[site: site + 400], call
+    assert code.count("Restore-FaCostRows -Original") == 1 and code.count("    Restore-FaRowOne") == 0
+    blank = code[code.index("Scenario 'repair.blank-profile'"): code.index("$blankAllowed = Invoke-FaEndpoint")]
+    assert "-Weight $null" in blank and "Close-FaFixtureWindow" in blank
+    assert "Save-FaGridsBefore" in blank
 
 
 def test_60c4_the_width_growth_fixture_is_the_only_runner_change_since_the_candidate() -> None:
     """NARROW REVERSAL against 3af1837: outside the width-growth scenario and its
     one helper, the runner is byte-identical to the candidate that executed run 8."""
     tested = _git("show", "3af1837:pccm/bootstrap/windows/phase10_final_acceptance.ps1").replace("\r\n", "\n")
-    now = _runner().replace("\r\n", "\n")
+    now = _without_run9_changes(_runner().replace("\r\n", "\n"))
     a = "    # (a) WIDTH GROWTH"
     b = "    # (b) BLANK-ONLY SHRINK"
     stripped = now[: now.index(a)] + now[now.index(b):]
@@ -964,7 +1043,7 @@ def test_60c_every_scenario_from_the_fixture_onward_is_the_executed_runner_plus_
     tested = _git("show", f"{STARTING_AUTHORITY}:pccm/bootstrap/windows/phase10_final_acceptance.ps1").replace("\r\n", "\n")
     assert _git("diff", "--stat", "ee6e9fb", STARTING_AUTHORITY, "--",
                 "pccm/bootstrap/windows/phase10_final_acceptance.ps1").strip() == ""
-    now = _runner().replace("\r\n", "\n")
+    now = _without_run9_changes(_runner().replace("\r\n", "\n"))
     marker = "    # 7. THE ACCEPTED W4 FIXTURE"
     tested_tail = tested[tested.index(marker):]
     now_tail = _without_r2_blocks(now[now.index(marker):])
@@ -1038,8 +1117,75 @@ def _run8_head_insertions() -> tuple[str, ...]:
     delimiters."""
     now = _runner().replace("\r\n", "\n")
     start = now.index("# THE PRECONDITION THE PRODUCTION SEMANTIC GATE ASSESSES")
+    stop = now.index("# THE LOCK STATE OF ONE TABLE CELL, READ, NEVER WRITTEN")
+    return (now[start:stop],)
+
+
+def _run9_head_insertions() -> tuple[str, ...]:
+    """The one helper the run-9 correction added before the fixture: the
+    read-only lock-state reader."""
+    now = _runner().replace("\r\n", "\n")
+    start = now.index("# THE LOCK STATE OF ONE TABLE CELL, READ, NEVER WRITTEN")
     stop = now.index("# ===========================================================================\n# THE PRODUCTION ENTRY POINTS")
     return (now[start:stop],)
+
+
+# THE RUN-9 CORRECTION, DECLARED FRAGMENT BY FRAGMENT: (current, at f16aaaa).
+# Final acceptance run 9 stopped at the first clear of the all-blank profile
+# fixture - a ClearContents from the external COM client on a Stage-A unlocked
+# cell of a protected sheet, the capability Benchmark Run 4 proved refused. The
+# clears now go through the accepted window, as every other clear in the runner
+# does, the two fixture restorations with them, and the regrown cells' lock
+# state is inspected explicitly after the width growth.
+RUN9_CORRECTIONS = (
+    ("    # THE CLEARS GO THROUGH THE ACCEPTED WINDOW. A genuine blank is ClearContents,\n"
+     "    # and Benchmark Run 4 proved that an external COM client's ClearContents is\n"
+     "    # refused on a protected sheet even on a declared-unlocked cell, while its\n"
+     "    # value writes are permitted: the capability split belongs to the client, not\n"
+     "    # to the cell. Final acceptance run 9 stopped on exactly that at the first of\n"
+     "    # these clears - project year 1, a Stage-A unlocked cell. Every other clear in\n"
+     "    # this runner already sits inside the window; this one now does too. Repair\n"
+     "    # itself runs after the window closes, as everywhere else.\n"
+     "    $null = Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.blank-profile'\n"
+     "    try { for ($y = 1; $y -le $durationYears; $y++) { Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year $y -Weight $null } }\n"
+     "    finally { $null = Close-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.blank-profile' }\n",
+     "    for ($y = 1; $y -le $durationYears; $y++) { Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year $y -Weight $null }\n"),
+    ("    # was never written and must still equal its baseline. A restored blank is a\n"
+     "    # ClearContents, which an external COM client may only issue inside the window.\n"
+     "    $null = Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.width-growth.restore'\n"
+     "    try { Restore-FaCostRows -Original $originalCostBody }\n"
+     "    finally { $null = Close-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.width-growth.restore' }\n",
+     "    # was never written and must still equal its baseline.\n"
+     "    Restore-FaCostRows -Original $originalCostBody\n"),
+    ("    $null = Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.signed-zero-total.restore'\n"
+     "    try { Restore-FaRowOne }\n"
+     "    finally { $null = Close-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.signed-zero-total.restore' }\n",
+     "    Restore-FaRowOne\n"),
+)
+
+
+def _without_run9_changes(text: str) -> str:
+    """`text` (LF) with the run-9 correction taken back out: the lock-state
+    inspection block and the reader removed, each substitution reversed."""
+    for insertion in _run9_head_insertions():
+        assert text.count(insertion) == 1
+        text = text.replace(insertion, "")
+    start = text.index("    # THE LOCK STATE OF THE REGROWN CELLS, INSPECTED WHILE PROTECTION IS ON.")
+    stop = text.index("    # THE ORIGINAL FIXTURE, PUT BACK EXACTLY")
+    text = text[:start] + text[stop:]
+    for current, before in RUN9_CORRECTIONS:
+        assert text.count(current) == 1, current[:60]
+        text = text.replace(current, before)
+    return text
+
+
+def test_60c5_the_run_9_correction_is_the_only_runner_change_since_the_candidate_that_executed() -> None:
+    """EXACT REVERSAL against f16aaaa: the reader and the inspection removed and
+    the three substitutions reversed reproduce the executed runner byte for byte."""
+    tested = _git("show", "f16aaaa:pccm/bootstrap/windows/phase10_final_acceptance.ps1").replace("\r\n", "\n")
+    now = _runner().replace("\r\n", "\n")
+    assert _without_run9_changes(now) == tested
+    assert now != tested
 
 
 def _r3_head_insertions() -> tuple[str, ...]:
@@ -1056,7 +1202,7 @@ def test_60c3_the_row_o_session_is_the_one_declared_change_since_the_closure_aut
     """P10-R3 REVERSAL. The runner at 889b6b5 plus exactly one delimited block
     and one preamble line is the runner now, byte for byte."""
     tested = _git("show", f"{R3_AUTHORITY}:pccm/bootstrap/windows/phase10_final_acceptance.ps1").replace("\r\n", "\n")
-    now = _runner().replace("\r\n", "\n")
+    now = _without_run9_changes(_runner().replace("\r\n", "\n"))
     stripped = _without_r2_blocks(now, R3_BLOCKS)
     assert stripped != now, "the row-O block is absent"
     for insertion in _r3_head_insertions() + _run8_head_insertions():

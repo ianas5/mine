@@ -600,6 +600,31 @@ function Get-FaProfileProblems {
     return $problems
 }
 
+# THE LOCK STATE OF ONE TABLE CELL, READ, NEVER WRITTEN: its worksheet address
+# and its Locked property, so a runtime-generated cell can be compared with the
+# protection projection's declared unlocked set and with the property itself
+# rather than inferred from whether a write happened to succeed.
+function Get-FaCellLockState {
+    param($Workbook, [string]$SheetName, [string]$TableName, [int]$RowIndex, [int]$ColumnIndex)
+    $localWorksheets = $null; $ws = $null; $los = $null; $lo = $null; $body = $null; $cell = $null
+    try {
+        $localWorksheets = $Workbook.Worksheets
+        $ws = $localWorksheets.Item($SheetName)
+        $los = $ws.ListObjects
+        $lo = $los.Item($TableName)
+        $body = $lo.DataBodyRange
+        $cell = $body.Cells($RowIndex, $ColumnIndex)
+        return [pscustomobject]@{ Address = [string]$cell.Address($false, $false); Locked = [bool]$cell.Locked }
+    } finally {
+        if ($null -ne $cell)            { Release-Transient $cell            'Range(cell)'; $cell            = $null }
+        if ($null -ne $body)            { Release-Transient $body            'Range(body)'; $body            = $null }
+        if ($null -ne $lo)              { Release-Transient $lo              'ListObject';  $lo              = $null }
+        if ($null -ne $los)             { Release-Transient $los             'ListObjects'; $los             = $null }
+        if ($null -ne $ws)              { Release-Transient $ws              'Worksheet';   $ws              = $null }
+        if ($null -ne $localWorksheets) { Release-Transient $localWorksheets 'Worksheets';  $localWorksheets = $null }
+    }
+}
+
 # ===========================================================================
 # THE PRODUCTION ENTRY POINTS, THROUGH THE ACCEPTED AUTOMATION SEAM
 # ===========================================================================
@@ -1710,10 +1735,44 @@ try {
     $null = Add-FaCheck 'repair.width-growth' ($growthProblems.Count -eq 0) `
         $(if ($growthProblems.Count -eq 0) { ($grown + '; the regrown project year is blank on every row and every existing cell is unchanged') } else { $growthProblems -join '; ' })
     $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'protection.after-repair-growth'
+    # THE LOCK STATE OF THE REGROWN CELLS, INSPECTED WHILE PROTECTION IS ON. The
+    # accepted rule is Stage A's: the year columns over every reserved body row
+    # are unlocked, keyed or not, and the fixed columns stay locked - the
+    # protection projection declares exactly that set. A regrown project-year
+    # cell must therefore be declared unlocked AND read Locked=False, on a keyed
+    # row and on an unkeyed reserved row alike, while the permanent-id cell is
+    # neither. The Locked property is read; nothing is inferred from a write,
+    # because a COM value write is permitted on a locked cell.
+    $costProtection = $null
+    foreach ($entry in @($protection.sheets)) { if ([string]$entry.sheet -ceq $gridSheet) { $costProtection = $entry } }
+    if ($null -eq $costProtection) { throw ('the protection projection declares no ' + $gridSheet + ' sheet') }
+    $declaredUnlocked = @(@($costProtection.unlocked) | ForEach-Object { [string]$_ })
+    $unkeyedRowIndex = 0
+    for ($r = 0; $r -lt $growthAfter.Count; $r++) { if ([string]$growthAfter[$r][0] -eq '') { $unkeyedRowIndex = $r + 1; break } }
+    if ($unkeyedRowIndex -lt 1) { throw 'the cost profiling grid holds no unkeyed reserved row to inspect' }
+    $lockProbes = @(
+        [pscustomobject]@{ Label = 'regrown keyed weight';            Row = 1;                Column = ($fixedColumns + $durationYears); ExpectLocked = $false },
+        [pscustomobject]@{ Label = 'existing keyed weight';           Row = 1;                Column = ($fixedColumns + 1);              ExpectLocked = $false },
+        [pscustomobject]@{ Label = 'regrown unkeyed reserved weight'; Row = $unkeyedRowIndex; Column = ($fixedColumns + $durationYears); ExpectLocked = $false },
+        [pscustomobject]@{ Label = 'permanent id';                    Row = 1;                Column = 1;                                ExpectLocked = $true })
+    $lockProblems = @()
+    $lockDetails = @()
+    foreach ($probe in $lockProbes) {
+        $state = Get-FaCellLockState -Workbook $wb -SheetName $gridSheet -TableName $gridTable -RowIndex $probe.Row -ColumnIndex $probe.Column
+        $declared = ($declaredUnlocked -ccontains $state.Address)
+        $lockDetails += ($probe.Label + ' ' + $state.Address + ' Locked=' + [string]$state.Locked + ' declared-unlocked=' + [string]$declared)
+        if ($state.Locked -ne $probe.ExpectLocked) { $lockProblems += ($probe.Label + ' ' + $state.Address + ' reads Locked=' + [string]$state.Locked + ', expected ' + [string]$probe.ExpectLocked) }
+        if ($declared -eq $probe.ExpectLocked) { $lockProblems += ($probe.Label + ' ' + $state.Address + ' is ' + $(if ($declared) { 'declared unlocked' } else { 'not declared unlocked' }) + ' in the protection projection, expected ' + $(if ($probe.ExpectLocked) { 'locked' } else { 'unlocked' })) }
+    }
+    $null = Add-FaCheck 'repair.width-growth.lock-state' ($lockProblems.Count -eq 0) `
+        $(if ($lockProblems.Count -eq 0) { ($lockDetails -join '; ') } else { ($lockProblems -join '; ') + '. Read: ' + ($lockDetails -join '; ') })
     # THE ORIGINAL FIXTURE, PUT BACK EXACTLY: every weight of every cost row,
     # blanks as blanks and never as a zero, proved by both digests. The risk grid
-    # was never written and must still equal its baseline.
-    Restore-FaCostRows -Original $originalCostBody
+    # was never written and must still equal its baseline. A restored blank is a
+    # ClearContents, which an external COM client may only issue inside the window.
+    $null = Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.width-growth.restore'
+    try { Restore-FaCostRows -Original $originalCostBody }
+    finally { $null = Close-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.width-growth.restore' }
     $costAfterGrowthRestore = Get-FaTableDigest -Workbook $wb -SheetName $gridSheet -TableName $gridTable
     $riskAfterGrowthRestore = Get-FaTableDigest -Workbook $wb -SheetName $riskSheet -TableName $riskTable
     $null = Add-FaCheck 'repair.width-growth.restored' (($costAfterGrowthRestore -ceq $baselineCost) -and ($riskAfterGrowthRestore -ceq $baselineRisk)) `
@@ -1797,7 +1856,17 @@ try {
 
     # (f) ALL-BLANK PROFILE: row one cleared entirely; an unmade assumption is
     # allowed through, and with nothing structural to repair the command is a no-op.
-    for ($y = 1; $y -le $durationYears; $y++) { Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year $y -Weight $null }
+    # THE CLEARS GO THROUGH THE ACCEPTED WINDOW. A genuine blank is ClearContents,
+    # and Benchmark Run 4 proved that an external COM client's ClearContents is
+    # refused on a protected sheet even on a declared-unlocked cell, while its
+    # value writes are permitted: the capability split belongs to the client, not
+    # to the cell. Final acceptance run 9 stopped on exactly that at the first of
+    # these clears - project year 1, a Stage-A unlocked cell. Every other clear in
+    # this runner already sits inside the window; this one now does too. Repair
+    # itself runs after the window closes, as everywhere else.
+    $null = Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.blank-profile'
+    try { for ($y = 1; $y -le $durationYears; $y++) { Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year $y -Weight $null } }
+    finally { $null = Close-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.blank-profile' }
     Save-FaGridsBefore
     $blankAllowed = Invoke-FaEndpoint -Excel $excel -Operation 'PCCM_RepairProfiling'
     $costAfterBlank = Get-FaTableDigest -Workbook $wb -SheetName $gridSheet -TableName $gridTable
@@ -1816,7 +1885,9 @@ try {
         (($signedRefused -like ('*' + $rowOneId + '*')) -and ($signedRefused -like '*populated and total 0*') -and ($signedRefused -like '*not 100%*')) `
         ('the refusal names ' + $rowOneId + ' as populated, total 0, not 100% - not as blank')
     $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'protection.after-repair-signed'
-    Restore-FaRowOne
+    $null = Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.signed-zero-total.restore'
+    try { Restore-FaRowOne }
+    finally { $null = Close-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.signed-zero-total.restore' }
 
     # (h) BOTH FAILPOINTS ROLL BACK: with row two deleted (a repairable fault),
     # the contracted failpoint after the cost grid and the one after the risk grid

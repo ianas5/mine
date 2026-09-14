@@ -474,8 +474,8 @@ def test_54_shaping_only_row_one_is_refused() -> None:
 
 def test_55_skipping_the_fixture_restoration_is_refused() -> None:
     _mutate("test_52",
-            "    Restore-FaCostRows -Original $originalCostBody\n",
-            "")
+            "    try { Restore-FaCostRows -Original $originalCostBody }\n",
+            "    try { $null = $true }\n")
 
 
 def test_56_restoring_a_blank_as_a_zero_is_refused() -> None:
@@ -511,6 +511,62 @@ def test_60_weakening_the_production_semantic_gate_for_the_harness_is_refused() 
 
 def test_61_an_undeclared_runner_edit_outside_the_width_growth_scenario_is_refused() -> None:
     _mutate("test_60c4",
+            "    $null = Add-FaCheck 'repair.shrink-blank' (($shrunkBlank -like 'OK|*') -and ($costAfterShrink -ceq $script:FaCostBefore)) `\n",
+            "    $null = Add-FaCheck 'repair.shrink-blank' ($shrunkBlank -like 'OK|*') `\n")
+
+
+# ---------------------------------------------------------------------------
+# FINAL ACCEPTANCE RUN 9: CLEARS IN THE WINDOW, LOCK STATE INSPECTED
+# ---------------------------------------------------------------------------
+def test_62_a_clear_outside_the_window_is_refused() -> None:
+    """RUN 9's STOP, RE-INTRODUCED."""
+    _mutate("test_5",
+            "    $null = Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.blank-profile'\n"
+            "    try { for ($y = 1; $y -le $durationYears; $y++) { Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year $y -Weight $null } }\n"
+            "    finally { $null = Close-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.blank-profile' }\n",
+            "    for ($y = 1; $y -le $durationYears; $y++) { Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year $y -Weight $null }\n")
+
+
+def test_63_dropping_the_lock_state_inspection_is_refused() -> None:
+    _mutate("test_59",
+            "    $null = Add-FaCheck 'repair.width-growth.lock-state' ($lockProblems.Count -eq 0) `\n",
+            "    $null = Add-FaCheck 'repair.width-growth.lock-state' $true `\n")
+
+
+def test_64_expecting_the_regrown_keyed_cell_locked_is_refused() -> None:
+    _mutate("test_59",
+            "Label = 'regrown keyed weight';            Row = 1;                Column = ($fixedColumns + $durationYears); ExpectLocked = $false }",
+            "Label = 'regrown keyed weight';            Row = 1;                Column = ($fixedColumns + $durationYears); ExpectLocked = $true }")
+
+
+def test_65_dropping_the_projection_cross_check_is_refused() -> None:
+    _mutate("test_59",
+            "        if ($declared -eq $probe.ExpectLocked) { $lockProblems +=",
+            "        if ($false) { $lockProblems +=")
+
+
+def test_66_the_runner_unlocking_a_cell_itself_is_refused() -> None:
+    """THE RUNNER READS Locked; it never sets it."""
+    _mutate("test_59",
+            "        $state = Get-FaCellLockState -Workbook $wb -SheetName $gridSheet -TableName $gridTable -RowIndex $probe.Row -ColumnIndex $probe.Column\n",
+            "        $wb.Worksheets.Item($gridSheet).Range('D13').Locked = $false\n        $state = Get-FaCellLockState -Workbook $wb -SheetName $gridSheet -TableName $gridTable -RowIndex $probe.Row -ColumnIndex $probe.Column\n")
+
+
+def test_67_a_lock_rule_added_to_the_paint_owner_for_the_harness_is_refused() -> None:
+    """PRODUCTION IS PINNED TO THE CANDIDATE; the fill-only owner is the accepted state."""
+    _mutate_source("test_58", "workbook", conformance.WORKBOOK_VBA,
+                   "                CellIn(Target, r, c).Interior.Color = FILL_INPUT\n",
+                   "                CellIn(Target, r, c).Interior.Color = FILL_INPUT\n                CellIn(Target, r, c).Locked = False\n")
+
+
+def test_68_a_repair_only_lock_special_case_is_refused() -> None:
+    _mutate_source("test_58", "repair", conformance.REPAIR_VBA,
+                   "    modProfiling.SyncRows plan.Kind\n",
+                   "    modProfiling.SyncRows plan.Kind\n    modProfiling.ProfilingTable(plan.Kind).DataBodyRange.Locked = False\n")
+
+
+def test_69_an_undeclared_runner_edit_since_the_executed_candidate_is_refused() -> None:
+    _mutate("test_60c5",
             "    $null = Add-FaCheck 'repair.shrink-blank' (($shrunkBlank -like 'OK|*') -and ($costAfterShrink -ceq $script:FaCostBefore)) `\n",
             "    $null = Add-FaCheck 'repair.shrink-blank' ($shrunkBlank -like 'OK|*') `\n")
 
