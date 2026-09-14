@@ -1175,7 +1175,7 @@ function Get-FaSemanticBlockProblems {
     $problems = @()
     if (($SentinelIndex -lt 1) -or ($SentinelIndex -gt @($Cells).Count)) {
         $problems += ($Label + ' sentinel index ' + [string]$SentinelIndex + ' is outside its ' + [string]@($Cells).Count + ' cell(s)')
-        return , $problems
+        return $problems
     }
     for ($i = 1; $i -le @($Cells).Count; $i++) {
         $value = [string]@($Cells)[$i - 1]
@@ -1185,7 +1185,7 @@ function Get-FaSemanticBlockProblems {
             $problems += ($Label + ' field ' + [string]$i + ' holds <' + $value + '>, expected blank')
         }
     }
-    return , $problems
+    return $problems
 }
 
 function Get-FaTableBodyProblems {
@@ -1203,7 +1203,7 @@ function Get-FaTableBodyProblems {
         }
     }
     if ($found -gt 5) { $problems += ($Label + ': ' + [string]($found - 5) + ' more populated cell(s)') }
-    return , $problems
+    return $problems
 }
 
 function Get-FaCalcTableShapes {
@@ -1243,7 +1243,7 @@ function Get-FaResetProblems {
         $body = @(Get-TableBody -Workbook $Workbook -SheetName ([string]$calc.sheet) -TableName ([string]$table))
         $problems += @(Get-FaTableBodyProblems -Label ([string]$table) -Body $body -ExpectedRows ([int]$shape.Rows) -ExpectedColumns ([int]$shape.Columns))
     }
-    return , $problems
+    return $problems
 }
 
 # A cell's 1-based position inside a single-column block address: row minus the block's first row plus one.

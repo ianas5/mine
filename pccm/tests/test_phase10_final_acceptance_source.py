@@ -684,17 +684,30 @@ def test_41b_reset_confirmed_verifies_the_semantic_post_reset_state_production_d
 RESET_HARNESS = PCCM_ROOT / "tests" / "phase10_final_acceptance_reset_flow.ps1"
 
 
-def _reset_lines(runner: Path = RUNNER) -> dict[str, tuple[int, str]]:
+def _reset_run(runner: Path = RUNNER) -> tuple[dict[str, tuple[int, str]], dict[str, dict[str, str]]]:
+    """One execution of the reset-flow harness: the RESET lines (count, joined
+    problems) and the RESET.SHAPE lines (count, nested, element types)."""
     done = subprocess.run([PWSH, "-NoProfile", "-File", str(RESET_HARNESS), "-Runner", str(runner)],
                           capture_output=True, text=True, timeout=300)
     assert done.returncode == 0, done.stdout + done.stderr
-    lines = {}
+    lines: dict[str, tuple[int, str]] = {}
+    shapes: dict[str, dict[str, str]] = {}
     for line in done.stdout.splitlines():
         parts = line.split("|", 3)
         if len(parts) == 4 and parts[0] == "RESET":
             lines[parts[1]] = (int(parts[2]), parts[3])
-    assert lines, done.stdout
-    return lines
+        elif len(parts) == 4 and parts[0] == "RESET.SHAPE":
+            shapes[parts[1]] = dict(field.split("=", 1) for field in (parts[2] + "|" + parts[3]).split("|"))
+    assert lines and shapes, done.stdout
+    return lines, shapes
+
+
+def _reset_lines(runner: Path = RUNNER) -> dict[str, tuple[int, str]]:
+    return _reset_run(runner)[0]
+
+
+def _reset_shapes(runner: Path = RUNNER) -> dict[str, dict[str, str]]:
+    return _reset_run(runner)[1]
 
 
 @pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
@@ -714,6 +727,62 @@ def test_41c_the_semantic_reset_verifiers_execute_over_every_shape() -> None:
     assert lines["sim.sentinel-blank"][0] == 1
     assert lines["offset.wrong-column"][0] == 1
     assert lines["rect.flatten"] == (3, "NONE; ; 4")
+    assert lines["table.many-populated"][0] == 8 and lines["table.many-populated"][1].endswith("tblCalcYears: 2 more populated cell(s)")
+    assert lines["calc.three-left"][0] == 3
+    assert lines["assembled.valid"] == (0, "")
+    assert lines["assembled.two-problems"] == (2, "calculation state _Calc!C13:C20 field 2 holds <abc123>, expected blank; tblCalcYears row 2 column 2 holds <2029>, expected blank")
+    assert lines["reset.valid"] == (0, "")
+    assert lines["reset.three-problems"] == (3, "publication rectangle _SimData!B40:B45 is not blank; "
+                                                "calculation state _Calc!C13:C20 field 2 holds <abc123>, expected blank; "
+                                                "tblCalcYears row 2 column 2 holds <2029>, expected blank")
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_41d_every_problem_list_is_flat_zero_objects_when_valid_and_never_a_nested_array() -> None:
+    """FINAL ACCEPTANCE RUN 17 (24edbcb): Windows observed the exact contracted
+    post-reset state - the endpoint string, calc state [,,,,NONE,,,], sim record
+    [NONE,,,,,,,] - and reset.confirmed still failed, its detail ending in
+    System.Object[]. The problem-list helpers returned `, $problems`, so a
+    no-problem result reached the caller's @(...) as ONE nested empty array
+    and Count was never 0. The harness had hidden it behind a [string[]]
+    coercion. HARNESS-OWNED. Now every case is taken exactly as the runner's
+    callers take it - `$x = @(<verifier> ...)` - with no coercion: a valid
+    state yields zero objects, N problems yield N flat strings, and no
+    returned collection holds an array at any depth."""
+    shapes = _reset_shapes()
+    for case in ("table.blank-with-rows", "calc.exact", "sim.exact", "assembled.valid", "reset.valid"):
+        assert shapes[case] == {"count": "0", "nested": "False", "types": ""}, (case, shapes[case])
+    for case, count in (("table.one-populated", 1), ("calc.fingerprint-left", 1), ("calc.three-left", 3),
+                        ("table.many-populated", 8), ("assembled.two-problems", 2), ("reset.three-problems", 3)):
+        assert shapes[case]["count"] == str(count), (case, shapes[case])
+        assert shapes[case]["types"] == ",".join(["String"] * count), (case, shapes[case])
+    for case, shape in shapes.items():
+        assert shape["nested"] == "False", (case, shape)
+        assert "Object[]" not in shape["types"], (case, shape)
+    # the harness itself takes results the way the runner does and coerces nothing
+    harness = RESET_HARNESS.read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert "function Emit {\n    param([string]$Case, $Problems)\n" in harness
+    assert "[string[]]$Problems" not in harness
+    assert harness.count("$x = @(Get-Fa") >= 16 and "$assembled += @(Get-Fa" in harness
+    assert "$x = @(Get-FaResetProblems -Workbook 'stub' -Reset $reset" in harness
+
+
+def test_41e_the_problem_list_helpers_return_the_sequence_never_one_opaque_array() -> None:
+    """STATIC: the three problem-list helpers, their early return included,
+    return $problems - zero pipeline objects for no problems - and the runner
+    holds no `return , $problems` anywhere. The verifier still accumulates
+    through @(...) and the check still demands Count 0."""
+    code = _code()
+    assert "return , $problems" not in code
+    semantic = _function("Get-FaSemanticBlockProblems", code)
+    assert semantic.count("return $problems") == 2 and "        return $problems\n    }\n" in semantic
+    for name in ("Get-FaTableBodyProblems", "Get-FaResetProblems"):
+        body = _function(name, code)
+        assert body.count("return $problems") == 1 and body.rstrip().endswith("return $problems\n}"), name
+    verifier = _function("Get-FaResetProblems", code)
+    assert verifier.count("$problems += @(Get-Fa") == 3
+    assert "$resetProblems = @(Get-FaResetProblems -Workbook $wb -Reset $reset -Iterations $acceptanceIterations" in code
+    assert "($resetProblems.Count -eq 0)" in code
 
 
 def test_42_the_reset_scenarios_are_declined_confirmed_idempotent_and_rolled_back() -> None:
@@ -1655,10 +1724,34 @@ RUN14_CONFIRMED_BEFORE = (
     "          else { 'still holding a publication: ' + ($uncleared -join '; ') })\n")
 
 
+def _without_run17_changes(text: str) -> str:
+    """`text` (LF) with the run-17 nested-array correction taken back out: the
+    three problem-list helpers' `return $problems` - the early return included -
+    put back to the `return , $problems` that executed at 24edbcb."""
+    start = text.index("# THE SEMANTIC POST-RESET STATE, AS PRODUCTION DEFINES IT.")
+    stop = text.index("# The live, DERIVED states, read through accessors that write nothing")
+    block = text[start:stop]
+    assert block.count("        return $problems\n") == 1
+    block = block.replace("        return $problems\n", "        return , $problems\n")
+    assert block.count("    return $problems\n") == 3 and block.count("return , $problems") == 1
+    block = block.replace("    return $problems\n", "    return , $problems\n")
+    assert block.count("return , $problems") == 4
+    return text[:start] + block + text[stop:]
+
+
+def test_60c11_the_nested_array_correction_is_the_only_runner_change_since_the_run_17_head() -> None:
+    """EXACT REVERSAL against 24edbcb, the head final acceptance run 17 executed."""
+    tested = _git("show", "24edbcb:pccm/bootstrap/windows/phase10_final_acceptance.ps1").replace("\r\n", "\n")
+    now = _runner().replace("\r\n", "\n")
+    assert _without_run17_changes(now) == tested
+    assert now != tested
+
+
 def _without_run15_changes(text: str) -> str:
     """`text` (LF) with the run-15/16 open-readiness correction taken back out:
     the barrier, its check and the fatal formatter removed, the three barrier
     calls removed, and the fatal lines removed from the catch."""
+    text = _without_run17_changes(text)
     start = text.index("# THE OPEN/READY BOUNDARY. Final acceptance runs 15 and 16 at b5c3f9a")
     stop = text.index("# ===========================================================================\n# THE PRODUCTION ENTRY POINTS")
     text = text[:start] + text[stop:]

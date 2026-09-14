@@ -932,3 +932,45 @@ if __name__ == "__main__":
             failures += 1
             print(f"FAIL {name}: {exc}")
     sys.exit(1 if failures else 0)
+
+
+# ---------------------------------------------------------------------------
+# FINAL ACCEPTANCE RUN 17: THE NESTED-ARRAY PROBLEM LIST
+# ---------------------------------------------------------------------------
+def test_119_a_problem_list_returned_as_one_opaque_array_is_caught_by_the_executed_reset_harness() -> None:
+    """RUN 17's DEFECT, RE-INTRODUCED in Get-FaSemanticBlockProblems: the
+    valid calc block must reach the caller's @(...) as one nested
+    System.Object[] again, and the uncoerced harness must see it."""
+    import pytest as _pytest
+    if not Path(conformance.PWSH).exists():
+        _pytest.skip("no PowerShell on this host")
+    original = conformance._runner()
+    old = "            $problems += ($Label + ' field ' + [string]$i + ' holds <' + $value + '>, expected blank')\n        }\n    }\n    return $problems\n"
+    new = "            $problems += ($Label + ' field ' + [string]$i + ' holds <' + $value + '>, expected blank')\n        }\n    }\n    return , $problems\n"
+    assert original.count(old) == 1
+    import tempfile
+    scratch = Path(tempfile.mkdtemp(prefix="pccm-fa-nested-")) / "phase10_final_acceptance.ps1"
+    scratch.write_text(original.replace(old, new, 1), encoding="utf-8")
+    damaged = conformance._reset_shapes(scratch)
+    assert damaged["calc.exact"] == {"count": "1", "nested": "True", "types": "Object[]"}, damaged["calc.exact"]
+    assert damaged["assembled.valid"]["nested"] == "True" and damaged["reset.valid"]["nested"] == "True"
+    assert conformance._reset_shapes()["calc.exact"] == {"count": "0", "nested": "False", "types": ""}
+
+
+def test_120_the_verifier_returning_one_opaque_array_is_refused() -> None:
+    """RUN 17's DEFECT, RE-INTRODUCED in Get-FaResetProblems."""
+    _mutate("test_41e",
+            "        $problems += @(Get-FaTableBodyProblems -Label ([string]$table) -Body $body -ExpectedRows ([int]$shape.Rows) -ExpectedColumns ([int]$shape.Columns))\n    }\n    return $problems\n",
+            "        $problems += @(Get-FaTableBodyProblems -Label ([string]$table) -Body $body -ExpectedRows ([int]$shape.Rows) -ExpectedColumns ([int]$shape.Columns))\n    }\n    return , $problems\n")
+
+
+def test_121_the_early_return_as_one_opaque_array_is_refused() -> None:
+    _mutate("test_41e",
+            "        return $problems\n    }\n    for ($i = 1; $i -le @($Cells).Count; $i++) {\n",
+            "        return , $problems\n    }\n    for ($i = 1; $i -le @($Cells).Count; $i++) {\n")
+
+
+def test_122_an_undeclared_runner_edit_since_the_run_17_head_is_refused() -> None:
+    _mutate("test_60c11",
+            "         ($resetProblems.Count -eq 0) -and ($attemptCell -ceq $attemptNone)) `\n",
+            "         ($resetProblems.Count -le 1) -and ($attemptCell -ceq $attemptNone)) `\n")
