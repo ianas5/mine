@@ -79,7 +79,8 @@ REQUIRED_SCENARIOS = (
     # Added at the bounded correction round after the independent review: the
     # Repair contract scenarios of section 5 / matrix rows F, G, G2, M, and the
     # distribution-copy session of matrix row J.
-    "repair.width-growth", "repair.shrink-blank", "repair.shrink-zero-refused",
+    "repair.width-growth", "repair.width-growth.fixture", "repair.width-growth.restored",
+    "repair.shrink-blank", "repair.shrink-zero-refused",
     "repair.shrink-nonzero-refused", "repair.semantic-non1-refused", "repair.blank-profile-allowed",
     "repair.signed-zero-total-refused", "repair.rollback.", "repair.grids-restored",
     "copy.compile", "copy.source-revision", "copy.protection", "copy.fixture", "copy.run",
@@ -550,12 +551,37 @@ def test_51_every_repair_precondition_is_created_inside_the_window_and_repaired_
 
 
 def test_52_width_growth_regrows_blank_and_the_blank_only_shrink_changes_nothing_else() -> None:
-    """MATRIX ROWS F AND G, ADDED AT THE BOUNDED CORRECTION ROUND. A project
-    year lost inside the window is regrown BLANK on every row with no existing
-    cell touched; a blank project year added inside the window is trimmed and
-    the grid is byte-identical to before it was added."""
+    """MATRIX ROWS F AND G, ADDED AT THE BOUNDED CORRECTION ROUND; THE FIXTURE
+    RESTATED AFTER FINAL ACCEPTANCE RUN 8. The production semantic gate assesses
+    EVERY retained row of both grids before any width is repaired, so the
+    scenario must shape every populated cost row, not row one alone: run 8 left
+    CL-002 at 0.75 without its last year and Repair refused, correctly. The
+    fixture is asserted from the grids before the defect is made, the risk grid
+    is proved too, the lost year is regrown BLANK on every row with no existing
+    cell touched, and the original fixture is put back exactly - blanks as
+    blanks - and proved by both digests before the next scenario."""
     code = _code()
-    growth = code[code.index("$growthBefore = @(Get-TableBody"): code.index("Add-FaCheck 'repair.width-growth'") + 300]
+    scenario = code[code.index("$riskFixedColumns = @($riskGrid.fixed_columns).Count"): code.index("Scenario 'repair.shrink-blank'")]
+    # the original grid is read BEFORE any write, and every populated row is shaped
+    assert scenario.index("$originalCostBody = @(Get-TableBody -Workbook $wb -SheetName $gridSheet -TableName $gridTable)") \
+        < scenario.index("for ($r = 0; $r -lt $originalCostBody.Count; $r++) {")
+    loop = scenario[scenario.index("for ($r = 0; $r -lt $originalCostBody.Count; $r++) {"): scenario.index("$growthBefore = @(Get-TableBody")]
+    assert "if ([string]$originalCostBody[$r][0] -eq '') { continue }" in loop
+    assert "-RowIndex ($r + 1) -Year 1 -Weight 0.5" in loop and "-RowIndex ($r + 1) -Year 2 -Weight 0.5" in loop
+    assert "for ($y = 3; $y -le $durationYears; $y++) { Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex ($r + 1) -Year $y -Weight 0.0 }" in loop
+    assert "-RowIndex 1 " not in loop
+    # the precondition is asserted from the grids themselves, both of them, before the window opens
+    fixture = scenario[scenario.index("$growthBefore = @(Get-TableBody"): scenario.index("Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.width-growth'")]
+    assert "Get-FaProfileProblems -Body $growthBefore -FixedColumns $fixedColumns -YearCount ($durationYears - 1) -Label 'Cost Profiling'" in fixture
+    assert "Get-FaProfileProblems -Body $riskBeforeGrowth -FixedColumns $riskFixedColumns -YearCount $durationYears -Label 'Risk Profiling'" in fixture
+    assert "$riskBeforeGrowth = @(Get-TableBody -Workbook $wb -SheetName $riskSheet -TableName $riskTable)" in fixture
+    assert "if ([string]$row[$fixedColumns + $durationYears - 1] -ne '0') { $fixtureProblems +=" in fixture
+    assert "Add-FaCheck 'repair.width-growth.fixture' ($fixtureProblems.Count -eq 0)" in fixture
+    helper = _function("Get-FaProfileProblems", code)
+    assert "if ($populated -and ([math]::Abs($total - 1.0) -gt 0.000000001)) {" in helper
+    assert "if ($cell -eq '') { continue }" in helper and "$populated = $true" in helper
+    # the defect, the real repair, blank regrowth, nothing else moved
+    growth = scenario[scenario.index("Scenario 'repair.width-growth'"): scenario.index("Add-FaCheck 'repair.width-growth' (") + 300]
     assert "Remove-FaLastTableColumn -Workbook $wb -SheetName $gridSheet -TableName $gridTable" in growth
     assert "$grown = Invoke-FaEndpoint -Excel $excel -Operation 'PCCM_RepairProfiling'" in growth
     assert "if ($grown -notlike 'OK|*')" in growth and "if ($grown -notlike '*left blank*')" in growth
@@ -564,12 +590,50 @@ def test_52_width_growth_regrows_blank_and_the_blank_only_shrink_changes_nothing
     assert "-ne '0'" not in growth and "-ne 0)" not in growth
     assert "Add-FaCheck 'repair.width-growth' ($growthProblems.Count -eq 0)" in growth
     assert "are left blank for you to complete" in _src("repair", REPAIR_VBA)
+    # the original fixture is put back exactly, blanks as blanks, and proved by both digests
+    restore = scenario[scenario.index("-Scenario 'protection.after-repair-growth'"):]
+    assert "Restore-FaCostRows -Original $originalCostBody" in restore
+    restorer = _function("Restore-FaCostRows", code)
+    assert "$index = Find-FaTableRow -Body $current -Id ([string]$row[0])" in restorer
+    assert "if ($w -eq '') { Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex $index -Year $y -Weight $null }" in restorer
+    assert "-Weight ([double]$w)" in restorer and "-Weight 0.0" not in restorer
+    assert "Add-FaCheck 'repair.width-growth.restored' (($costAfterGrowthRestore -ceq $baselineCost) -and ($riskAfterGrowthRestore -ceq $baselineRisk))" in restore
+    assert restore.index("Restore-FaCostRows -Original $originalCostBody") < restore.index("Add-FaCheck 'repair.width-growth.restored'")
+    # and the following scenarios' own precondition - row one at 100% with typed zeros - is re-established explicitly after the proof
+    tail = restore[restore.index("Add-FaCheck 'repair.width-growth.restored'"):]
+    assert "-RowIndex 1 -Year 1 -Weight 0.5" in tail and "-RowIndex 1 -Year 2 -Weight 0.5" in tail
+    assert "for ($y = 3; $y -le $durationYears; $y++) { Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year $y -Weight 0.0 }" in tail
+    # the blank-only shrink
     shrink = code[code.index("Scenario 'repair.shrink-blank'"): code.index("Add-FaCheck 'repair.shrink-blank'") + 200]
     assert "$null = Add-FaTableColumn -Workbook $wb -SheetName $gridSheet -TableName $gridTable" in shrink
     assert "Add-FaCheck 'repair.shrink-blank' (($shrunkBlank -like 'OK|*') -and ($costAfterShrink -ceq $script:FaCostBefore))" in shrink
-    # the setup for growth leaves every retained row at 100%, so only structure is repaired
-    setup = code[code.index("# (a) WIDTH GROWTH") if "# (a) WIDTH GROWTH" in code else code.index("$rowOneId = [string]$rowOneWeights[0]"): code.index("$growthBefore = @(Get-TableBody")]
-    assert "-RowIndex 1 -Year 1 -Weight 0.5" in setup and "-RowIndex 1 -Year 2 -Weight 0.5" in setup
+
+
+def test_58_production_is_byte_identical_to_the_candidate_the_width_growth_fixture_was_corrected_for() -> None:
+    """RUN 8 WAS A HARNESS DEFECT AND PRODUCTION WAS RIGHT. The candidate that
+    executed, 3af1837, is byte-identical in every production, spec and builder
+    file; the semantic gate it refused with is exactly the one still there."""
+    assert _git("diff", "--name-only", "3af1837", "--", "pccm/src", "pccm/spec", "pccm/builder").strip() == ""
+    for key, path in (("repair", REPAIR_VBA), ("handler", HANDLER_VBA), ("appstate", APPSTATE_VBA)):
+        assert _src(key, path) == _git("show", f"3af1837:pccm/src/vba/{path.name}"), path.name
+    repair = _src("repair", REPAIR_VBA)
+    assert "If WithinTolerance(total, REPAIR_PROFILE_SUM_TARGET) Then" in repair
+    assert "If registerIds.Exists(idText) Then\n                If Not RecognisedProfile(weights, label, idText, detail) Then Exit Function" in repair
+
+
+def test_60c4_the_width_growth_fixture_is_the_only_runner_change_since_the_candidate() -> None:
+    """NARROW REVERSAL against 3af1837: outside the width-growth scenario and its
+    one helper, the runner is byte-identical to the candidate that executed run 8."""
+    tested = _git("show", "3af1837:pccm/bootstrap/windows/phase10_final_acceptance.ps1").replace("\r\n", "\n")
+    now = _runner().replace("\r\n", "\n")
+    a = "    # (a) WIDTH GROWTH"
+    b = "    # (b) BLANK-ONLY SHRINK"
+    stripped = now[: now.index(a)] + now[now.index(b):]
+    for insertion in _run8_head_insertions():
+        assert stripped.count(insertion) == 1
+        stripped = stripped.replace(insertion, "")
+    assert stripped == tested[: tested.index(a)] + tested[tested.index(b):]
+    assert now[now.index(a): now.index(b)] != tested[tested.index(a): tested.index(b)]
 
 
 def test_53_every_repair_refusal_is_asserted_with_both_grids_unchanged_and_names_the_id_and_year() -> None:
@@ -965,7 +1029,17 @@ def _runner_head_insertions() -> tuple[str, ...]:
     preamble_stop = now.index("$script:FaRiskBefore = ''\n") + len("$script:FaRiskBefore = ''\n")
     helpers_start = now.index("# A PROJECT-YEAR COLUMN ADDED TO OR REMOVED FROM A GRID")
     helpers_stop = now.index("function Get-IdColumnValues {")
-    return (now[preamble_start:preamble_stop], now[helpers_start:helpers_stop]) + _r3_head_insertions()
+    return (now[preamble_start:preamble_stop], now[helpers_start:helpers_stop]) + _r3_head_insertions() + _run8_head_insertions()
+
+
+def _run8_head_insertions() -> tuple[str, ...]:
+    """The one helper the run-8 width-growth fixture correction added before the
+    fixture: the profile-precondition reader, read from the runner by its own
+    delimiters."""
+    now = _runner().replace("\r\n", "\n")
+    start = now.index("# THE PRECONDITION THE PRODUCTION SEMANTIC GATE ASSESSES")
+    stop = now.index("# ===========================================================================\n# THE PRODUCTION ENTRY POINTS")
+    return (now[start:stop],)
 
 
 def _r3_head_insertions() -> tuple[str, ...]:
@@ -985,9 +1059,14 @@ def test_60c3_the_row_o_session_is_the_one_declared_change_since_the_closure_aut
     now = _runner().replace("\r\n", "\n")
     stripped = _without_r2_blocks(now, R3_BLOCKS)
     assert stripped != now, "the row-O block is absent"
-    for insertion in _r3_head_insertions():
+    for insertion in _r3_head_insertions() + _run8_head_insertions():
         assert stripped.count(insertion) == 1
         stripped = stripped.replace(insertion, "")
+    # the width-growth scenario itself sits inside the R2 block and is compared
+    # against the candidate it was corrected for in test_60c4
+    a = "    # (a) WIDTH GROWTH"; b = "    # (b) BLANK-ONLY SHRINK"
+    stripped = stripped[: stripped.index(a)] + stripped[stripped.index(b):]
+    tested = tested[: tested.index(a)] + tested[tested.index(b):]
     assert stripped == tested
 
 

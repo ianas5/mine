@@ -574,6 +574,32 @@ function Find-FaTableRow {
     return 0
 }
 
+# THE PRECONDITION THE PRODUCTION SEMANTIC GATE ASSESSES, read from a grid body:
+# every row with an id is either blank across the first $YearCount project years or
+# totals 100% there, within the tolerance the Repair suite uses. A row that is
+# populated and does not is named, so a fixture can be proved before Repair runs.
+function Get-FaProfileProblems {
+    param([object[]]$Body, [int]$FixedColumns, [int]$YearCount, [string]$Label)
+    $problems = @()
+    foreach ($entry in $Body) {
+        $row = @($entry)
+        if ([string]$row[0] -eq '') { continue }
+        $total = 0.0
+        $populated = $false
+        for ($y = 1; $y -le $YearCount; $y++) {
+            $cell = [string]$row[$FixedColumns + $y - 1]
+            if ($cell -eq '') { continue }
+            $populated = $true
+            $total = $total + [double]$cell
+        }
+        if ($populated -and ([math]::Abs($total - 1.0) -gt 0.000000001)) {
+            $problems += ($Label + ' ' + [string]$row[0] + ' is populated and totals ' + [string]$total +
+                          ' over project years 1-' + [string]$YearCount + ', not 100%')
+        }
+    }
+    return $problems
+}
+
 # ===========================================================================
 # THE PRODUCTION ENTRY POINTS, THROUGH THE ACCEPTED AUTOMATION SEAM
 # ===========================================================================
@@ -1619,14 +1645,51 @@ try {
         $script:FaRiskBefore = Get-FaTableDigest -Workbook $wb -SheetName $riskSheet -TableName $riskTable
     }
 
-    # (a) WIDTH GROWTH: row one becomes [0.5, 0.5, 0, 0]-shaped so that losing the
-    # last project year leaves every retained row totalling 100%; the last year
-    # column is deleted inside the window; Repair must re-add it BLANK for every
-    # row and touch no existing cell.
-    Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year 1 -Weight 0.5
-    Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year 2 -Weight 0.5
-    for ($y = 3; $y -le $durationYears; $y++) { Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year $y -Weight 0.0 }
+    # (a) WIDTH GROWTH. THE FIXTURE FIRST, FOR EVERY ROW. Losing the last project
+    # year must leave EVERY retained populated row totalling 100%, because the
+    # production semantic gate assesses every retained row of BOTH grids before
+    # any width is repaired. Final acceptance run 8 proved it: only row one had
+    # been shaped, CL-002 still totalled 0.75 without its last year, and Repair
+    # refused - correctly. So every populated cost row becomes [0.5, 0.5, 0, ..., 0]:
+    # 100% inside the years that will remain, a typed 0 in the year that will be
+    # deleted. The risk grid is not written and is proved to satisfy the rule as it
+    # stands. The precondition is asserted from the grids themselves before the
+    # defect is made, and the original fixture is put back exactly afterwards.
+    $riskFixedColumns = @($riskGrid.fixed_columns).Count
+    $originalCostBody = @(Get-TableBody -Workbook $wb -SheetName $gridSheet -TableName $gridTable)
+    function Restore-FaCostRows {
+        param([object[]]$Original)
+        $current = @(Get-TableBody -Workbook $wb -SheetName $gridSheet -TableName $gridTable)
+        foreach ($entry in $Original) {
+            $row = @($entry)
+            if ([string]$row[0] -eq '') { continue }
+            $index = Find-FaTableRow -Body $current -Id ([string]$row[0])
+            if ($index -lt 1) { throw ([string]$row[0] + ' has no profiling row to restore') }
+            for ($y = 1; $y -le $durationYears; $y++) {
+                $w = [string]$row[$fixedColumns + $y - 1]
+                if ($w -eq '') { Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex $index -Year $y -Weight $null }
+                else { Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex $index -Year $y -Weight ([double]$w) }
+            }
+        }
+    }
+    for ($r = 0; $r -lt $originalCostBody.Count; $r++) {
+        if ([string]$originalCostBody[$r][0] -eq '') { continue }
+        Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex ($r + 1) -Year 1 -Weight 0.5
+        Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex ($r + 1) -Year 2 -Weight 0.5
+        for ($y = 3; $y -le $durationYears; $y++) { Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex ($r + 1) -Year $y -Weight 0.0 }
+    }
     $growthBefore = @(Get-TableBody -Workbook $wb -SheetName $gridSheet -TableName $gridTable)
+    $riskBeforeGrowth = @(Get-TableBody -Workbook $wb -SheetName $riskSheet -TableName $riskTable)
+    $fixtureProblems = @()
+    $fixtureProblems += @(Get-FaProfileProblems -Body $growthBefore -FixedColumns $fixedColumns -YearCount ($durationYears - 1) -Label 'Cost Profiling')
+    foreach ($entry in $growthBefore) {
+        $row = @($entry)
+        if ([string]$row[0] -eq '') { continue }
+        if ([string]$row[$fixedColumns + $durationYears - 1] -ne '0') { $fixtureProblems += ('Cost Profiling ' + [string]$row[0] + ' project year ' + [string]$durationYears + ' is ' + [string]$row[$fixedColumns + $durationYears - 1] + ', not a typed 0') }
+    }
+    $fixtureProblems += @(Get-FaProfileProblems -Body $riskBeforeGrowth -FixedColumns $riskFixedColumns -YearCount $durationYears -Label 'Risk Profiling')
+    $null = Add-FaCheck 'repair.width-growth.fixture' ($fixtureProblems.Count -eq 0) `
+        $(if ($fixtureProblems.Count -eq 0) { ('every populated cost row totals 100% over project years 1-' + [string]($durationYears - 1) + ' with a typed 0 in year ' + [string]$durationYears + '; every populated risk row totals 100%') } else { $fixtureProblems -join '; ' })
     $null = Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.width-growth'
     try { Remove-FaLastTableColumn -Workbook $wb -SheetName $gridSheet -TableName $gridTable }
     finally { $null = Close-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'repair.width-growth' }
@@ -1647,8 +1710,19 @@ try {
     $null = Add-FaCheck 'repair.width-growth' ($growthProblems.Count -eq 0) `
         $(if ($growthProblems.Count -eq 0) { ($grown + '; the regrown project year is blank on every row and every existing cell is unchanged') } else { $growthProblems -join '; ' })
     $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'protection.after-repair-growth'
-    # row one's last year is regrown blank; the 0.0 it held is a typed weight and is put back, then the original weights.
-    Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year $durationYears -Weight 0.0
+    # THE ORIGINAL FIXTURE, PUT BACK EXACTLY: every weight of every cost row,
+    # blanks as blanks and never as a zero, proved by both digests. The risk grid
+    # was never written and must still equal its baseline.
+    Restore-FaCostRows -Original $originalCostBody
+    $costAfterGrowthRestore = Get-FaTableDigest -Workbook $wb -SheetName $gridSheet -TableName $gridTable
+    $riskAfterGrowthRestore = Get-FaTableDigest -Workbook $wb -SheetName $riskSheet -TableName $riskTable
+    $null = Add-FaCheck 'repair.width-growth.restored' (($costAfterGrowthRestore -ceq $baselineCost) -and ($riskAfterGrowthRestore -ceq $baselineRisk)) `
+        'both profiling grids byte-identical to before the width-growth fixture'
+    # THE SHRINK AND SEMANTIC SCENARIOS' OWN FIXTURE: row one [0.5, 0.5, 0, ..., 0],
+    # 100% with typed zeros, so only the gate each scenario names can refuse.
+    Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year 1 -Weight 0.5
+    Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year 2 -Weight 0.5
+    for ($y = 3; $y -le $durationYears; $y++) { Set-FaWeight -Workbook $wb -SheetName $gridSheet -TableName $gridTable -FixedColumns $fixedColumns -RowIndex 1 -Year $y -Weight 0.0 }
 
     # (b) BLANK-ONLY SHRINK: a fifth project-year column added inside the window,
     # left blank; Repair trims it and changes nothing else.

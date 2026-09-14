@@ -462,6 +462,59 @@ def test_53_a_second_statement_on_the_successful_path_is_refused() -> None:
                    "    Application.ScreenUpdating = previousUpdating\n    Application.Calculation = xlCalculationAutomatic\n    restored = True\n")
 
 
+# ---------------------------------------------------------------------------
+# FINAL ACCEPTANCE RUN 8: THE WIDTH-GROWTH FIXTURE
+# ---------------------------------------------------------------------------
+def test_54_shaping_only_row_one_is_refused() -> None:
+    """RUN 8's DEFECT, RE-INTRODUCED: another populated row is left non-100%."""
+    _mutate("test_52",
+            "    for ($r = 0; $r -lt $originalCostBody.Count; $r++) {\n        if ([string]$originalCostBody[$r][0] -eq '') { continue }\n",
+            "    for ($r = 0; $r -lt 1; $r++) {\n        if ([string]$originalCostBody[$r][0] -eq '') { continue }\n")
+
+
+def test_55_skipping_the_fixture_restoration_is_refused() -> None:
+    _mutate("test_52",
+            "    Restore-FaCostRows -Original $originalCostBody\n",
+            "")
+
+
+def test_56_restoring_a_blank_as_a_zero_is_refused() -> None:
+    _mutate("test_52",
+            "-RowIndex $index -Year $y -Weight $null }",
+            "-RowIndex $index -Year $y -Weight 0.0 }")
+
+
+def test_57_dropping_the_fixture_precondition_assertion_is_refused() -> None:
+    _mutate("test_52",
+            "    $null = Add-FaCheck 'repair.width-growth.fixture' ($fixtureProblems.Count -eq 0) `\n",
+            "    $null = Add-FaCheck 'repair.width-growth.fixture' $true `\n")
+
+
+def test_58_not_assessing_the_risk_grid_is_refused() -> None:
+    _mutate("test_52",
+            "    $fixtureProblems += @(Get-FaProfileProblems -Body $riskBeforeGrowth -FixedColumns $riskFixedColumns -YearCount $durationYears -Label 'Risk Profiling')\n",
+            "")
+
+
+def test_59_a_relaxed_restoration_proof_is_refused() -> None:
+    _mutate("test_52",
+            "    $null = Add-FaCheck 'repair.width-growth.restored' (($costAfterGrowthRestore -ceq $baselineCost) -and ($riskAfterGrowthRestore -ceq $baselineRisk)) `\n",
+            "    $null = Add-FaCheck 'repair.width-growth.restored' ($costAfterGrowthRestore -ceq $baselineCost) `\n")
+
+
+def test_60_weakening_the_production_semantic_gate_for_the_harness_is_refused() -> None:
+    """PRODUCTION WAS RIGHT AT RUN 8 and is pinned byte for byte to the candidate."""
+    _mutate_source("test_58", "repair", conformance.REPAIR_VBA,
+                   "    If WithinTolerance(total, REPAIR_PROFILE_SUM_TARGET) Then\n",
+                   "    If WithinTolerance(total, REPAIR_PROFILE_SUM_TARGET) Or (total = 0.75) Then\n")
+
+
+def test_61_an_undeclared_runner_edit_outside_the_width_growth_scenario_is_refused() -> None:
+    _mutate("test_60c4",
+            "    $null = Add-FaCheck 'repair.shrink-blank' (($shrunkBlank -like 'OK|*') -and ($costAfterShrink -ceq $script:FaCostBefore)) `\n",
+            "    $null = Add-FaCheck 'repair.shrink-blank' ($shrunkBlank -like 'OK|*') `\n")
+
+
 if __name__ == "__main__":
     failures = 0
     for name in sorted(n for n in dir() if n.startswith("test_")):
