@@ -974,3 +974,70 @@ def test_122_an_undeclared_runner_edit_since_the_run_17_head_is_refused() -> Non
     _mutate("test_60c11",
             "         ($resetProblems.Count -eq 0) -and ($attemptCell -ceq $attemptNone)) `\n",
             "         ($resetProblems.Count -le 1) -and ($attemptCell -ceq $attemptNone)) `\n")
+
+
+# ---------------------------------------------------------------------------
+# FINAL ACCEPTANCE RUN 18: THE REMAINING-TAIL CONTRACT AUDIT
+# ---------------------------------------------------------------------------
+def test_123_a_blank_simulation_expected_after_reset_is_refused() -> None:
+    """RUN 18's DEFECT, RE-INTRODUCED in reset.states."""
+    _mutate("test_42e",
+            "(($statesReset.Calculation -ceq $statusNotCalculated) -and ($statesReset.Simulation -ceq $statusInvalid) -and\n",
+            "(($statesReset.Calculation -ceq $statusNotCalculated) -and ($statesReset.Simulation -eq '') -and\n")
+
+
+def test_124_a_blank_simulation_expected_after_the_refused_annual_is_refused() -> None:
+    """RUN 18's DEFECT, RE-INTRODUCED in refused.outcome.annual."""
+    _mutate("test_42e",
+            "         ($statesAfterRefusal.Simulation -ceq $statusInvalid) -and ($statesAfterRefusal.Annual -ceq $annualNotProduced) -and\n",
+            "         ($statesAfterRefusal.Simulation -eq '') -and ($statesAfterRefusal.Annual -ceq $annualNotProduced) -and\n")
+
+
+def test_125_a_post_reset_check_that_ignores_the_profile_is_refused() -> None:
+    _mutate("test_42e",
+            "         ($statesReset.Annual -ceq $annualNotProduced) -and ($statesReset.Profile -ceq $profileNotProduced)) `\n",
+            "         ($statesReset.Annual -ceq $annualNotProduced)) `\n")
+
+
+def test_126_a_hard_coded_state_word_where_the_projection_binds_one_is_refused() -> None:
+    _mutate("test_42e",
+            "         ($statesAfterRefusal.Profile -ceq $profileNotProduced)) `\n",
+            "         ($statesAfterRefusal.Profile -ceq 'NOT PRODUCED')) `\n")
+
+
+def test_127_a_rollback_that_ignores_the_profile_is_refused() -> None:
+    _mutate("test_42e",
+            "         ($statesRolledBack.Annual -ceq $statusCurrent) -and ($statesRolledBack.Profile -ceq $statusCurrent)) `\n",
+            "         ($statesRolledBack.Annual -ceq $statusCurrent)) `\n")
+
+
+def test_128_the_unprotected_file_expectation_at_the_suppressed_open_is_refused() -> None:
+    """RUN 18 TAIL AUDIT's DEFECT, RE-INTRODUCED: Stage B saves the file protected."""
+    _mutate("test_56b",
+            "(($null -ne $suppressed) -and $suppressed.Applied -and ($suppressed.Protected -eq @($protection.sheets).Count) -and $suppressed.Structure -and ($suppressed.Depth -eq 0) -and ($resultBeforeHandler -eq ''))",
+            "(($null -ne $suppressed) -and (-not $suppressed.Applied) -and ($suppressed.Protected -eq 0) -and (-not $suppressed.Structure) -and ($suppressed.Depth -eq 0) -and ($resultBeforeHandler -eq ''))")
+
+
+def test_129_an_undeclared_runner_edit_since_the_run_18_head_is_refused() -> None:
+    _mutate("test_60c12",
+            "        ($injected + '; every publication rectangle, the persisted simulation state and every preserved cell compare exactly; ' + (Format-FaStates $statesRolledBack))\n",
+            "        ($injected + '; every publication rectangle and every preserved cell compare exactly; ' + (Format-FaStates $statesRolledBack))\n")
+
+
+def test_130_a_blank_simulation_expected_after_reset_is_caught_by_the_executed_tail_harness() -> None:
+    """RUN 18's DEFECT, RE-INTRODUCED and EXECUTED: the lifted predicate must
+    accept the blank simulation and refuse the production-derived state."""
+    import pytest as _pytest
+    if not Path(conformance.PWSH).exists():
+        _pytest.skip("no PowerShell on this host")
+    original = conformance._runner()
+    old = "(($statesReset.Calculation -ceq $statusNotCalculated) -and ($statesReset.Simulation -ceq $statusInvalid) -and\n"
+    new = "(($statesReset.Calculation -ceq $statusNotCalculated) -and ($statesReset.Simulation -eq '') -and\n"
+    assert original.count(old) == 1
+    import tempfile
+    scratch = Path(tempfile.mkdtemp(prefix="pccm-fa-tail-")) / "phase10_final_acceptance.ps1"
+    scratch.write_text(original.replace(old, new, 1), encoding="utf-8")
+    damaged = conformance._tail_lines(scratch)
+    assert damaged["reset.states.production-derived"] == "False" and damaged["reset.states.blank-simulation"] == "True"
+    pristine = conformance._tail_lines()
+    assert pristine["reset.states.production-derived"] == "True" and pristine["reset.states.blank-simulation"] == "False"

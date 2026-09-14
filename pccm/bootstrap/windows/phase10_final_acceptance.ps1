@@ -1530,6 +1530,10 @@ if ($annualWarningIds.Count -lt 2) { throw ('the projection declares ' + [string
 $annualHistoricalExpected = @{ AnyOf = $annualWarningIds; Severity = $severityWarning; Subject = '' }
 $annualHistorical  = [string]$p7.handoff.distribution_states[2]
 $profileHistorical = [string]$p7.handoff.profile_states[3]
+# NOT PRODUCED, projected: the word both annual accessors answer while no
+# simulation bank is active - after Reset, and in the untouched workbook.
+$annualNotProduced  = [string]$p7.handoff.distribution_states[0]
+$profileNotProduced = [string]$p7.handoff.profile_states[0]
 
 # THE CALCULATION STATE BLOCK, from the Phase-5 inspection.
 $calcSheet = [string]$inspection.calc.sheet
@@ -2430,10 +2434,17 @@ try {
     $preservedAfter = Get-FaPreservedDigest -Workbook $wb -Reset $reset -Methodology $methodology -MetadataRange $metadataRange
     $null = Add-FaCheck 'reset.preserved' ($preservedAfter -ceq $preservedBefore) `
         'every declared editable input, the applied timeline, both permanent-id counters, the next AUTO nonce, the run-id, the pending nonce and the metadata block compare exactly'
+    # THE DERIVED STATES AFTER RESET, AS PRODUCTION DERIVES THEM. Final acceptance
+    # run 18 at ad330bc observed calc=NOT CALCULATED sim=INVALID annual=NOT PRODUCED
+    # profile=NOT PRODUCED, and the runner expected a blank simulation. modSimReport's
+    # DeriveSimStatus answers INVALID when the current request fingerprint cannot be
+    # formed, and CalcPrepareSimulationInputs will not form it without a CURRENT
+    # calculation: no publication is not a blank state. The blank active bank makes
+    # both annual products NOT PRODUCED. Every word here is the projected one.
     $statesReset = Get-FaStates -Excel $excel
     $null = Add-FaCheck 'reset.states' `
-        (($statesReset.Calculation -ceq $statusNotCalculated) -and ($statesReset.Simulation -eq '') -and
-         ($statesReset.Annual -like 'NOT PRODUCED*')) `
+        (($statesReset.Calculation -ceq $statusNotCalculated) -and ($statesReset.Simulation -ceq $statusInvalid) -and
+         ($statesReset.Annual -ceq $annualNotProduced) -and ($statesReset.Profile -ceq $profileNotProduced)) `
         (Format-FaStates $statesReset)
     $excel.Calculate()
     $modelCheckReset = Get-FaRunText -Excel $excel -Procedure 'PCCM_ModelCheckCalculationState'
@@ -2455,9 +2466,12 @@ try {
     # from is refused, and no derived state changes.
     $refusedAnnual = Invoke-FaEndpoint -Excel $excel -Operation ([string]$p7.command_surface.annual_endpoint)
     $statesAfterRefusal = Get-FaStates -Excel $excel
+    # THE SAME DERIVED STATES AS AFTER RESET: the refused attempt persists the
+    # simulation status it evaluated and decides nothing derived.
     $null = Add-FaCheck 'refused.outcome.annual' `
         (($refusedAnnual -like 'FAIL|*') -and ($statesAfterRefusal.Calculation -ceq $statusNotCalculated) -and
-         ($statesAfterRefusal.Simulation -eq '') -and ($statesAfterRefusal.Annual -like 'NOT PRODUCED*')) `
+         ($statesAfterRefusal.Simulation -ceq $statusInvalid) -and ($statesAfterRefusal.Annual -ceq $annualNotProduced) -and
+         ($statesAfterRefusal.Profile -ceq $profileNotProduced)) `
         ($refusedAnnual + '; ' + (Format-FaStates $statesAfterRefusal))
     $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'protection.after-refused-annual'
 
@@ -2482,7 +2496,7 @@ try {
          ($injected -like '*put back*') -and ($publicationRolledBack -ceq $publicationFull) -and
          ($simStateRolledBack -ceq $simStateFull) -and ($preservedRolledBack -ceq $preservedFull) -and
          ($statesRolledBack.Calculation -ceq $statusCurrent) -and ($statesRolledBack.Simulation -ceq $statusCurrent) -and
-         ($statesRolledBack.Annual -ceq $statusCurrent)) `
+         ($statesRolledBack.Annual -ceq $statusCurrent) -and ($statesRolledBack.Profile -ceq $statusCurrent)) `
         ($injected + '; every publication rectangle, the persisted simulation state and every preserved cell compare exactly; ' + (Format-FaStates $statesRolledBack))
     $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'protection.after-rollback'
 
@@ -2645,9 +2659,16 @@ try {
         $resultBeforeHandler = Get-FaRunText -Excel $excel -Procedure 'PCCM_AutomationResult'
         $excel.Run('PCCM_AutomationBegin', $true, $script:OpenFailpoint) | Out-Null
     } finally { $excel.EnableEvents = $true }
+    # OPENED WITH EVENTS OFF, THE HANDLER DID NOT RUN, and what the state reports
+    # is the FILE'S OWN SAVED PROTECTION: Stage B protects every declared sheet and
+    # the workbook structure before it saves (build_stage_b.ps1, 'protection.apply',
+    # then Save), so the copy opens protected, with the structural window closed
+    # and nothing recorded. The earlier expectation of an unprotected file
+    # contradicted the accepted build; the unprotected state is proved below,
+    # after the handler has released it.
     $null = Add-FaCheck 'rowo.open-suppressed' `
-        (($null -ne $suppressed) -and (-not $suppressed.Applied) -and ($suppressed.Protected -eq 0) -and (-not $suppressed.Structure) -and ($suppressed.Depth -eq 0) -and ($resultBeforeHandler -eq '')) `
-        ('opened with events off: ' + $(if ($null -eq $suppressed) { '<no state>' } else { $suppressed.Raw }) + '; recorded=' + $resultBeforeHandler)
+        (($null -ne $suppressed) -and $suppressed.Applied -and ($suppressed.Protected -eq @($protection.sheets).Count) -and $suppressed.Structure -and ($suppressed.Depth -eq 0) -and ($resultBeforeHandler -eq '')) `
+        ('opened with events off, protected as Stage B saved it: ' + $(if ($null -eq $suppressed) { '<no state>' } else { $suppressed.Raw }) + '; recorded=' + $resultBeforeHandler)
     $screenBefore = [bool]$excel.ScreenUpdating
     $calcBefore = [int]$excel.Calculation
     $eventsBefore = [bool]$excel.EnableEvents

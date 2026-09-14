@@ -793,7 +793,7 @@ def test_42_the_reset_scenarios_are_declined_confirmed_idempotent_and_rolled_bac
     assert "Add-FaCheck 'reset.preserved' ($preservedAfter -ceq $preservedBefore)" in code
     assert "Add-FaCheck 'reset.idempotent'" in code and "($again -ceq $confirmed)" in code
     assert "Add-FaCheck 'reset.states'" in code
-    assert "($statesReset.Calculation -ceq $statusNotCalculated) -and ($statesReset.Simulation -eq '')" in code
+    assert "($statesReset.Calculation -ceq $statusNotCalculated) -and ($statesReset.Simulation -ceq $statusInvalid)" in code
     assert "$script:ResetFailpoint = 'Phase10ResetSimulation'" in code
     assert 'FAILPOINT_RESET_SIMULATION As String = "Phase10ResetSimulation"' in _src("reset", RESET_VBA)
     assert "-FailAfterStage $script:ResetFailpoint" in code
@@ -801,10 +801,119 @@ def test_42_the_reset_scenarios_are_declined_confirmed_idempotent_and_rolled_bac
     rollback = rollback[: rollback.index("Assert-FaProtectionApplied")]
     for required in ("($injected -like 'FAIL|*')", "($publicationRolledBack -ceq $publicationFull)",
                      "($simStateRolledBack -ceq $simStateFull)", "($preservedRolledBack -ceq $preservedFull)",
-                     "($statesRolledBack.Calculation -ceq $statusCurrent)"):
+                     "($statesRolledBack.Calculation -ceq $statusCurrent)", "($statesRolledBack.Simulation -ceq $statusCurrent)",
+                     "($statesRolledBack.Annual -ceq $statusCurrent) -and ($statesRolledBack.Profile -ceq $statusCurrent)"):
         assert required in rollback, required
     assert "'*put back*'" in rollback
     assert "Every publication this command had cleared was put back" in _src("reset", RESET_VBA)
+
+
+def test_42e_the_post_reset_derived_states_are_the_production_derived_projected_words() -> None:
+    """FINAL ACCEPTANCE RUN 18 (ad330bc): reset.states failed on
+    calc=NOT CALCULATED sim=INVALID annual=NOT PRODUCED profile=NOT PRODUCED,
+    the state production derives, because the runner expected a blank
+    simulation; refused.outcome.annual repeated the expectation. HARNESS-OWNED.
+    modSimReport.DeriveSimStatus answers INVALID when CurrentRequestFingerprint
+    cannot be formed, and CurrentRequestFingerprint asks
+    CalcPrepareSimulationInputs, which refuses without a CURRENT calculation.
+    Both annual accessors answer NOT PRODUCED while no bank is active. Every
+    expected word is the projected one; no post-reset predicate expects a blank
+    simulation; reset.rollback names the profile as well."""
+    import json
+    code = _code()
+    # the projected words, bound from the accepted Phase-7 inspection
+    assert "$statusInvalid       = [string]$p7.model_states.derived_status[3]" in code
+    assert "$annualNotProduced  = [string]$p7.handoff.distribution_states[0]" in code
+    assert "$profileNotProduced = [string]$p7.handoff.profile_states[0]" in code
+    p7 = json.loads((PCCM_ROOT / "build" / "phase7_acceptance_inspection.json").read_text(encoding="utf-8"))
+    assert p7["model_states"]["derived_status"][3] == "INVALID"
+    assert p7["model_states"]["derived_status"][0] == "NOT CALCULATED"
+    assert p7["handoff"]["distribution_states"][0] == "NOT PRODUCED" and p7["handoff"]["profile_states"][0] == "NOT PRODUCED"
+    contract = (PCCM_ROOT / "build" / "vba" / "modSimContract.bas").read_text(encoding="utf-8")
+    assert 'Public Const SIM_STATE_INVALID As String = "INVALID"' in contract
+    assert 'Public Const SIM_ANNUAL_STATE_NOT_PRODUCED As String = "NOT PRODUCED"' in contract
+    # the two predicates, word for word
+    reset_states = code[code.index("Add-FaCheck 'reset.states'"):]
+    reset_states = reset_states[: reset_states.index("$excel.Calculate()")]
+    assert ("(($statesReset.Calculation -ceq $statusNotCalculated) -and ($statesReset.Simulation -ceq $statusInvalid) -and\n"
+            "         ($statesReset.Annual -ceq $annualNotProduced) -and ($statesReset.Profile -ceq $profileNotProduced))") in reset_states
+    refused = code[code.index("Add-FaCheck 'refused.outcome.annual'"):]
+    refused = refused[: refused.index("Assert-FaProtectionApplied")]
+    assert ("(($refusedAnnual -like 'FAIL|*') -and ($statesAfterRefusal.Calculation -ceq $statusNotCalculated) -and\n"
+            "         ($statesAfterRefusal.Simulation -ceq $statusInvalid) -and ($statesAfterRefusal.Annual -ceq $annualNotProduced) -and\n"
+            "         ($statesAfterRefusal.Profile -ceq $profileNotProduced))") in refused
+    for literal in ("'INVALID'", "'NOT PRODUCED", "'NOT CALCULATED'", "-eq ''", "-like ''"):
+        assert literal not in reset_states and literal not in refused, literal
+    # no derived-state read anywhere expects a blank simulation
+    assert re.search(r"\$states\w*\.Simulation\s+-c?(eq|ne|like)\s+''", code) is None
+    # the rollback names every derived state
+    rollback = code[code.index("Add-FaCheck 'reset.rollback'"):]
+    rollback = rollback[: rollback.index("Assert-FaProtectionApplied")]
+    assert "($statesRolledBack.Annual -ceq $statusCurrent) -and ($statesRolledBack.Profile -ceq $statusCurrent)" in rollback
+    # the states are read through the side-effect-free derivations
+    states = _function("Get-FaStates", code)
+    assert "-Procedure 'SimReportDerivedStatus'" in states and "-Procedure 'PCCM_ModelCheckCalculationState'" in states
+    assert "-Procedure 'PCCM_AnnualDistributionState'" in states and "-Procedure 'PCCM_AnnualProfileState'" in states
+    # production: the derivation the words come from
+    sim = _src("simreport", PCCM_ROOT / "src" / "vba" / "modSimReport.bas")
+    assert "SimReportDerivedStatus = DeriveSimStatus()" in sim
+    derive = sim[sim.index("Private Function DeriveSimStatus()"): sim.index("End Function", sim.index("Private Function DeriveSimStatus()"))]
+    assert "If Not CurrentRequestFingerprint(fingerprint, detail) Then" in derive
+    assert derive.index("If Not CurrentRequestFingerprint(fingerprint, detail) Then") < derive.index("DeriveSimStatus = SIM_STATE_INVALID")
+    assert "WriteStatusBlock" not in derive
+    fingerprint = sim[sim.index("Private Function CurrentRequestFingerprint("):]
+    fingerprint = fingerprint[: fingerprint.index("End Function")]
+    assert "If Not modCalcReport.CalcPrepareSimulationInputs(" in fingerprint
+    calc = _src("calcreport", PCCM_ROOT / "src" / "vba" / "modCalcReport.bas")
+    assert "the simulation needs a CURRENT calculation" in calc
+    assert "WriteStatusBlock" not in calc[calc.index("Public Function CalcReportDerivedStatus("): calc.index("End Function", calc.index("Public Function CalcReportDerivedStatus("))]
+    annual = (PCCM_ROOT / "src" / "vba" / "modSimAnnualStore.bas").read_text(encoding="utf-8")
+    for accessor in ("PCCM_AnnualDistributionState", "PCCM_AnnualProfileState"):
+        body = annual[annual.index("Public Function " + accessor + "()"):]
+        body = body[: body.index("End Function")]
+        assert "If Not IsBank(bank) Then" in body and (accessor + " = SIM_ANNUAL_STATE_NOT_PRODUCED") in body, accessor
+
+
+TAIL_HARNESS = PCCM_ROOT / "tests" / "phase10_final_acceptance_tail_flow.ps1"
+
+
+def _tail_lines(runner: Path = RUNNER) -> dict[str, str]:
+    done = subprocess.run([PWSH, "-NoProfile", "-File", str(TAIL_HARNESS), "-Runner", str(runner),
+                           "-BuildDir", str(PCCM_ROOT / "build")], capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stdout + done.stderr
+    lines: dict[str, str] = {}
+    for line in done.stdout.splitlines():
+        parts = line.split("|", 2)
+        if len(parts) == 3 and parts[0] == "TAIL":
+            lines[parts[1]] = parts[2]
+    assert lines, done.stdout
+    return lines
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_42f_the_tail_predicates_execute_over_the_production_derived_states() -> None:
+    """EXECUTED: each remaining-tail predicate, lifted from the runner by AST
+    with the vocabulary bound through the runner's own projection lines, is
+    evaluated over the state production derives and over the states it must
+    refuse. reset.states and refused.outcome.annual pass only on
+    NOT CALCULATED / INVALID / NOT PRODUCED / NOT PRODUCED; reset.rollback
+    passes only on production's exact composed failure with every derived
+    state CURRENT; rowo.open-suppressed passes only on the protection Stage B
+    saved; rowo.released-not-half-protected only on the fully released state."""
+    lines = _tail_lines()
+    assert lines["vocabulary"] == "calc=NOT CALCULATED|sim=INVALID|annual=NOT PRODUCED|profile=NOT PRODUCED|sheets=14"
+    passing = ("reset.states.production-derived", "refused.annual.unchanged", "rollback.restored",
+               "open-suppressed.saved-protection", "released.unprotected")
+    for case, value in lines.items():
+        if case == "vocabulary":
+            continue
+        assert value == ("True" if case in passing else "False"), (case, value)
+    for case in passing:
+        assert case in lines, case
+    for case in ("reset.states.blank-simulation", "refused.annual.blank-simulation", "reset.states.profile-left",
+                 "refused.annual.profile-left", "rollback.profile-historical", "open-suppressed.unprotected-file",
+                 "open-suppressed.recorded", "released.still-protected"):
+        assert lines[case] == "False", case
 
 
 def test_42b_the_declined_reset_reads_its_prompt_before_the_seam_is_reset_and_keeps_every_requirement() -> None:
@@ -1365,8 +1474,8 @@ def test_56_the_row_o_session_reaches_the_real_handler_through_excels_event_swit
     assert "Workbook_Open" not in armed, "the handler is run while events are off"
     # the failpoint name is the handler's own constant
     assert f"$script:OpenFailpoint = '{_handler_failpoint_name()}'" in code
-    # the handler did not run at open: no protection, nothing recorded
-    assert "Add-FaCheck 'rowo.open-suppressed' `\n        (($null -ne $suppressed) -and (-not $suppressed.Applied) -and ($suppressed.Protected -eq 0) -and (-not $suppressed.Structure) -and ($suppressed.Depth -eq 0) -and ($resultBeforeHandler -eq ''))" in block
+    # the handler did not run at open: the file's own saved protection, nothing recorded (test_56b)
+    assert "Add-FaCheck 'rowo.open-suppressed' `\n        (($null -ne $suppressed) -and $suppressed.Applied -and ($suppressed.Protected -eq @($protection.sheets).Count) -and $suppressed.Structure -and ($suppressed.Depth -eq 0) -and ($resultBeforeHandler -eq ''))" in block
     # the REAL handler, in the workbook's own document module, after the switch is back
     run = "$excel.Run(\"'\" + [string]$wb.Name + \"'!ThisWorkbook.Workbook_Open\")"
     assert block.count(run) == 2
@@ -1405,6 +1514,40 @@ def test_56_the_row_o_session_reaches_the_real_handler_through_excels_event_swit
     assert "$excel.Run('PCCM_AutomationEnd')" in code[code.index("-Scenario 'rowo.reopen-applied'"):]
     # nothing is saved; the session is closed by the accepted shutdown
     assert ".Save(" not in code and ".SaveAs(" not in code
+
+
+def test_56b_the_suppressed_open_expects_the_protection_stage_b_saved() -> None:
+    """FINAL ACCEPTANCE RUN 18 TAIL AUDIT (ad330bc). rowo.open-suppressed expected
+    a copy opened with events off to be UNPROTECTED. Stage B protects every
+    declared sheet (UserInterfaceOnly) and the workbook structure before it
+    saves, so the file itself carries protection and a suppressed open reports
+    it; modProtection.ProtectionIsApplied is true exactly then. HARNESS-OWNED.
+    The check now expects the saved protection - every declared sheet, the
+    structure, the window closed - and nothing recorded; the unprotected state
+    is proved after the handler's release, as before."""
+    import json
+    code = _code()
+    block = code[code.index("$openPath = Join-Path $openDir 'PCCM_open_failure_copy.xlsm'"):]
+    block = block[: block.index("Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'rowo.reopen-applied'") + 120]
+    assert ("Add-FaCheck 'rowo.open-suppressed' `\n        (($null -ne $suppressed) -and $suppressed.Applied -and "
+            "($suppressed.Protected -eq @($protection.sheets).Count) -and $suppressed.Structure -and "
+            "($suppressed.Depth -eq 0) -and ($resultBeforeHandler -eq ''))") in block
+    assert "($suppressed.Protected -eq 0)" not in block and "(-not $suppressed.Applied)" not in block
+    assert "Add-FaCheck 'rowo.released-not-half-protected' `\n        ((-not $released.Applied) -and ($released.Protected -eq 0) -and (-not $released.Structure) -and ($released.Depth -eq 0))" in block
+    # Stage B: protection applied, then saved, on the declared sheets and the structure
+    stage_b = (WINDOWS / "build_stage_b.ps1").read_text(encoding="utf-8")
+    apply_at = stage_b.index("Set-StageBBuildOp 'protection.apply'")
+    assert apply_at < stage_b.index("Set-StageBBuildOp 'workbook.save'")
+    assert "$pws.Protect([Type]::Missing, $true, $true, $false, $true)" in stage_b[apply_at:]
+    assert "$wb.Protect([Type]::Missing, $true, $false)" in stage_b[apply_at:]
+    manifest = json.loads((PCCM_ROOT / "build" / "stage_b_manifest.json").read_text(encoding="utf-8"))
+    projection = json.loads((PCCM_ROOT / "build" / "phase10_protection_inspection.json").read_text(encoding="utf-8"))
+    assert manifest["protection"]["protect_structure"] is True and manifest["protection"]["user_interface_only"] is True
+    assert list(manifest["protection"]["sheets"]) == [entry["sheet"] for entry in projection["sheets"]]
+    # production: applied means every worksheet protected and the structure protected
+    applied = _src("protection", PROTECTION_VBA)
+    applied = applied[applied.index("Public Function ProtectionIsApplied()"): applied.index("End Function", applied.index("Public Function ProtectionIsApplied()"))]
+    assert "If Not sheet.ProtectContents Then Exit Function" in applied and "ProtectionIsApplied = ThisWorkbook.ProtectStructure" in applied
 
 
 def test_57_the_handler_carries_one_dormant_failpoint_after_the_apply_and_reads_err_before_the_release() -> None:
@@ -1724,10 +1867,84 @@ RUN14_CONFIRMED_BEFORE = (
     "          else { 'still holding a publication: ' + ($uncleared -join '; ') })\n")
 
 
+RUN18_VOCABULARY = ("# NOT PRODUCED, projected: the word both annual accessors answer while no\n"
+                    "# simulation bank is active - after Reset, and in the untouched workbook.\n"
+                    "$annualNotProduced  = [string]$p7.handoff.distribution_states[0]\n"
+                    "$profileNotProduced = [string]$p7.handoff.profile_states[0]\n")
+RUN18_RESET_STATES_NOW = (
+    "    # THE DERIVED STATES AFTER RESET, AS PRODUCTION DERIVES THEM. Final acceptance\n"
+    "    # run 18 at ad330bc observed calc=NOT CALCULATED sim=INVALID annual=NOT PRODUCED\n"
+    "    # profile=NOT PRODUCED, and the runner expected a blank simulation. modSimReport's\n"
+    "    # DeriveSimStatus answers INVALID when the current request fingerprint cannot be\n"
+    "    # formed, and CalcPrepareSimulationInputs will not form it without a CURRENT\n"
+    "    # calculation: no publication is not a blank state. The blank active bank makes\n"
+    "    # both annual products NOT PRODUCED. Every word here is the projected one.\n"
+    "    $statesReset = Get-FaStates -Excel $excel\n"
+    "    $null = Add-FaCheck 'reset.states' `\n"
+    "        (($statesReset.Calculation -ceq $statusNotCalculated) -and ($statesReset.Simulation -ceq $statusInvalid) -and\n"
+    "         ($statesReset.Annual -ceq $annualNotProduced) -and ($statesReset.Profile -ceq $profileNotProduced)) `\n")
+RUN18_RESET_STATES_BEFORE = (
+    "    $statesReset = Get-FaStates -Excel $excel\n"
+    "    $null = Add-FaCheck 'reset.states' `\n"
+    "        (($statesReset.Calculation -ceq $statusNotCalculated) -and ($statesReset.Simulation -eq '') -and\n"
+    "         ($statesReset.Annual -like 'NOT PRODUCED*')) `\n")
+RUN18_REFUSED_NOW = (
+    "    # THE SAME DERIVED STATES AS AFTER RESET: the refused attempt persists the\n"
+    "    # simulation status it evaluated and decides nothing derived.\n"
+    "    $null = Add-FaCheck 'refused.outcome.annual' `\n"
+    "        (($refusedAnnual -like 'FAIL|*') -and ($statesAfterRefusal.Calculation -ceq $statusNotCalculated) -and\n"
+    "         ($statesAfterRefusal.Simulation -ceq $statusInvalid) -and ($statesAfterRefusal.Annual -ceq $annualNotProduced) -and\n"
+    "         ($statesAfterRefusal.Profile -ceq $profileNotProduced)) `\n")
+RUN18_REFUSED_BEFORE = (
+    "    $null = Add-FaCheck 'refused.outcome.annual' `\n"
+    "        (($refusedAnnual -like 'FAIL|*') -and ($statesAfterRefusal.Calculation -ceq $statusNotCalculated) -and\n"
+    "         ($statesAfterRefusal.Simulation -eq '') -and ($statesAfterRefusal.Annual -like 'NOT PRODUCED*')) `\n")
+RUN18_ROLLBACK_NOW = "         ($statesRolledBack.Annual -ceq $statusCurrent) -and ($statesRolledBack.Profile -ceq $statusCurrent)) `\n"
+RUN18_ROLLBACK_BEFORE = "         ($statesRolledBack.Annual -ceq $statusCurrent)) `\n"
+RUN18_OPEN_NOW = (
+    "    # OPENED WITH EVENTS OFF, THE HANDLER DID NOT RUN, and what the state reports\n"
+    "    # is the FILE'S OWN SAVED PROTECTION: Stage B protects every declared sheet and\n"
+    "    # the workbook structure before it saves (build_stage_b.ps1, 'protection.apply',\n"
+    "    # then Save), so the copy opens protected, with the structural window closed\n"
+    "    # and nothing recorded. The earlier expectation of an unprotected file\n"
+    "    # contradicted the accepted build; the unprotected state is proved below,\n"
+    "    # after the handler has released it.\n"
+    "    $null = Add-FaCheck 'rowo.open-suppressed' `\n"
+    "        (($null -ne $suppressed) -and $suppressed.Applied -and ($suppressed.Protected -eq @($protection.sheets).Count) -and $suppressed.Structure -and ($suppressed.Depth -eq 0) -and ($resultBeforeHandler -eq '')) `\n"
+    "        ('opened with events off, protected as Stage B saved it: ' + $(if ($null -eq $suppressed) { '<no state>' } else { $suppressed.Raw }) + '; recorded=' + $resultBeforeHandler)\n")
+RUN18_OPEN_BEFORE = (
+    "    $null = Add-FaCheck 'rowo.open-suppressed' `\n"
+    "        (($null -ne $suppressed) -and (-not $suppressed.Applied) -and ($suppressed.Protected -eq 0) -and (-not $suppressed.Structure) -and ($suppressed.Depth -eq 0) -and ($resultBeforeHandler -eq '')) `\n"
+    "        ('opened with events off: ' + $(if ($null -eq $suppressed) { '<no state>' } else { $suppressed.Raw }) + '; recorded=' + $resultBeforeHandler)\n")
+
+
+def _without_run18_changes(text: str) -> str:
+    """`text` (LF) with the run-18 tail-audit corrections taken back out: the two
+    projected NOT PRODUCED bindings removed, reset.states and
+    refused.outcome.annual put back to their blank-simulation form,
+    reset.rollback without the profile, and rowo.open-suppressed put back to
+    the unprotected-file expectation that executed at ad330bc."""
+    for current, before in ((RUN18_VOCABULARY, ""), (RUN18_RESET_STATES_NOW, RUN18_RESET_STATES_BEFORE),
+                            (RUN18_REFUSED_NOW, RUN18_REFUSED_BEFORE), (RUN18_ROLLBACK_NOW, RUN18_ROLLBACK_BEFORE),
+                            (RUN18_OPEN_NOW, RUN18_OPEN_BEFORE)):
+        assert text.count(current) == 1, current[:60]
+        text = text.replace(current, before)
+    return text
+
+
+def test_60c12_the_tail_audit_corrections_are_the_only_runner_change_since_the_run_18_head() -> None:
+    """EXACT REVERSAL against ad330bc, the head final acceptance run 18 executed."""
+    tested = _git("show", "ad330bc:pccm/bootstrap/windows/phase10_final_acceptance.ps1").replace("\r\n", "\n")
+    now = _runner().replace("\r\n", "\n")
+    assert _without_run18_changes(now) == tested
+    assert now != tested
+
+
 def _without_run17_changes(text: str) -> str:
     """`text` (LF) with the run-17 nested-array correction taken back out: the
     three problem-list helpers' `return $problems` - the early return included -
     put back to the `return , $problems` that executed at 24edbcb."""
+    text = _without_run18_changes(text)
     start = text.index("# THE SEMANTIC POST-RESET STATE, AS PRODUCTION DEFINES IT.")
     stop = text.index("# The live, DERIVED states, read through accessors that write nothing")
     block = text[start:stop]
@@ -2506,6 +2723,8 @@ def test_61_refused_is_observed_only_as_an_attempt_outcome() -> None:
     annual = annual[: annual.index("Assert-FaProtectionApplied")]
     assert "($refusedAnnual -like 'FAIL|*')" in annual
     assert "($statesAfterRefusal.Calculation -ceq $statusNotCalculated)" in annual
+    assert "($statesAfterRefusal.Simulation -ceq $statusInvalid) -and ($statesAfterRefusal.Annual -ceq $annualNotProduced)" in annual
+    assert "($statesAfterRefusal.Profile -ceq $profileNotProduced)" in annual
 
 
 def test_62_protection_is_asserted_after_every_success_refusal_and_error_path() -> None:
