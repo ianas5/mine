@@ -725,6 +725,165 @@ function Get-FaCellLockState {
     }
 }
 
+# THE OPEN/READY BOUNDARY. Final acceptance runs 15 and 16 at b5c3f9a both died
+# between Workbooks.Open and the first workbook read - once with
+# RPC_E_CALL_REJECTED, once with a null-valued expression - with the Stage-B
+# bootstrap already complete and the shutdown clean: the classic post-open race
+# the Stage-B bootstrap already guards with Wait-StageBWorkbookReady. This is the
+# same policy, through the same shared authority: every read goes through
+# Invoke-ComRetryRead (com_lifecycle.ps1), which retries ONLY the recognised
+# transient rejections (RPC_E_CALL_REJECTED, RPC_E_SERVERCALL_RETRYLATER) within
+# its accepted bounds and rethrows everything else untouched; a rejection the
+# helper could not resolve within its own bounds is 'not ready yet' for one more
+# bounded outer attempt. Two harmless reads decide readiness - the workbook's
+# FullName (identity: the wrong path is an error, never a delay) and its
+# Worksheets.Count (the first structural fact every later read needs). No
+# production endpoint, no acceptance predicate and no write sit inside the loop.
+function Wait-FaWorkbookReady {
+    param($Workbook, [string]$ExpectedPath,
+          [int]$MaxAttempts   = 12,
+          [int]$FirstDelayMs  = 250,
+          [int]$MaxDelayMs    = 2000,
+          [int]$TotalBudgetMs = 15000)
+    if ($null -eq $Workbook) { throw 'Wait-FaWorkbookReady: no workbook.' }
+    if ([string]::IsNullOrWhiteSpace($ExpectedPath)) { throw 'Wait-FaWorkbookReady: no expected path to recognise the workbook by.' }
+    if ($MaxAttempts -lt 1) { throw 'Wait-FaWorkbookReady: MaxAttempts must be at least 1.' }
+    if ($TotalBudgetMs -lt 0) { throw 'Wait-FaWorkbookReady: TotalBudgetMs may not be negative.' }
+    $attempt = 0
+    $waitedMs = 0
+    $delay = $FirstDelayMs
+    $nameState = 'unresolved'
+    $sheetState = 'unresolved'
+    $fullName = ''
+    $sheetCount = 0
+    $rejections = @()
+    $ready = $false
+    while ($attempt -lt $MaxAttempts) {
+        $attempt = $attempt + 1
+        $nameState = 'unresolved'
+        $sheetState = 'unresolved'
+        $nameValue = $null
+        try {
+            $nameRead = Invoke-ComRetryRead -Target $Workbook -Member 'FullName' -Description 'the opened workbook FullName'
+            if ($nameRead.Attempts -gt 1) { $rejections += ('FullName:' + $nameRead.Rejections) }
+            $nameValue = $nameRead.Value
+        } catch {
+            if ([string]::IsNullOrWhiteSpace((Get-ComRejectionName $_))) { throw }
+            $rejections += ('FullName:' + (Get-ComRejectionName $_))
+            $nameValue = $null
+        }
+        if (($null -eq $nameValue) -or [string]::IsNullOrWhiteSpace([string]$nameValue)) {
+            $nameState = 'no-answer'
+        } elseif (([string]$nameValue).Trim().ToLowerInvariant() -ne $ExpectedPath.Trim().ToLowerInvariant()) {
+            throw ('READY: the opened workbook is bound to ' + [string]$nameValue + ' and not to ' + $ExpectedPath + '. Waiting cannot change which workbook this is.')
+        } else {
+            $fullName = [string]$nameValue
+            $nameState = 'ok'
+        }
+        $sheetsObject = $null
+        $countValue = $null
+        try {
+            $sheetsRead = Invoke-ComRetryRead -Target $Workbook -Member 'Worksheets' -Description 'the opened workbook Worksheets'
+            if ($sheetsRead.Attempts -gt 1) { $rejections += ('Worksheets:' + $sheetsRead.Rejections) }
+            $sheetsObject = $sheetsRead.Value
+            if ($null -ne $sheetsObject) {
+                $countRead = Invoke-ComRetryRead -Target $sheetsObject -Member 'Count' -Description 'the opened workbook Worksheets.Count'
+                if ($countRead.Attempts -gt 1) { $rejections += ('Worksheets.Count:' + $countRead.Rejections) }
+                $countValue = $countRead.Value
+            }
+        } catch {
+            if ([string]::IsNullOrWhiteSpace((Get-ComRejectionName $_))) { throw }
+            $rejections += ('Worksheets:' + (Get-ComRejectionName $_))
+            $countValue = $null
+        } finally {
+            if ($null -ne $sheetsObject) { Release-Transient $sheetsObject 'Worksheets'; $sheetsObject = $null }
+        }
+        if ($null -eq $countValue) {
+            $sheetState = 'no-answer'
+        } elseif ((([string]$countValue).Trim()) -notmatch '^[0-9]+$') {
+            throw ('READY: the opened workbook Worksheets.Count answered ' + ([string]$countValue).Trim() + ', which is not a count.')
+        } elseif ([int](([string]$countValue).Trim()) -lt 1) {
+            $sheetState = 'no-answer'
+        } else {
+            $sheetCount = [int](([string]$countValue).Trim())
+            $sheetState = 'ok'
+        }
+        if (($nameState -eq 'ok') -and ($sheetState -eq 'ok')) { $ready = $true; break }
+        if ($attempt -ge $MaxAttempts) { break }
+        if (($waitedMs + $delay) -gt $TotalBudgetMs) { break }
+        Start-Sleep -Milliseconds $delay
+        $waitedMs = $waitedMs + $delay
+        $delay = [Math]::Min(($delay + $FirstDelayMs), $MaxDelayMs)
+    }
+    return [pscustomobject]@{
+        Ready      = $ready
+        Attempts   = $attempt
+        WaitedMs   = $waitedMs
+        FullName   = $fullName
+        Sheets     = $sheetCount
+        NameState  = $nameState
+        SheetState = $sheetState
+        Rejections = (@($rejections | Select-Object -Unique) -join ', ')
+    }
+}
+
+# THE OPEN/READY LINE AND CHECK. One line whatever happened - attempts, the
+# milliseconds waited and every rejection name - and a fail-fast check that
+# names the session, so a workbook that never becomes ready is an OPEN/READY
+# harness failure before any acceptance scenario is claimed.
+function Assert-FaWorkbookReady {
+    param($Workbook, [string]$ExpectedPath, [string]$Session)
+    $state = Wait-FaWorkbookReady -Workbook $Workbook -ExpectedPath $ExpectedPath
+    Write-FaLine ('READY|' + $Session + '|attempts=' + [string]$state.Attempts + '|waited=' + [string]$state.WaitedMs + 'ms' +
+                  '|fullname=' + $state.NameState + '|worksheets=' + $state.SheetState +
+                  '|rejections=' + $(if ($state.Rejections -eq '') { 'none' } else { $state.Rejections }))
+    $null = Add-FaCheck ('session.open-ready.' + $Session) $state.Ready `
+        $(if ($state.Ready) { ($state.FullName + ' answered ' + [string]$state.Sheets + ' worksheets after ' + [string]$state.Attempts + ' attempt(s) and ' + [string]$state.WaitedMs + ' ms') }
+          else { ('OPEN/READY harness failure: the workbook did not answer after ' + [string]$state.Attempts + ' attempt(s) and ' + [string]$state.WaitedMs + ' ms (fullname=' + $state.NameState + ', worksheets=' + $state.SheetState + '; rejections: ' + $state.Rejections + ')') })
+    return $state
+}
+
+# THE FATAL DIAGNOSTICS. Plain data from the error record: the exception type,
+# the message, the script line, the offending source line and a bounded script
+# stack, so a null-valued expression is located in one run. The verdict is not
+# touched: a fatal is still a fatal.
+function Format-FaFatalLines {
+    param($ErrorRecord, [int]$MaxStackLines = 8)
+    $lines = @()
+    $type = ''
+    $message = ''
+    try { $type = [string]$ErrorRecord.Exception.GetType().FullName } catch { $type = '' }
+    try { $message = [string]$ErrorRecord.Exception.Message } catch { $message = '' }
+    if ($message -eq '') { try { $message = [string]$ErrorRecord } catch { $message = 'unknown error' } }
+    $lines += ('FATAL.TYPE|' + $(if ($type -eq '') { 'unknown' } else { $type }))
+    $lines += ('FATAL.MESSAGE|' + ($message -replace '[\r\n]+', ' '))
+    $inner = ''
+    try { if ($null -ne $ErrorRecord.Exception.InnerException) { $inner = [string]$ErrorRecord.Exception.InnerException.Message } } catch { $inner = '' }
+    if ($inner -ne '') { $lines += ('FATAL.INNER|' + ($inner -replace '[\r\n]+', ' ')) }
+    $lineNumber = ''
+    $sourceLine = ''
+    $position = ''
+    try {
+        if ($null -ne $ErrorRecord.InvocationInfo) {
+            $lineNumber = [string]$ErrorRecord.InvocationInfo.ScriptLineNumber
+            $sourceLine = ([string]$ErrorRecord.InvocationInfo.Line).Trim()
+            $position = ([string]$ErrorRecord.InvocationInfo.PositionMessage -replace '[\r\n]+', ' ').Trim()
+        }
+    } catch { }
+    $lines += ('FATAL.LINE|' + $(if ($lineNumber -eq '') { 'unknown' } else { $lineNumber }))
+    if ($sourceLine -ne '') { $lines += ('FATAL.SOURCE|' + $sourceLine) }
+    if ($position -ne '') { $lines += ('FATAL.POSITION|' + $position) }
+    $stack = @()
+    try { $stack = @(([string]$ErrorRecord.ScriptStackTrace) -split '\r?\n' | Where-Object { $_.Trim() -ne '' }) } catch { $stack = @() }
+    $shown = 0
+    foreach ($frame in $stack) {
+        if ($shown -ge $MaxStackLines) { $lines += ('FATAL.STACK|... ' + [string]($stack.Count - $MaxStackLines) + ' more frame(s)'); break }
+        $lines += ('FATAL.STACK|' + $frame.Trim())
+        $shown = $shown + 1
+    }
+    return $lines
+}
+
 # ===========================================================================
 # THE PRODUCTION ENTRY POINTS, THROUGH THE ACCEPTED AUTOMATION SEAM
 # ===========================================================================
@@ -1475,6 +1634,8 @@ try {
     $comAcquired = $comAcquired + 1
     $wb = $workbooks.Open($stageBPath)
     $comAcquired = $comAcquired + 1
+    # THE OPEN/READY BOUNDARY: bounded, transient-only, before the first workbook read.
+    $null = Assert-FaWorkbookReady -Workbook $wb -ExpectedPath $stageBPath -Session 'main'
 
     # 6a. THE PERSISTED CALCULATION HISTORY, read from the model's own persisted
     # cells BEFORE any accessor evaluates: no calculation has ever been
@@ -2425,6 +2586,7 @@ try {
     Copy-Item -LiteralPath $stageBPath -Destination $copyPath -Force
     $wb = $workbooks.Open($copyPath)
     $comAcquired = $comAcquired + 1
+    $null = Assert-FaWorkbookReady -Workbook $wb -ExpectedPath $copyPath -Session 'copy'
     $copyCompile = ''
     try { $null = $excel.Run('PCCM_CalculationStatus') } catch { $copyCompile = (Format-Err $_) }
     $null = Add-FaCheck 'copy.compile' ($copyCompile -eq '') $(if ($copyCompile -eq '') { ('opened from ' + $copyPath + ' and the VBAProject compiles') } else { $copyCompile })
@@ -2477,6 +2639,7 @@ try {
     try {
         $wb = $workbooks.Open($openPath)
         $comAcquired = $comAcquired + 1
+        $null = Assert-FaWorkbookReady -Workbook $wb -ExpectedPath $openPath -Session 'open-failure'
         Import-FaFixtureWindow -Excel $excel -Workbook $wb -Manifest $manifest -ScriptDir $scriptDir
         $suppressed = Get-FaProtectionState -Excel $excel
         $resultBeforeHandler = Get-FaRunText -Excel $excel -Procedure 'PCCM_AutomationResult'
@@ -2544,6 +2707,7 @@ try {
     $fatal = (Format-Err $_)
     Write-FaLine ''
     Write-FaLine ('FATAL|' + $fatal)
+    foreach ($fatalLine in @(Format-FaFatalLines -ErrorRecord $_)) { Write-FaLine ([string]$fatalLine) }
 } finally {
     # --- shutdown, the accepted path, leaf before parent --------------------
     if ($null -ne $wb) {

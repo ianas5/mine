@@ -865,6 +865,63 @@ def test_108_a_blank_sentinel_accepted_is_caught_by_the_executed_reset_harness()
     assert conformance._reset_lines()["calc.sentinel-missing"][0] == 1
 
 
+# ---------------------------------------------------------------------------
+# FINAL ACCEPTANCE RUNS 15/16: THE OPEN/READY BOUNDARY AND THE FATAL DIAGNOSTICS
+# ---------------------------------------------------------------------------
+def test_109_removing_the_main_readiness_barrier_is_refused() -> None:
+    _mutate("test_09b",
+            "    $null = Assert-FaWorkbookReady -Workbook $wb -ExpectedPath $stageBPath -Session 'main'\n",
+            "")
+
+
+def test_110_reading_the_workbook_before_the_barrier_is_refused() -> None:
+    _mutate("test_09b",
+            "    $null = Assert-FaWorkbookReady -Workbook $wb -ExpectedPath $stageBPath -Session 'main'\n",
+            "    $null = Get-FaBlock -Workbook $wb -SheetName $calcSheet -Address $calcAttemptCell\n    $null = Assert-FaWorkbookReady -Workbook $wb -ExpectedPath $stageBPath -Session 'main'\n")
+
+
+def test_111_retrying_a_non_transient_failure_is_refused() -> None:
+    _mutate("test_09b",
+            "            if ([string]::IsNullOrWhiteSpace((Get-ComRejectionName $_))) { throw }\n            $rejections += ('FullName:' + (Get-ComRejectionName $_))\n",
+            "            $rejections += ('FullName:' + (Get-ComRejectionName $_))\n")
+
+
+def test_112_an_unbounded_readiness_loop_is_refused() -> None:
+    _mutate("test_09b",
+            "    while ($attempt -lt $MaxAttempts) {\n        $attempt = $attempt + 1\n        $nameState = 'unresolved'\n",
+            "    while ($true) {\n        $attempt = $attempt + 1\n        $nameState = 'unresolved'\n")
+
+
+def test_113_a_production_operation_inside_the_readiness_loop_is_refused() -> None:
+    _mutate("test_09b",
+            "        $nameValue = $null\n        try {\n            $nameRead = Invoke-ComRetryRead",
+            "        $nameValue = $null\n        $null = $Workbook.Application.Run('PCCM_Calculate')\n        try {\n            $nameRead = Invoke-ComRetryRead")
+
+
+def test_114_a_readiness_failure_that_does_not_fail_fast_is_refused() -> None:
+    _mutate("test_09b",
+            "    $null = Add-FaCheck ('session.open-ready.' + $Session) $state.Ready `\n",
+            "    $null = Add-FaCheck ('session.open-ready.' + $Session) $state.Ready -Continue `\n")
+
+
+def test_115_dropping_the_fatal_diagnostics_is_refused() -> None:
+    _mutate("test_09c",
+            "    foreach ($fatalLine in @(Format-FaFatalLines -ErrorRecord $_)) { Write-FaLine ([string]$fatalLine) }\n",
+            "")
+
+
+def test_116_a_fatal_formatter_without_the_script_line_is_refused() -> None:
+    _mutate("test_09c",
+            "            $lineNumber = [string]$ErrorRecord.InvocationInfo.ScriptLineNumber\n",
+            "            $lineNumber = ''\n")
+
+
+def test_117_an_undeclared_runner_edit_since_the_run_15_head_is_refused() -> None:
+    _mutate("test_60c10",
+            "    $null = Add-FaCheck 'repair.rollback.then-repaired' (($repairedAfterRollback -like 'OK|*') -and $rowTwoBlank) `\n",
+            "    $null = Add-FaCheck 'repair.rollback.then-repaired' ($repairedAfterRollback -like 'OK|*') `\n")
+
+
 if __name__ == "__main__":
     failures = 0
     for name in sorted(n for n in dir() if n.startswith("test_")):

@@ -66,7 +66,7 @@ STRUCTURAL_COMMANDS = ("PCCM_ApplyTimeline", "PCCM_AddCostLine", "PCCM_DeleteCos
                        "PCCM_AddRisk", "PCCM_DeleteRiskById")
 # Every scenario line the authorisation asked for, and the runner must record.
 REQUIRED_SCENARIOS = (
-    "bootstrap", "compile", "sheets", "modules", "metadata.rows", "metadata.model-version",
+    "bootstrap", "session.open-ready.", "compile", "sheets", "modules", "metadata.rows", "metadata.model-version",
     "metadata.builder-version", "metadata.build-phase", "metadata.source-revision",
     "protection.initial", "state.initial.persisted", "state.initial.live", "fixture", "structural.add-delete.",
     "structural.apply-timeline", "calculate.current", "modelcheck.calculated",
@@ -283,6 +283,126 @@ def test_08_the_model_is_the_accepted_w4_case_not_a_builder_in_the_runner() -> N
     fixture = code[code.index("Open-FaFixtureWindow -Excel $excel -Protection $protection -Scenario 'fixture'"):]
     fixture = fixture[: fixture.index("Add-FaCheck 'fixture'")]
     assert "Set-Phase5Fixture" in fixture and "finally" in fixture and "Close-FaFixtureWindow" in fixture
+
+
+def test_09b_every_session_open_is_followed_by_the_bounded_shared_authority_readiness_barrier() -> None:
+    """FINAL ACCEPTANCE RUNS 15 AND 16 (b5c3f9a) died between Workbooks.Open and
+    the first workbook read - RPC_E_CALL_REJECTED once, a null-valued expression
+    once - with the bootstrap complete and the shutdown clean. HARNESS-OWNED.
+    Every Workbooks.Open is now followed by Assert-FaWorkbookReady before the
+    first read: the same policy the Stage-B bootstrap's Wait-StageBWorkbookReady
+    applies, through the same shared authority (Invoke-ComRetryRead in
+    com_lifecycle.ps1, which retries ONLY the recognised transient rejections
+    within its accepted bounds and rethrows everything else), bounded in the
+    head, with no production endpoint, acceptance predicate or write inside the
+    loop; a workbook that never answers is an OPEN/READY failure before any
+    acceptance scenario, and the report carries attempts and waited time."""
+    code = _code()
+    opens = [m.end() for m in re.finditer(re.escape("$workbooks.Open("), code)]
+    assert len(opens) == 3
+    for session, path in (("main", "$stageBPath"), ("copy", "$copyPath"), ("open-failure", "$openPath")):
+        barrier = code.index(f"Assert-FaWorkbookReady -Workbook $wb -ExpectedPath {path} -Session '{session}'")
+        open_at = max(o for o in opens if o < barrier)
+        between = code[open_at: barrier]
+        assert "$comAcquired = $comAcquired + 1" in between
+        for read in ("Get-FaBlock", ".Run(", "Import-FaFixtureWindow", "Get-FaProtectionState", "Add-FaCheck", "Worksheets"):
+            assert read not in between, (session, read)
+    # the main barrier precedes the first workbook acceptance read, which stays state.initial.persisted
+    main = code.index("Assert-FaWorkbookReady -Workbook $wb -ExpectedPath $stageBPath -Session 'main'")
+    first_read = code.index("$persistedStatus = Format-FaCell ((Get-FaBlock", main)
+    assert "Add-FaCheck 'state.initial.persisted'" in code[first_read: first_read + 800]
+    assert "Add-FaCheck" not in code[main: first_read]
+    # the barrier: shared authority, transient-only, bounded, read-only
+    wait = _function("Wait-FaWorkbookReady", code)
+    assert "[int]$MaxAttempts   = 12" in wait and "[int]$FirstDelayMs  = 250" in wait and "[int]$MaxDelayMs    = 2000" in wait and "[int]$TotalBudgetMs = 15000" in wait
+    lifecycle = (WINDOWS / "com_lifecycle.ps1").read_text(encoding="utf-8")
+    for bound in ("[int]$MaxAttempts   = 12", "[int]$FirstDelayMs  = 250", "[int]$MaxDelayMs    = 2000", "[int]$TotalBudgetMs = 15000"):
+        assert bound in lifecycle, bound
+    stage_b = (WINDOWS / "build_stage_b.ps1").read_text(encoding="utf-8")
+    assert "function Wait-StageBWorkbookReady" in stage_b and "Invoke-ComRetryRead -Target $Workbook -Member 'FullName'" in stage_b
+    assert "Invoke-ComRetryRead -Target $Workbook -Member 'FullName' -Description 'the opened workbook FullName'" in wait
+    assert "Invoke-ComRetryRead -Target $Workbook -Member 'Worksheets' -Description 'the opened workbook Worksheets'" in wait
+    assert "Invoke-ComRetryRead -Target $sheetsObject -Member 'Count' -Description 'the opened workbook Worksheets.Count'" in wait
+    assert wait.count("if ([string]::IsNullOrWhiteSpace((Get-ComRejectionName $_))) { throw }") == 2
+    assert "while ($attempt -lt $MaxAttempts) {" in wait and "if ($attempt -ge $MaxAttempts) { break }" in wait
+    assert "if (($waitedMs + $delay) -gt $TotalBudgetMs) { break }" in wait
+    assert "$delay = [Math]::Min(($delay + $FirstDelayMs), $MaxDelayMs)" in wait
+    assert "Waiting cannot change which workbook this is." in wait
+    for forbidden in ("PCCM_", "Invoke-FaEndpoint", "Invoke-Phase5ProductionOperation", "Add-FaCheck", "Value2 =", "Set-", "ClearContents", ".Run("):
+        assert forbidden not in wait, forbidden
+    assert "Release-Transient $sheetsObject 'Worksheets'" in wait
+    assert "ComRetryableHResults" in lifecycle and "RPC_E_CALL_REJECTED (0x80010001)" in lifecycle and "RPC_E_SERVERCALL_RETRYLATER (0x8001010A)" in lifecycle
+    # the evidence line and the fail-fast check
+    assertion = _function("Assert-FaWorkbookReady", code)
+    assert "Write-FaLine ('READY|' + $Session + '|attempts=' + [string]$state.Attempts + '|waited=' + [string]$state.WaitedMs + 'ms'" in assertion
+    assert "Add-FaCheck ('session.open-ready.' + $Session) $state.Ready" in assertion
+    assert "OPEN/READY harness failure" in assertion
+    assert "-Continue" not in assertion
+
+
+def test_09c_the_fatal_path_reports_type_message_line_source_and_a_bounded_stack() -> None:
+    code = _code()
+    catch = code[code.rindex("} catch {"): code.rindex("} finally {")]
+    assert "$fatal = (Format-Err $_)" in catch and "Write-FaLine ('FATAL|' + $fatal)" in catch
+    assert "foreach ($fatalLine in @(Format-FaFatalLines -ErrorRecord $_)) { Write-FaLine ([string]$fatalLine) }" in catch
+    fatal = _function("Format-FaFatalLines", code)
+    for line in ("'FATAL.TYPE|'", "'FATAL.MESSAGE|'", "'FATAL.LINE|'", "'FATAL.SOURCE|'", "'FATAL.POSITION|'", "'FATAL.STACK|'"):
+        assert line in fatal, line
+    assert "$ErrorRecord.InvocationInfo.ScriptLineNumber" in fatal and "$ErrorRecord.ScriptStackTrace" in fatal
+    assert "[int]$MaxStackLines = 8" in fatal and "more frame(s)" in fatal
+    assert "    return $lines\n}" in fatal and "return , $lines" not in fatal
+    # the verdict is untouched: the same $fatal decides it
+    assert "$ok = (($failed.Count -eq 0) -and [string]::IsNullOrWhiteSpace($fatal))" in code
+
+
+OPEN_HARNESS = PCCM_ROOT / "tests" / "phase10_final_acceptance_open_flow.ps1"
+
+
+def _open_lines(runner: Path = RUNNER) -> dict[str, list[str]]:
+    done = subprocess.run([PWSH, "-NoProfile", "-File", str(OPEN_HARNESS), "-Runner", str(runner),
+                           "-Lifecycle", str(WINDOWS / "com_lifecycle.ps1")], capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stdout + done.stderr
+    lines: dict[str, list[str]] = {}
+    for line in done.stdout.splitlines():
+        parts = line.split("|", 2)
+        if len(parts) == 3 and parts[0] == "OPEN":
+            lines.setdefault(parts[1], []).append(parts[2])
+    assert lines, done.stdout
+    return lines
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_09d_the_readiness_barrier_and_the_fatal_diagnostics_execute_against_the_real_shared_authority() -> None:
+    """EXECUTED. A refused COM property read surfaces on Windows as a terminating
+    COMException; PowerShell on Linux answers null for a throwing getter and
+    raises nothing, so the harness proves what it can: the classification of a
+    transient rejection against a non-transient failure; the shared authority's
+    retry and rethrow through a throwing method read; the barrier's bounded
+    outer retry on a workbook that answers nothing, readiness at once and after
+    silence, the identity and not-a-count errors that escape; and the fatal
+    formatter's type, message, line, source and stack on a real record."""
+    lines = _open_lines()
+    assert lines["classify.transient"] == ["RPC_E_CALL_REJECTED (0x80010001)"]
+    assert lines["classify.non-transient"] == ["<>"]
+    assert lines["authority.transient-retried"] == ["value=sheet:Setup|attempts=3|rejections=RPC_E_CALL_REJECTED (0x80010001)"]
+    escaped = lines["authority.non-transient-escapes"][0]
+    assert escaped.startswith("MethodInvocationException:") and "the sheet is gone" in escaped
+    assert "attempts=" not in escaped
+    assert lines["ready.at-once"] == ["ready=True|attempts=1|waited=0|sheets=14"]
+    assert lines["ready.after-silence"][0].startswith("ready=True|attempts=3|") and lines["ready.after-silence"][0].endswith("|sheets=14")
+    never = lines["never-ready.bounded"][0]
+    assert never.startswith("ready=False|attempts=3|") and "worksheets=no-answer" in never and never.endswith("|calls=3")
+    assert "Waiting cannot change which workbook this is." in lines["wrong-workbook.error"][0]
+    assert lines["not-a-count.error"][0].startswith("READY: the opened workbook Worksheets.Count answered many, which is not a count.")
+    fatal = lines["fatal"]
+    # one OPEN|fatal| record per diagnostic line: the formatter hands the
+    # catch a sequence, never one array squashed into a single line
+    assert len(fatal) >= 6 and all(re.match(r"FATAL\.[A-Z]+\|", l) for l in fatal), fatal
+    assert any(l.startswith("FATAL.TYPE|System.Management.Automation.RuntimeException") for l in fatal), fatal
+    assert any(l.startswith("FATAL.MESSAGE|You cannot call a method on a null-valued expression") for l in fatal), fatal
+    assert any(re.match(r"FATAL\.LINE\|\d+$", l) for l in fatal), fatal
+    assert any(l.startswith("FATAL.SOURCE|try { $nothing = $null; $nothing.Item('Setup') }") for l in fatal), fatal
+    assert any(l.startswith("FATAL.STACK|") for l in fatal), fatal
 
 
 # ===========================================================================
@@ -1436,7 +1556,7 @@ def _run9_head_insertions() -> tuple[str, ...]:
     read-only lock-state reader."""
     now = _runner().replace("\r\n", "\n")
     start = now.index("# THE LOCK STATE OF ONE TABLE CELL, READ, NEVER WRITTEN")
-    stop = now.index("# ===========================================================================\n# THE PRODUCTION ENTRY POINTS")
+    stop = now.index("# THE OPEN/READY BOUNDARY. Final acceptance runs 15 and 16")
     return (now[start:stop],)
 
 
@@ -1535,11 +1655,38 @@ RUN14_CONFIRMED_BEFORE = (
     "          else { 'still holding a publication: ' + ($uncleared -join '; ') })\n")
 
 
+def _without_run15_changes(text: str) -> str:
+    """`text` (LF) with the run-15/16 open-readiness correction taken back out:
+    the barrier, its check and the fatal formatter removed, the three barrier
+    calls removed, and the fatal lines removed from the catch."""
+    start = text.index("# THE OPEN/READY BOUNDARY. Final acceptance runs 15 and 16 at b5c3f9a")
+    stop = text.index("# ===========================================================================\n# THE PRODUCTION ENTRY POINTS")
+    text = text[:start] + text[stop:]
+    for line in ("    # THE OPEN/READY BOUNDARY: bounded, transient-only, before the first workbook read.\n"
+                 "    $null = Assert-FaWorkbookReady -Workbook $wb -ExpectedPath $stageBPath -Session 'main'\n",
+                 "    $null = Assert-FaWorkbookReady -Workbook $wb -ExpectedPath $copyPath -Session 'copy'\n",
+                 "        $null = Assert-FaWorkbookReady -Workbook $wb -ExpectedPath $openPath -Session 'open-failure'\n",
+                 "    foreach ($fatalLine in @(Format-FaFatalLines -ErrorRecord $_)) { Write-FaLine ([string]$fatalLine) }\n"):
+        assert text.count(line) == 1, line[:60]
+        text = text.replace(line, "")
+    return text
+
+
+def test_60c10_the_open_readiness_correction_is_the_only_runner_change_since_the_run_15_head() -> None:
+    """EXACT REVERSAL against b5c3f9a, the head runs 15 and 16 executed."""
+    tested = _git("show", "b5c3f9a:pccm/bootstrap/windows/phase10_final_acceptance.ps1").replace("\r\n", "\n")
+    now = _runner().replace("\r\n", "\n")
+    assert _without_run15_changes(now) == tested
+    assert now != tested
+
+
 def _without_run14_changes(text: str) -> str:
-    """`text` (LF) with the run-14 semantic-reset correction taken back out:
-    the pure verifiers and the reader replaced by the blanket verifier they
-    grew from, the preflight cross-checks and the geometry snapshot removed,
-    and the confirmed scenario replaced by its earlier form."""
+    """`text` (LF) with the run-15 correction and then the run-14 semantic-reset
+    correction taken back out: the pure verifiers and the reader replaced by
+    the blanket verifier they grew from, the preflight cross-checks and the
+    geometry snapshot removed, and the confirmed scenario replaced by its
+    earlier form."""
+    text = _without_run15_changes(text)
     start = text.index("# THE SEMANTIC POST-RESET STATE, AS PRODUCTION DEFINES IT.")
     stop = text.index("# The live, DERIVED states, read through accessors that write nothing")
     text = text[:start] + RUN14_VERIFIER_BEFORE + text[stop:]
