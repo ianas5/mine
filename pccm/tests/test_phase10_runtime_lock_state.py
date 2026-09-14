@@ -44,12 +44,13 @@ _MEMO: dict[str, str] = {}
 
 
 def _src(name: str) -> str:
-    """A production or runner text through a memo, so the validation battery
-    can mutate it in memory."""
+    """A production, runner or record text through a memo, so the validation
+    battery can mutate it in memory."""
     if name not in _MEMO:
         path = RUNNER if name == "runner" else (
             PCCM_ROOT / "builder" / "pccm_builder" / "protection.py" if name == "protection.py" else
             PCCM_ROOT / "spec" / "structure_contract.yaml" if name == "structure_contract.yaml" else
+            PCCM_ROOT / "docs" / "phase7_closure.md" if name == "phase7_closure.md" else
             SRC / name)
         _MEMO[name] = path.read_text(encoding="utf-8")
     return _MEMO[name]
@@ -218,7 +219,7 @@ def test_09_the_correction_reverses_exactly_to_the_candidate_and_nothing_else_mo
     then = _git("show", f"{CANDIDATE}:pccm/src/vba/modWorkbook.bas")
     assert strip_runtime_lock_state("modWorkbook.bas", current) == then
     assert current != then, "the correction is absent"
-    changed = _git("diff", "--name-only", CANDIDATE, "--", "pccm/src", "pccm/spec", "pccm/builder", "pccm/docs").split()
+    changed = _git("diff", "--name-only", CANDIDATE, "--", "pccm/src", "pccm/spec", "pccm/builder").split()
     assert changed == ["pccm/src/vba/modWorkbook.bas"], changed
 
 
@@ -252,6 +253,80 @@ def test_11_the_windows_check_expects_the_projection_rule_and_never_assigns_lock
     assert re.search(r"Label = 'permanent id';[^\n]*ExpectLocked = \$true", runner)
     assert "$declared = ($declaredUnlocked -ccontains $state.Address)" in runner
     assert not re.search(r"\.Locked\s*=[^=]", runner)
+
+
+# ===========================================================================
+# E. THE HISTORICAL EVIDENCE CONTROLS DECLARE THE LAYER, BY NAME AND BY REVERSAL
+# ===========================================================================
+LAYER_COMMIT = "548799f"
+LAYER_SUBJECT = "Phase 10: runtime year cells are unlocked by the shared paint owner"
+
+
+def _record_text() -> str:
+    return _src("phase7_closure.md")
+
+
+def test_12_the_layer_commit_is_the_one_the_subject_resolves_to_and_touches_only_the_owner() -> None:
+    found = _git("log", "--format=%h", f"--grep={LAYER_SUBJECT}", "--fixed-strings", f"{CANDIDATE}..HEAD").split()
+    assert found == [LAYER_COMMIT], found
+    assert _git("show", "--name-only", "--format=", LAYER_COMMIT).split() and \
+        [p for p in _git("show", "--name-only", "--format=", LAYER_COMMIT).split() if p.startswith("pccm/src/")] == \
+        ["pccm/src/vba/modWorkbook.bas"]
+    assert _git("diff", "--name-only", CANDIDATE, LAYER_COMMIT, "--", "pccm/src", "pccm/spec", "pccm/builder").split() == \
+        ["pccm/src/vba/modWorkbook.bas"]
+
+
+def test_13_the_phase_7_closure_record_declares_the_layer_and_keeps_both_authorities() -> None:
+    text = _record_text()
+    block = text.split("### 1.1")[1].split("\n---")[0]
+    rows = [line for line in block.splitlines() if line.startswith("| `pccm/src/vba/modWorkbook.bas`")]
+    assert len(rows) == 1, rows
+    row = rows[0]
+    for fact in (LAYER_SUBJECT, "P10-R4", "final Windows acceptance run 10", "`548799f`", "`ListColumns.Add`",
+                 "`PaintYearCells`", "`SnapshotTable` / `RestoreTable`", "keyed or unkeyed",
+                 "No Phase-7 algorithm, numerical contract, simulation contract or acceptance authority changed",
+                 "`tests/vba_runtime_lock_state.py`", "Phase 7 remains CLOSED", "`79d4c3e`", "`ad78988`"):
+        assert fact in row, fact
+    assert f"--grep='{LAYER_SUBJECT}'" in block
+    assert "`79d4c3e` remains the implementation baseline" in text
+    assert "`ad78988` remains the evidence head" in text
+    assert "does **not** reopen Phase 7" in text
+    # THE HISTORY IS NOT REWRITTEN: outside the §1.1 table the record is byte-identical to the layer commit's.
+    then = _git("show", f"{LAYER_COMMIT}:pccm/docs/phase7_closure.md")
+
+    def outside(record: str) -> str:
+        head, rest = record.split("### 1.1", 1)
+        return head + rest.split("\n---", 1)[1]
+
+    assert outside(text) == outside(then)
+
+
+def test_14_the_phase_8_declared_corrections_admit_only_the_named_layer_with_its_removal_and_reversal() -> None:
+    sys.path.insert(0, str(PCCM_ROOT / "tests"))
+    import test_phase8_charts as charts
+    declared = charts.DECLARED_PRODUCTION_CORRECTIONS
+    assert "pccm/src/vba/modWorkbook.bas" in declared
+    reason, removals = declared["pccm/src/vba/modWorkbook.bas"]
+    assert LAYER_COMMIT in reason and "P10-R4" in reason and "Locked = False" in reason
+    assert removals == ("' Keyed-ness decides the treatment:",)
+    for key in declared:
+        assert key.startswith("pccm/src/vba/") and key.endswith(".bas") and not any(ch in key for ch in "*?[")
+        assert (PCCM_ROOT.parent / key).is_file(), key
+    charts._declared_production_changes(charts._git, charts.P81_ACCEPTANCE)
+    charts._declared_production_changes(charts._git, charts.P82_ACCEPTANCE)
+
+
+def test_15_the_phase_9_control_declares_the_layer_from_the_reversal_authority_alone() -> None:
+    sys.path.insert(0, str(PCCM_ROOT / "tests"))
+    import test_phase9_model_check as model_check
+    source = (PCCM_ROOT / "tests" / "test_phase9_model_check.py").read_text(encoding="utf-8")
+    body = source[source.index("def test_46_every_production_change_is_declared_and_is_only_plumbing"):]
+    body = body[: body.index("\ndef ")]
+    assert 'phase10_r4 = {f"pccm/src/vba/{name}" for name in DECLARED_RUNTIME_LOCK_STATE_CHANGES}' in body
+    assert 'assert phase10_r4 == {"pccm/src/vba/modWorkbook.bas"}, phase10_r4' in body
+    assert "assert strip_runtime_lock_state(name, current) == accepted" in body
+    assert "assert accepted == at_head" in body and 'assert current != accepted' in body
+    model_check.test_46_every_production_change_is_declared_and_is_only_plumbing()
 
 
 if __name__ == "__main__":

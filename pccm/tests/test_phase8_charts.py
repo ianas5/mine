@@ -161,6 +161,28 @@ def _git(*args: str) -> str:
 # could say "this file may grow"; this one says "this file may grow, and may
 # lose exactly this line".
 DECLARED_PRODUCTION_CORRECTIONS = {
+    # P10-R4: THE RUNTIME YEAR-CELL LOCK STATE, commit 548799f. Phase 10 final
+    # Windows acceptance run 10 read the runtime-materialised project-year cells
+    # of the profiling grids Locked=True with protection on, while the accepted
+    # protection projection declares them unlocked. modWorkbook.PaintYearCells,
+    # the shared post-materialisation treatment every profiling and inflation
+    # year column already receives, now sets Locked = False on every year body
+    # cell it traverses, keyed or unkeyed, before its unchanged fill treatment,
+    # and SnapshotTable / RestoreTable carry the per-cell Locked state beside
+    # the fill across a rollback. NO CHART, RESULTS, DASHBOARD, SENSITIVITY,
+    # RANKING, STATISTICS OR PUBLICATION ALGORITHM CHANGED: the layer is
+    # mechanically reversible to the 5e0df9b bytes through
+    # tests/vba_runtime_lock_state.py, and test_94 proves that reversal.
+    "pccm/src/vba/modWorkbook.bas": (
+        "P10-R4 (548799f): runtime year-cell lock-state correction. PaintYearCells "
+        "sets Locked = False on every runtime year body cell it traverses, keyed or "
+        "unkeyed; SnapshotTable / RestoreTable preserve per-cell Locked state across "
+        "rollback reconstruction; fixed columns and headers stay outside the "
+        "treatment. The ONE removed line is the comment heading the keyed-ness "
+        "paragraph, reworded to say it decides the fill and not the lock. Reversible "
+        "to 5e0df9b through tests/vba_runtime_lock_state.py.",
+        ("' Keyed-ness decides the treatment:",),
+    ),
     # P10-RP: THE RUNTIME PROTECTION RECONCILIATION. Windows disproved the
     # accepted Phase-10 assumption that UserInterfaceOnly:=True permits ListObject
     # structural mutation on a protected sheet - PCCM_ApplyTimeline was invoked
@@ -1670,6 +1692,7 @@ def test_94_the_declared_production_rule_passes_on_the_real_repository() -> None
     # P9-3 AND BY TWO AT P10-2B. Naming them keeps this as strict as it was: a
     # NINTH declaration still fails here, and so does a removal or a rename of
     # any of these eight.
+    # AND BY ONE MORE AT P10-R4, the runtime year-cell lock state.
     assert set(DECLARED_PRODUCTION_CORRECTIONS) == {
         "pccm/src/vba/modAppState.bas",
         "pccm/src/vba/modCalcAnalytical.bas",
@@ -1681,7 +1704,28 @@ def test_94_the_declared_production_rule_passes_on_the_real_repository() -> None
         "pccm/src/vba/modSimAnnualStore.bas",
         "pccm/src/vba/modTimeline.bas",
         "pccm/src/vba/modSimPostReport.bas",
-        "pccm/src/vba/modSimReport.bas"}, sorted(DECLARED_PRODUCTION_CORRECTIONS)
+        "pccm/src/vba/modSimReport.bas",
+        "pccm/src/vba/modWorkbook.bas"}, sorted(DECLARED_PRODUCTION_CORRECTIONS)
+    # THE P10-R4 ENTRY IS PROVED, NOT WHITELISTED: it names the commit, its one
+    # removed line is the reworded comment heading, and taking the declared
+    # layer off today's bytes reproduces 5e0df9b - which is byte-identical to
+    # both Phase-8 acceptance heads for this module - so nothing else moved.
+    import sys as _sys
+    _sys.path.insert(0, str(SRC.parent.parent / "tests"))
+    from vba_runtime_lock_state import (ACCEPTED_BEFORE_RUNTIME_LOCK_STATE,
+                                        strip_runtime_lock_state)
+    reason, removals = DECLARED_PRODUCTION_CORRECTIONS["pccm/src/vba/modWorkbook.bas"]
+    assert "548799f" in reason and "P10-R4" in reason and "Locked = False" in reason, reason
+    assert ACCEPTED_BEFORE_RUNTIME_LOCK_STATE == "5e0df9b"
+    assert removals == ("' Keyed-ness decides the treatment:",), removals
+    workbook_now = (SRC / "modWorkbook.bas").read_bytes().decode("utf-8")
+    workbook_then = _git("show", f"{ACCEPTED_BEFORE_RUNTIME_LOCK_STATE}:pccm/src/vba/modWorkbook.bas")
+    assert strip_runtime_lock_state("modWorkbook.bas", workbook_now) == workbook_then
+    assert workbook_now != workbook_then, "the declared P10-R4 layer is absent"
+    for since in (P81_ACCEPTANCE, P82_ACCEPTANCE):
+        assert _git("show", f"{since}:pccm/src/vba/modWorkbook.bas") == workbook_then, since
+    assert _git("diff", "--name-only", ACCEPTED_BEFORE_RUNTIME_LOCK_STATE, "548799f", "--", "pccm/src").split() == \
+        ["pccm/src/vba/modWorkbook.bas"]
     # AND THE TWO P10-2B ENTRIES ARE ADDITIVE, which is the whole claim a reset
     # clear is allowed to make about a publication owner.
     for path in ("pccm/src/vba/modSimReport.bas",

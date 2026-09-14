@@ -1984,10 +1984,51 @@ def test_46_every_production_change_is_declared_and_is_only_plumbing() -> None:
                                        ACCEPTED_BEFORE_RECONCILIATION,
                                        strip_structural_window)
     phase10_rp = {f"pccm/src/vba/{name}" for name in DECLARED_STRUCTURAL_WINDOW_CHANGES}
+    # P10-R4. DECLARED, NOT EXEMPTED, AND REVERSIBLE: commit 548799f. Phase 10
+    # final Windows acceptance run 10 read the runtime-materialised project-year
+    # cells Locked=True with protection on while the protection projection
+    # declares them unlocked, so modWorkbook.PaintYearCells - the shared
+    # post-materialisation treatment - sets Locked = False on every year body
+    # cell it traverses, and SnapshotTable / RestoreTable carry the per-cell
+    # Locked state across a rollback. That is runtime structural protection and
+    # input usability ONLY: no Model Check formula, ordering, actionable count,
+    # severity, refusal subject or detail, calculation logic, simulation logic or
+    # state vocabulary is touched, and the reversal below proves the module is
+    # otherwise byte-identical to the Phase-9 head.
+    from vba_runtime_lock_state import (ACCEPTED_BEFORE_RUNTIME_LOCK_STATE,
+                                        DECLARED_RUNTIME_LOCK_STATE_CHANGES,
+                                        strip_runtime_lock_state)
+    phase10_r4 = {f"pccm/src/vba/{name}" for name in DECLARED_RUNTIME_LOCK_STATE_CHANGES}
+    assert phase10_r4 == {"pccm/src/vba/modWorkbook.bas"}, phase10_r4
     undeclared = [p for p in modified
                   if p not in DECLARED_PHASE9_CORRECTIONS and p not in phase8
-                  and p not in phase10_rp]
+                  and p not in phase10_rp and p not in phase10_r4]
     assert not undeclared, f"production changed without being declared: {undeclared}"
+    for path in sorted(phase10_r4):
+        name = Path(path).name
+        current = (SRC / name).read_bytes().decode("utf-8")
+        accepted = subprocess.run(
+            ["git", "show", f"{ACCEPTED_BEFORE_RUNTIME_LOCK_STATE}:{path}"],
+            cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE).stdout.decode("utf-8")
+        at_head = subprocess.run(["git", "show", f"{head}:{path}"], cwd=REPO_ROOT,
+                                 check=True, stdout=subprocess.PIPE).stdout.decode("utf-8")
+        assert accepted == at_head, f"{path} moved between the Phase-9 head and {ACCEPTED_BEFORE_RUNTIME_LOCK_STATE}"
+        assert strip_runtime_lock_state(name, current) == accepted, (
+            f"{path} moved outside the declared P10-R4 runtime lock-state layer")
+        assert current != accepted, f"the declared P10-R4 layer is absent from {path}"
+        # AND THE LAYER IS ONLY LOCK STATE: every declared fragment is about the
+        # Locked property, the snapshot field that carries it, or the reworded
+        # comment heading that says the key decides the fill and not the lock -
+        # and none of them names a Model Check, calculation, simulation or
+        # state concern.
+        from vba_runtime_lock_state import _HUNKS
+        for fragment, _before in _HUNKS[name]:
+            assert ("Locked" in fragment or "Locks" in fragment
+                    or "Keyed-ness decides the FILL" in fragment), fragment[:60]
+            for foreign in ("Model Check", "ModelCheck", "Severity", "CAL-", "DeriveStatus",
+                            "Fingerprint", "Simulation", "STALE", "INVALID", "NOT CALCULATED",
+                            "actionable", "subject"):
+                assert foreign not in fragment, (foreign, fragment[:60])
 
     # AND THE DECLARATION IS PROVED, not taken on trust: reversing the
     # reconciliation reproduces the accepted bytes for every one of the six.
