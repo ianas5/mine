@@ -42,6 +42,8 @@ P9_RUNNER = WINDOWS / "phase9_p1_model_check.ps1"
 BENCHMARK = WINDOWS / "phase10_benchmark.ps1"
 RESET_VBA = PCCM_ROOT / "src" / "vba" / "modReset.bas"
 REPAIR_VBA = PCCM_ROOT / "src" / "vba" / "modRepair.bas"
+HANDLER_VBA = PCCM_ROOT / "src" / "vba" / "ThisWorkbook.vba"
+APPSTATE_VBA = PCCM_ROOT / "src" / "vba" / "modAppState.bas"
 PWSH = "/opt/pwsh/pwsh"
 RESOLUTION_AUDIT = PCCM_ROOT / "tests" / "powershell_command_resolution_audit.ps1"
 UNINITIALISED_AUDIT = PCCM_ROOT / "tests" / "powershell_uninitialised_audit.ps1"
@@ -81,13 +83,22 @@ REQUIRED_SCENARIOS = (
     "repair.shrink-nonzero-refused", "repair.semantic-non1-refused", "repair.blank-profile-allowed",
     "repair.signed-zero-total-refused", "repair.rollback.", "repair.grids-restored",
     "copy.compile", "copy.source-revision", "copy.protection", "copy.fixture", "copy.run",
+    # Added at the P10-R3 closure: contract matrix row O, the injected
+    # Workbook_Open failure, in a third disposable session.
+    "rowo.open-suppressed", "rowo.handler-entered", "rowo.failure-path", "rowo.disclosed-once",
+    "rowo.screen-updating-restored", "rowo.calculation-unchanged", "rowo.events-unchanged",
+    "rowo.released-not-half-protected", "rowo.usable", "rowo.reopen-silent", "rowo.reopen-applied",
 )
 # The runner the starting authority of the bounded correction round carried, and
 # that Windows executed at final acceptance run 7 (ee6e9fb; the runner is
 # byte-identical between the two). Everything this round changed in the runner
 # is declared below and proved by reversal against it.
 STARTING_AUTHORITY = "347f42e"
+# The starting authority of the P10-R3 closure round, whose runner is the R2
+# runner: the row-O session is one more delimited block on top of it.
+R3_AUTHORITY = "889b6b5"
 R2_BLOCKS = ("P10-R2 REPAIR CONTRACT SCENARIOS", "P10-R2 DISTRIBUTION COPY")
+R3_BLOCKS = ("P10-R3 WORKBOOK_OPEN FAILURE",)
 # The one region of the executed tail that was SUBSTITUTED rather than inserted:
 # the final protection behaviour, from its heading to the automation end.
 PROTECTION_REGION = ("    # 18/19. FINAL PROTECTION AND ITS BEHAVIOUR.",
@@ -148,10 +159,11 @@ def _git(*args: str) -> str:
                           capture_output=True, text=True, check=True).stdout
 
 
-def _without_r2_blocks(text: str) -> str:
-    """The runner with the two delimited insertions of the bounded correction
-    round taken out - each must be present exactly once, begin and end."""
-    for name in R2_BLOCKS:
+def _without_r2_blocks(text: str, blocks: tuple[str, ...] = R2_BLOCKS + R3_BLOCKS) -> str:
+    """The runner with the delimited insertions of the bounded correction round
+    and the closure round taken out - each must be present exactly once, begin
+    and end."""
+    for name in blocks:
         begin = f"    # --- {name}: begin"
         end = f"    # --- {name}: end"
         assert text.count(begin) == 1 and text.count(end) == 1, name
@@ -314,10 +326,13 @@ def test_11_states_are_read_through_accessors_that_write_nothing() -> None:
     calls = [m.start() for m in re.finditer(re.escape("$excel.Run('PCCM_CalculationStatus')"), code)]
     assert len(calls) == 2, len(calls)
     opened = [m.start() for m in re.finditer(re.escape("$workbooks.Open("), code)]
-    assert len(opened) == 2
+    assert len(opened) == 3, len(opened)
     for open_at, call_at in zip(opened, calls):
         assert open_at < call_at
         assert "Get-FaStates" not in code[open_at: call_at] and "Get-FaPersistedStates" not in code[open_at: call_at]
+    # The third open (the P10-R3 row-O session) runs no compile check and reads
+    # no state: its first Run is the shim's ping, and the status writer never runs there.
+    assert "PCCM_CalculationStatus" not in code[opened[2]:]
     assert "PCCM_SimulationStatus" not in code
 
 
@@ -668,6 +683,156 @@ def test_55_the_distribution_copy_is_a_renamed_copy_of_the_built_file_run_in_a_s
     assert "try { $wb.Close($false); $rel.WorkbookClosed = $true }" in shutdown
 
 
+def _handler_body() -> str:
+    return "\n".join(line for line in _src("handler", HANDLER_VBA).splitlines()
+                     if not line.strip().startswith("'"))
+
+
+def _handler_failpoint_name() -> str:
+    match = re.search(r'^Private Const FAILPOINT_WORKBOOK_OPEN As String = "([^"]+)"$', _src("handler", HANDLER_VBA), re.M)
+    assert match, "the handler declares no private failpoint constant"
+    return match.group(1)
+
+
+def test_56_the_row_o_session_reaches_the_real_handler_through_excels_event_switch_and_proves_the_failure_contract() -> None:
+    """CONTRACT MATRIX ROW O, ADDED AT THE P10-R3 CLOSURE. A third disposable
+    copy is opened with EnableEvents OFF so the handler does not run at open
+    (proved: no protection, nothing recorded); the accepted seam is begun with
+    the handler's own failpoint; the switch is put back in a finally; the REAL
+    production handler is then run in the workbook's own document module. The
+    checks: entered, the exact record, disclosed once with no prompt and no
+    dialog, ScreenUpdating / Calculation / EnableEvents compared to their
+    pre-run values with nothing written to restore them, fully released,
+    usable, and the same handler applies protection again afterwards."""
+    code = _code()
+    block = code[code.index("$openPath = Join-Path $openDir 'PCCM_open_failure_copy.xlsm'"):]
+    block = block[: block.index("Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'rowo.reopen-applied'") + 120]
+    # the copy is closed unsaved and released before the third session
+    before = code[code.index("Add-FaCheck 'copy.run'"): code.index("$openPath = Join-Path")]
+    assert "try { $wb.Close($false); $rel.WorkbookClosed = $true }" in before
+    assert "Invoke-FaRelease -Ledger $rel -Obj $wb -Label 'Workbook(copy)'" in before and "$wb = $null" in before
+    # the pre-open trigger: Excel's own switch, off across the open and the arming, back in a finally
+    assert "if (-not [bool]$excel.EnableEvents) { throw" in block
+    assert "$excel.EnableEvents = $false" in block
+    armed = block[block.index("$excel.EnableEvents = $false"): block.index("} finally { $excel.EnableEvents = $true }")]
+    assert "$wb = $workbooks.Open($openPath)" in armed and "$comAcquired = $comAcquired + 1" in armed
+    assert "Import-FaFixtureWindow -Excel $excel -Workbook $wb -Manifest $manifest -ScriptDir $scriptDir" in armed
+    assert "$suppressed = Get-FaProtectionState -Excel $excel" in armed
+    assert "$resultBeforeHandler = Get-FaRunText -Excel $excel -Procedure 'PCCM_AutomationResult'" in armed
+    assert "$excel.Run('PCCM_AutomationBegin', $true, $script:OpenFailpoint)" in armed
+    assert "Workbook_Open" not in armed, "the handler is run while events are off"
+    # the failpoint name is the handler's own constant
+    assert f"$script:OpenFailpoint = '{_handler_failpoint_name()}'" in code
+    # the handler did not run at open: no protection, nothing recorded
+    assert "Add-FaCheck 'rowo.open-suppressed' `\n        (($null -ne $suppressed) -and (-not $suppressed.Applied) -and ($suppressed.Protected -eq 0) -and (-not $suppressed.Structure) -and ($suppressed.Depth -eq 0) -and ($resultBeforeHandler -eq ''))" in block
+    # the REAL handler, in the workbook's own document module, after the switch is back
+    run = "$excel.Run(\"'\" + [string]$wb.Name + \"'!ThisWorkbook.Workbook_Open\")"
+    assert block.count(run) == 2
+    first_run = block.index(run)
+    assert block.index("} finally { $excel.EnableEvents = $true }") < first_run
+    assert "$screenBefore = [bool]$excel.ScreenUpdating" in block[: first_run]
+    assert "$calcBefore = [int]$excel.Calculation" in block[: first_run]
+    assert "$eventsBefore = [bool]$excel.EnableEvents" in block[: first_run]
+    assert "catch { $handlerFailure = (Format-Err $_) }" in block
+    # entered, exact record derived from the failpoint owner's wording, once
+    appstate = _src("appstate", APPSTATE_VBA)
+    assert "\"Injected structural failure after stage '\" & StageName & \"'.\"" in appstate
+    assert "$expectedRecord = \"Workbook_Open: Injected structural failure after stage '\" + $script:OpenFailpoint + \"'.\"" in block
+    assert "Add-FaCheck 'rowo.handler-entered' (($handlerFailure -eq '') -and ($recorded -clike 'Workbook_Open: *'))" in block
+    assert "Add-FaCheck 'rowo.failure-path' ($recorded -ceq $expectedRecord)" in block
+    assert "Add-FaCheck 'rowo.disclosed-once' (($recorded -ceq $expectedRecord) -and ($prompted -eq '') -and $eventsBefore)" in block
+    assert "$prompted = Get-FaRunText -Excel $excel -Procedure 'PCCM_AutomationPrompt'" in block
+    assert 'modAppState.RecordResult "Workbook_Open: " & detail' in _handler_body()
+    # application state compared, never written back by the runner
+    assert "Add-FaCheck 'rowo.screen-updating-restored' ([bool]$excel.ScreenUpdating -eq $screenBefore)" in block
+    assert "Add-FaCheck 'rowo.calculation-unchanged' ([int]$excel.Calculation -eq $calcBefore)" in block
+    assert "Add-FaCheck 'rowo.events-unchanged' ([bool]$excel.EnableEvents -eq $eventsBefore)" in block
+    after_run = block[first_run:]
+    for write in ("$excel.ScreenUpdating =", "$excel.Calculation =", "$excel.EnableEvents ="):
+        assert write not in after_run, write
+    # not half-protected: released entirely, no window depth
+    assert "Add-FaCheck 'rowo.released-not-half-protected' `\n        ((-not $released.Applied) -and ($released.Protected -eq 0) -and (-not $released.Structure) -and ($released.Depth -eq 0))" in block
+    # usable: a value write to the once-locked reference cell succeeds and reads back
+    assert "$usableCell = $methodWs.Range($lockedAddress)" in block
+    assert "$usableCell.Value2 = [string]$sourceRevisionRow.label" in block
+    assert "Add-FaCheck 'rowo.usable' (($usableFailure -eq '') -and ($valueAfterOpenFailure -ceq [string]$sourceRevisionRow.label))" in block
+    # protection attempted again by the same handler, seam begun with no failpoint, silent success
+    assert block.index("$excel.Run('PCCM_AutomationBegin', $true, '')") < block.rindex(run)
+    assert "Add-FaCheck 'rowo.reopen-silent' (($reopenFailure -eq '') -and ($recordedAfterReopen -eq ''))" in block
+    assert "-Scenario 'rowo.reopen-applied'" in block
+    assert "$excel.Run('PCCM_AutomationEnd')" in code[code.index("-Scenario 'rowo.reopen-applied'"):]
+    # nothing is saved; the session is closed by the accepted shutdown
+    assert ".Save(" not in code and ".SaveAs(" not in code
+
+
+def test_57_the_handler_carries_one_dormant_failpoint_after_the_apply_and_reads_err_before_the_release() -> None:
+    """THE P10-R3 SEAM, AND ITS REVERSAL. One modAppState.FailPointCheck, named
+    by a private constant, after a successful ProtectionApply and before the
+    restore - so an injected failure exercises the whole failure path from a
+    fully protected workbook. It is dormant: FailPointCheck exits unless the
+    accepted seam is active with exactly that stage, and nothing in production
+    begins the seam. The failure path reads Err.Description before the release
+    owner's On Error clears it. Taking the closure off reproduces 889b6b5."""
+    handler = _src("handler", HANDLER_VBA)
+    body = _handler_body()
+    name = _handler_failpoint_name()
+    assert name.startswith("Phase10") and " " not in name
+    assert body.count("FailPointCheck") == 1
+    assert "    modAppState.FailPointCheck FAILPOINT_WORKBOOK_OPEN\n" in body
+    apply_at = body.index("If Not modProtection.ProtectionApply(detail) Then GoTo Failed")
+    check_at = body.index("modAppState.FailPointCheck FAILPOINT_WORKBOOK_OPEN")
+    restore_at = body.index("Application.ScreenUpdating = previousUpdating")
+    assert body.index("On Error GoTo Failed") < apply_at < check_at < restore_at < body.index("Failed:")
+    # the constant is private to the document module and is the only one there
+    assert handler.count("Const ") == 1 and "Private Const FAILPOINT_WORKBOOK_OPEN" in handler
+    assert handler.count("Sub ") == 1
+    # dormant at the owner: inactive seam or empty stage exits before the comparison
+    check = _src("appstate", APPSTATE_VBA)
+    check = check[check.index("Public Sub FailPointCheck"): check.index("End Sub", check.index("Public Sub FailPointCheck"))]
+    assert "If Not gAutomationActive Then Exit Sub" in check
+    assert "If Len(gAutomationFailAfterStage) = 0 Then Exit Sub" in check
+    assert "Err.Raise vbObjectError + 5001" in check
+    # nothing in production begins the seam
+    for path in sorted((PCCM_ROOT / "src" / "vba").glob("*.bas")) + [HANDLER_VBA]:
+        code = "\n".join(line for line in path.read_text(encoding="utf-8").splitlines() if not line.strip().startswith("'"))
+        if path.name != "modAppState.bas":
+            assert "gAutomationActive = True" not in code and "PCCM_AutomationBegin" not in code, path.name
+    appstate_code = "\n".join(line for line in _src("appstate", APPSTATE_VBA).splitlines() if not line.strip().startswith("'"))
+    assert appstate_code.count("gAutomationActive = True") == 1
+    assert "PCCM_AutomationBegin" not in _src("handler", HANDLER_VBA)
+    # the failure path: Err read first, then the state restore, then the release, then the record, then the guarded dialog
+    failed = body[body.index("Failed:"):]
+    order = ("If Len(detail) = 0 Then detail = Err.Description",
+             "If Not restored Then Application.ScreenUpdating = previousUpdating",
+             "If Not modProtection.ProtectionRelease(releaseDetail) Then",
+             'modAppState.RecordResult "Workbook_Open: " & detail',
+             "If Not modAppState.gAutomationActive Then",
+             "modAppState.ReportFailure")
+    positions = [failed.index(step) for step in order]
+    assert positions == sorted(positions), positions
+    assert failed.count("Err.Description") == 1
+    assert "On Error GoTo Failed" in (PCCM_ROOT / "src" / "vba" / "modProtection.bas").read_text(encoding="utf-8")[
+        (PCCM_ROOT / "src" / "vba" / "modProtection.bas").read_text(encoding="utf-8").index("Public Function ProtectionRelease"):]
+    # the successful path is unchanged in behaviour: apply, restore, exit, and nothing else
+    success = body[body.index("On Error GoTo Failed"): body.index("Failed:")]
+    statements = [line.strip() for line in success.splitlines() if line.strip()]
+    assert statements == ["On Error GoTo Failed",
+                          "previousUpdating = Application.ScreenUpdating",
+                          "Application.ScreenUpdating = False",
+                          "restored = False",
+                          "If Not modProtection.ProtectionApply(detail) Then GoTo Failed",
+                          "modAppState.FailPointCheck FAILPOINT_WORKBOOK_OPEN",
+                          "Application.ScreenUpdating = previousUpdating",
+                          "restored = True",
+                          "Exit Sub"], statements
+    # the reversal
+    sys.path.insert(0, str(PCCM_ROOT / "tests"))
+    from vba_open_failpoint import ACCEPTED_BEFORE_OPEN_FAILPOINT, strip_open_failpoint
+    tested = _git("show", f"{ACCEPTED_BEFORE_OPEN_FAILPOINT}:pccm/src/vba/ThisWorkbook.vba")
+    assert strip_open_failpoint("ThisWorkbook.vba", handler) == tested
+    assert "FailPointCheck" not in tested
+
+
 # ===========================================================================
 # G. STATES, REFUSAL, PROTECTION AFTER EVERY PATH, FAIL FAST, SHUTDOWN
 # ===========================================================================
@@ -800,7 +965,30 @@ def _runner_head_insertions() -> tuple[str, ...]:
     preamble_stop = now.index("$script:FaRiskBefore = ''\n") + len("$script:FaRiskBefore = ''\n")
     helpers_start = now.index("# A PROJECT-YEAR COLUMN ADDED TO OR REMOVED FROM A GRID")
     helpers_stop = now.index("function Get-IdColumnValues {")
-    return (now[preamble_start:preamble_stop], now[helpers_start:helpers_stop])
+    return (now[preamble_start:preamble_stop], now[helpers_start:helpers_stop]) + _r3_head_insertions()
+
+
+def _r3_head_insertions() -> tuple[str, ...]:
+    """The one line the P10-R3 closure added before the fixture: the row-O
+    failpoint name, with its comment."""
+    now = _runner().replace("\r\n", "\n")
+    start = now.index("# The contracted Workbook_Open failpoint (matrix row O)")
+    stop = now.index("$script:OpenFailpoint = ") 
+    stop = now.index("\n", stop) + 1
+    return (now[start:stop],)
+
+
+def test_60c3_the_row_o_session_is_the_one_declared_change_since_the_closure_authority() -> None:
+    """P10-R3 REVERSAL. The runner at 889b6b5 plus exactly one delimited block
+    and one preamble line is the runner now, byte for byte."""
+    tested = _git("show", f"{R3_AUTHORITY}:pccm/bootstrap/windows/phase10_final_acceptance.ps1").replace("\r\n", "\n")
+    now = _runner().replace("\r\n", "\n")
+    stripped = _without_r2_blocks(now, R3_BLOCKS)
+    assert stripped != now, "the row-O block is absent"
+    for insertion in _r3_head_insertions():
+        assert stripped.count(insertion) == 1
+        stripped = stripped.replace(insertion, "")
+    assert stripped == tested
 
 
 MODEL_CHECK_CORRECTIONS = (
@@ -1263,10 +1451,12 @@ def test_60v_the_record_states_the_bounded_correction_round_without_windows() ->
                  "build/ is git-ignored", "identify ee6e9fb", "STALE with respect to 347f42e",
                  "do not represent 347f42e", "rebuild on the Windows host is deferred"):
         assert fact in plain, fact
-    # THE DEFERRAL IS TRUE OF THE SOURCE: no failpoint sits in the open handler.
-    handler = (PCCM_ROOT / "src" / "vba" / "ThisWorkbook.vba").read_text(encoding="utf-8")
-    assert "FailPointCheck" not in handler and "modProtection.ProtectionApply(detail)" in handler
-    assert "Workbook_Open" not in _code()
+    # THE DEFERRAL WAS TRUE OF THE SOURCE AT THAT ROUND (889b6b5 carried no
+    # failpoint in the handler) and has since been CLOSED by the P10-R3 seam,
+    # declared and reversed in test_57; the record keeps the history.
+    handler_then = _git("show", f"{R3_AUTHORITY}:pccm/src/vba/ThisWorkbook.vba")
+    assert "FailPointCheck" not in handler_then and "modProtection.ProtectionApply(detail)" in handler_then
+    assert "Workbook_Open" not in _code()[: _code().index("Copy-Item -LiteralPath $stageBPath -Destination $openPath")]
 
 
 def test_60o_the_record_states_run_4_as_a_runner_matcher_defect() -> None:
@@ -1422,8 +1612,9 @@ def test_70_production_vba_spec_and_builder_are_byte_identical_to_the_accepted_h
     taking it off reproduces the tree run 7 executed byte for byte, and no other
     production, spec or builder byte has moved since the accepted head."""
     changed = _git("diff", "--name-only", ACCEPTED, "--", "pccm/src", "pccm/spec", "pccm/builder").split()
-    assert changed == ["pccm/src/vba/modRepair.bas"], changed
+    assert sorted(changed) == ["pccm/src/vba/ThisWorkbook.vba", "pccm/src/vba/modRepair.bas"], changed
     sys.path.insert(0, str(PCCM_ROOT / "tests"))
+    from vba_open_failpoint import ACCEPTED_BEFORE_OPEN_FAILPOINT, strip_open_failpoint
     from vba_repair_reconstruction import (ACCEPTED_BEFORE_REPAIR_RECONSTRUCTION,
                                            strip_repair_reconstruction)
     current = (PCCM_ROOT / "src" / "vba" / "modRepair.bas").read_bytes().decode("utf-8")
@@ -1432,6 +1623,17 @@ def test_70_production_vba_spec_and_builder_are_byte_identical_to_the_accepted_h
     assert current != tested, "the declared correction is absent"
     assert _git("diff", "--name-only", ACCEPTED, ACCEPTED_BEFORE_REPAIR_RECONSTRUCTION, "--",
                 "pccm/src", "pccm/spec", "pccm/builder").strip() == ""
+    # AND THE P10-R3 CLOSURE on top: ThisWorkbook.vba only, reversing to 889b6b5,
+    # which is byte-identical to the accepted head for that file.
+    assert ACCEPTED_BEFORE_OPEN_FAILPOINT == R3_AUTHORITY
+    handler = _src("handler", HANDLER_VBA)
+    handler_then = _git("show", f"{ACCEPTED_BEFORE_OPEN_FAILPOINT}:pccm/src/vba/ThisWorkbook.vba")
+    assert strip_open_failpoint("ThisWorkbook.vba", handler) == handler_then
+    assert handler != handler_then, "the declared closure is absent"
+    assert _git("diff", "--name-only", ACCEPTED, ACCEPTED_BEFORE_OPEN_FAILPOINT, "--",
+                "pccm/src/vba/ThisWorkbook.vba").strip() == ""
+    assert _git("diff", "--name-only", ACCEPTED_BEFORE_OPEN_FAILPOINT, "--",
+                "pccm/src", "pccm/spec", "pccm/builder").split() == ["pccm/src/vba/ThisWorkbook.vba"]
 
 
 def test_71_the_runner_is_declared_and_documented() -> None:

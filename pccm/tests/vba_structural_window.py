@@ -109,7 +109,9 @@ def strip_structural_window(module_name: str, text: str, _already_stripped: bool
     # so its reversal is applied before this one; each layer reproduces the tree
     # beneath it exactly, and the composition reproduces the accepted tree.
     if not _already_stripped:
+        from vba_open_failpoint import strip_open_failpoint
         from vba_repair_reconstruction import strip_repair_reconstruction
+        text = strip_open_failpoint(module_name, text)
         text = strip_repair_reconstruction(module_name, text)
     for current, accepted in _HUNKS.get(module_name, ()):
         # THE SAME FRAGMENT IN WHICHEVER ENDING THE CALLER IS HOLDING. Some
@@ -139,10 +141,13 @@ def strip_declared_changes(module_name: str, text: str) -> str:
     commit compares the CURRENT file with the file AT that commit; the commit
     may sit before or after either declared change, so the same reversal is
     applied to BOTH sides and a layer a side does not carry passes through.
-    The later layer (the P10-2C Repair reconstruction) comes off before the
-    earlier one (the P10-RP structural window) because it was made on top of it.
+    The later layers come off before the earlier ones because each was made on
+    top of the one beneath: the P10-R3 Workbook_Open failpoint closure, then the
+    P10-2C Repair reconstruction, then the P10-RP structural window.
     """
+    from vba_open_failpoint import strip_open_failpoint
     from vba_repair_reconstruction import strip_repair_reconstruction
+    text = strip_open_failpoint(module_name, text)
     text = strip_repair_reconstruction(module_name, text)
     hunks = _HUNKS.get(module_name, ())
     if not hunks:
@@ -156,10 +161,12 @@ def strip_declared_changes(module_name: str, text: str) -> str:
 
 def declared_production_changes() -> dict[str, str]:
     """Every production module a declared change touches, and why."""
+    from vba_open_failpoint import DECLARED_OPEN_FAILPOINT_CHANGES
     from vba_repair_reconstruction import DECLARED_REPAIR_RECONSTRUCTION_CHANGES
     merged = dict(DECLARED_STRUCTURAL_WINDOW_CHANGES)
-    for name, why in DECLARED_REPAIR_RECONSTRUCTION_CHANGES.items():
-        merged[name] = (merged[name] + "; " + why) if name in merged else why
+    for layer in (DECLARED_REPAIR_RECONSTRUCTION_CHANGES, DECLARED_OPEN_FAILPOINT_CHANGES):
+        for name, why in layer.items():
+            merged[name] = (merged[name] + "; " + why) if name in merged else why
     return merged
 
 

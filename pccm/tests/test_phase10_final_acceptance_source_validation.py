@@ -56,6 +56,26 @@ def _mutate(expected: str, before: str, after: str) -> None:
     assert any(name.startswith(expected) for name in refused), (expected, refused)
 
 
+def _mutate_source(expected: str, key: str, path: Path, before: str, after: str) -> None:
+    """A production or runner text mutated IN MEMORY through the conformance
+    module's memo, exactly as _mutate does for the runner."""
+    original = conformance._src(key, path)
+    damaged = original.replace(before, after, 1)
+    if damaged == original:
+        raise RuntimeError(f"the mutation changed nothing: {before[:70]!r} is no longer in {path.name}")
+    saved = dict(conformance._MEMO)
+    conformance._MEMO[key] = damaged
+    if key == "runner":
+        conformance._MEMO.pop("runner_code", None)
+    try:
+        refused = _run_battery()
+    finally:
+        conformance._MEMO.clear()
+        conformance._MEMO.update(saved)
+    assert refused, "the mutation survived the whole battery"
+    assert any(name.startswith(expected) for name in refused), (expected, refused)
+
+
 def test_00_the_runner_as_written_passes_every_control() -> None:
     assert _run_battery() == []
 
@@ -342,6 +362,104 @@ def test_38_an_undeclared_edit_to_the_executed_tail_is_refused() -> None:
     _mutate("test_60c",
             "    $null = Add-FaCheck 'repair.fingerprint' (($recalc2 -like 'OK|*') -and ($fingerprintAfterRepairs -ceq $fingerprint)) `\n",
             "    $null = Add-FaCheck 'repair.fingerprint' ($recalc2 -like 'OK|*') `\n")
+
+
+# ---------------------------------------------------------------------------
+# THE P10-R3 CLOSURE: CONTRACT MATRIX ROW O
+# ---------------------------------------------------------------------------
+def test_39_leaving_the_event_switch_off_is_refused() -> None:
+    _mutate("test_56",
+            "    } finally { $excel.EnableEvents = $true }\n",
+            "    } finally { $null = $true }\n")
+
+
+def test_40_arming_with_the_event_switch_on_is_refused() -> None:
+    """THE HANDLER WOULD RUN AT OPEN, unarmed, and the row would prove nothing."""
+    _mutate("test_56",
+            "    $excel.EnableEvents = $false\n    try {\n        $wb = $workbooks.Open($openPath)\n",
+            "    try {\n        $wb = $workbooks.Open($openPath)\n")
+
+
+def test_41_dropping_the_real_handler_run_is_refused() -> None:
+    _mutate("test_56",
+            "    try { $excel.Run(\"'\" + [string]$wb.Name + \"'!ThisWorkbook.Workbook_Open\") | Out-Null }\n    catch { $handlerFailure = (Format-Err $_) }\n",
+            "    $handlerFailure = ''\n")
+
+
+def test_42_an_exception_from_the_run_counted_as_the_failure_path_is_refused() -> None:
+    _mutate("test_56",
+            "    catch { $handlerFailure = (Format-Err $_) }\n",
+            "    catch { $handlerFailure = '' }\n")
+
+
+def test_43_a_weakened_record_expectation_is_refused() -> None:
+    _mutate("test_56",
+            "    $null = Add-FaCheck 'rowo.failure-path' ($recorded -ceq $expectedRecord) `\n",
+            "    $null = Add-FaCheck 'rowo.failure-path' ($recorded -clike 'Workbook_Open: *') `\n")
+
+
+def test_44_the_runner_restoring_screen_updating_itself_is_refused() -> None:
+    """THE HANDLER MUST RESTORE IT; a runner write would hide a handler that did not."""
+    _mutate("test_56",
+            "    $recorded = Get-FaRunText -Excel $excel -Procedure 'PCCM_AutomationResult'\n    $prompted",
+            "    $excel.ScreenUpdating = $screenBefore\n    $recorded = Get-FaRunText -Excel $excel -Procedure 'PCCM_AutomationResult'\n    $prompted")
+
+
+def test_45_tolerating_a_half_protected_workbook_is_refused() -> None:
+    _mutate("test_56",
+            "((-not $released.Applied) -and ($released.Protected -eq 0) -and (-not $released.Structure) -and ($released.Depth -eq 0))",
+            "((-not $released.Applied) -and ($released.Protected -ge 0) -and (-not $released.Structure) -and ($released.Depth -eq 0))")
+
+
+def test_46_a_failpoint_name_that_is_not_the_handlers_is_refused() -> None:
+    _mutate("test_56",
+            "$script:OpenFailpoint = 'Phase10WorkbookOpen'\n",
+            "$script:OpenFailpoint = 'Phase10OpenSomethingElse'\n")
+
+
+def test_47_an_undeclared_edit_outside_the_row_o_block_is_refused() -> None:
+    _mutate("test_60c",
+            "    $null = Add-FaCheck 'copy.fixture' ($copyApplied -like 'OK|*') $copyApplied\n",
+            "    $null = Add-FaCheck 'copy.fixture' $true $copyApplied\n")
+
+
+def test_48_a_failpoint_before_the_apply_is_refused() -> None:
+    """IT WOULD BYPASS THE RELEASE: nothing applied, nothing to put right."""
+    _mutate_source("test_57", "handler", conformance.HANDLER_VBA,
+                   "    If Not modProtection.ProtectionApply(detail) Then GoTo Failed\n    modAppState.FailPointCheck FAILPOINT_WORKBOOK_OPEN\n",
+                   "    modAppState.FailPointCheck FAILPOINT_WORKBOOK_OPEN\n    If Not modProtection.ProtectionApply(detail) Then GoTo Failed\n")
+
+
+def test_49_removing_the_failpoint_is_refused() -> None:
+    _mutate_source("test_57", "handler", conformance.HANDLER_VBA,
+                   "    modAppState.FailPointCheck FAILPOINT_WORKBOOK_OPEN\n", "")
+
+
+def test_50_reading_err_after_the_release_is_refused() -> None:
+    """THE RELEASE OWNER'S On Error CLEARS Err; read afterwards, the record names nothing."""
+    _mutate_source("test_57", "handler", conformance.HANDLER_VBA,
+                   "    If Len(detail) = 0 Then detail = Err.Description\n    ' A HALF-PROTECTED WORKBOOK IS THE ONE OUTCOME TO AVOID.",
+                   "    ' A HALF-PROTECTED WORKBOOK IS THE ONE OUTCOME TO AVOID.")
+
+
+def test_51_production_beginning_the_seam_is_refused() -> None:
+    """THE TRIGGER MUST STAY DORMANT: no production line may arm automation."""
+    _mutate_source("test_57", "handler", conformance.HANDLER_VBA,
+                   "    restored = False\n",
+                   "    restored = False\n    modAppState.gAutomationActive = True\n")
+
+
+def test_52_a_failpoint_that_fires_without_the_seam_is_refused() -> None:
+    _mutate_source("test_57", "appstate", conformance.APPSTATE_VBA,
+                   "    If Not gAutomationActive Then Exit Sub\n    If Len(gAutomationFailAfterStage) = 0 Then Exit Sub\n",
+                   "    If Len(gAutomationFailAfterStage) = 0 Then Exit Sub\n")
+
+
+def test_53_a_second_statement_on_the_successful_path_is_refused() -> None:
+    """NORMAL Workbook_Open BEHAVIOUR IS PINNED statement by statement."""
+    _mutate_source("test_57", "handler", conformance.HANDLER_VBA,
+                   "    Application.ScreenUpdating = previousUpdating\n    restored = True\n",
+                   "    Application.ScreenUpdating = previousUpdating\n    Application.Calculation = xlCalculationAutomatic\n    restored = True\n")
 
 
 if __name__ == "__main__":

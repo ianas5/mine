@@ -1830,8 +1830,10 @@ def test_137_the_correction_introduces_no_release_of_protection() -> None:
         "pccm/src", "pccm/spec", "pccm/builder").splitlines() if line.strip()]
     # P10-9 DECLARED: the builder's Source Revision row, additive, proved by test_55.
     # P10-2C DECLARED: the Repair reconstruction rule in modRepair.bas (final
-    # acceptance run 7), proved by reversal in _production_changed_since below.
+    # acceptance run 7), and P10-R3 DECLARED: the Workbook_Open failpoint closure
+    # in ThisWorkbook.vba, both proved by reversal in _production_changed_since below.
     assert changed == ["pccm/builder/pccm_builder/workbook_builder.py",
+                       "pccm/src/vba/ThisWorkbook.vba",
                        "pccm/src/vba/modRepair.bas"], \
         f"production changed for a harness correction: {changed}"
     assert _production_changed_since("0119bee") == []
@@ -3374,11 +3376,11 @@ def test_292_production_vba_is_unchanged() -> None:
     """REQUIRED CONTROL 16. The cause is a fixture-order matter; production is
     not touched for it."""
     assert _production_changed_since("d90a186") == []
-    # P10-2C DECLARED: the one module that moved since d90a186 is modRepair.bas,
-    # and _production_changed_since has just proved the move is the declared
-    # reversal and nothing else.
-    assert _git("diff", "--name-only", "d90a186", "--", "pccm/src/vba").split() in (
-        [], ["pccm/src/vba/modRepair.bas"])
+    # P10-2C and P10-R3 DECLARED: the only modules that moved since d90a186 are
+    # modRepair.bas and ThisWorkbook.vba, and _production_changed_since has just
+    # proved each move is its declared reversal and nothing else.
+    assert set(_git("diff", "--name-only", "d90a186", "--", "pccm/src/vba").split()) <= {
+        "pccm/src/vba/modRepair.bas", "pccm/src/vba/ThisWorkbook.vba"}
 
 
 def test_293_calcequiv_remains_an_independent_requirement() -> None:
@@ -3639,11 +3641,14 @@ def test_304_the_snapshot_calcequiv_production_and_timed_path_are_unchanged() ->
     assert "CALCEQUIV|match" in compare and "CALCEQUIV|differ" in compare
     assert _production_changed_since("1eb6395") == []
     # P10-2C DECLARED (final acceptance run 7): modRepair.bas carries the Repair
-    # reconstruction rule, proved by reversal just above; nothing else moved.
-    assert _git("diff", "--name-only", "1eb6395", "--", "pccm/src/vba",
-                "pccm/bootstrap/windows/build_stage_b.ps1", "pccm/bootstrap/windows/com_lifecycle.ps1",
-                "pccm/bootstrap/windows/phase5_gate_b_scenarios.ps1",
-                "pccm/bootstrap/windows/phase10_fixture_window.bas").split() in ([], ["pccm/src/vba/modRepair.bas"])
+    # reconstruction rule; P10-R3 DECLARED: ThisWorkbook.vba carries the
+    # Workbook_Open failpoint closure; both proved by reversal just above, and
+    # nothing else moved.
+    assert set(_git("diff", "--name-only", "1eb6395", "--", "pccm/src/vba",
+                    "pccm/bootstrap/windows/build_stage_b.ps1", "pccm/bootstrap/windows/com_lifecycle.ps1",
+                    "pccm/bootstrap/windows/phase5_gate_b_scenarios.ps1",
+                    "pccm/bootstrap/windows/phase10_fixture_window.bas").split()) <= {
+        "pccm/src/vba/modRepair.bas", "pccm/src/vba/ThisWorkbook.vba"}
     for name in ("Invoke-BenchmarkExecution", "Test-BenchmarkSample", "Get-BenchmarkMedian",
                  "New-BenchmarkWeightBlock", "New-BenchmarkRegisterBlock", "Set-BenchmarkRangeBlock",
                  "Set-BenchmarkRegisterRowCount", "Set-BenchmarkBulkFixture",

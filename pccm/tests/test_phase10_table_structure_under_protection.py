@@ -1150,16 +1150,17 @@ def test_30_no_production_source_changed() -> None:
     # declared structural window, and the reversal proves it is the only thing.
     import sys as _sys
     _sys.path.insert(0, str(PCCM_ROOT / "tests"))
-    from vba_structural_window import (DECLARED_STRUCTURAL_WINDOW_CHANGES,
-                                       strip_structural_window)
-    declared = {f"pccm/src/vba/{name}" for name in DECLARED_STRUCTURAL_WINDOW_CHANGES}
+    # The later declared layers - the P10-2C Repair reconstruction and the
+    # P10-R3 Workbook_Open closure - are reversed the same way, on both sides.
+    from vba_structural_window import declared_production_changes, strip_declared_changes
+    declared = {f"pccm/src/vba/{name}" for name in declared_production_changes()}
     for path in sorted(set(changed) & declared):
         name = Path(path).name
-        current = strip_structural_window(
+        current = strip_declared_changes(
             name, (PCCM_ROOT / "src" / "vba" / name).read_bytes().decode("utf-8"))
-        accepted = _git("show", f"{ACCEPTED}:{path}")
+        accepted = strip_declared_changes(name, _git("show", f"{ACCEPTED}:{path}"))
         assert current.replace("\r\n", "\n") == accepted.replace("\r\n", "\n"), (
-            f"{path} moved outside the declared P10-RP structural window")
+            f"{path} moved outside the declared layers")
     changed = [path for path in changed if path not in declared]
     assert changed == [], f"production source changed: {changed}"
 

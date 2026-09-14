@@ -87,6 +87,8 @@ $script:RepairFailpointRisk = 'Phase10RepairRisk'
 # The grid digests the Repair contract scenarios compare against; set by Save-FaGridsBefore.
 $script:FaCostBefore = ''
 $script:FaRiskBefore = ''
+# The contracted Workbook_Open failpoint (matrix row O): the handler's own constant.
+$script:OpenFailpoint = 'Phase10WorkbookOpen'
 
 # ===========================================================================
 # THE HELPERS THE DOT-SOURCED FILES CALL, AND THIS RUNNER DEFINES
@@ -2000,6 +2002,98 @@ try {
     $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'copy.protection-after-run'
     $excel.Run('PCCM_AutomationEnd') | Out-Null
     # --- P10-R2 DISTRIBUTION COPY: end ------------------------------------------
+    # --- P10-R3 WORKBOOK_OPEN FAILURE: begin ------------------------------------
+    # Contract matrix row O: an injected Workbook_Open failure leaves the
+    # application state clean and the workbook usable. The handler runs before
+    # any post-open automation can be armed, so the pre-open trigger is Excel's
+    # own event switch: the copy is closed unsaved, a third disposable copy is
+    # opened with EnableEvents off so the handler does NOT run at open (proved:
+    # the file carries no protection and nothing is recorded), the accepted seam
+    # is begun in the fresh project with the handler's own failpoint, the switch
+    # is put back, and then the REAL handler - the production procedure in the
+    # workbook's own document module, not a copy - is run through Application.Run.
+    # Its failpoint fires after a successful apply, so the failure path is
+    # exercised from a fully protected workbook. An exception from the run is a
+    # FAIL of the check, never the failure path. The application state is read
+    # before and compared after; nothing is written to restore it.
+    try { $wb.Close($false); $rel.WorkbookClosed = $true }
+    catch { $null = $rel.Failed.Add('Workbook.Close(copy)') }
+    Invoke-FaRelease -Ledger $rel -Obj $wb -Label 'Workbook(copy)'
+    $wb = $null
+    $openDir = Join-Path $tempRoot 'open failure'
+    $null = New-Item -ItemType Directory -Path $openDir -Force
+    $openPath = Join-Path $openDir 'PCCM_open_failure_copy.xlsm'
+    Copy-Item -LiteralPath $stageBPath -Destination $openPath -Force
+    if (-not [bool]$excel.EnableEvents) { throw 'application events are already off before the open-failure session' }
+    $suppressed = $null
+    $resultBeforeHandler = '<not read>'
+    $excel.EnableEvents = $false
+    try {
+        $wb = $workbooks.Open($openPath)
+        $comAcquired = $comAcquired + 1
+        Import-FaFixtureWindow -Excel $excel -Workbook $wb -Manifest $manifest -ScriptDir $scriptDir
+        $suppressed = Get-FaProtectionState -Excel $excel
+        $resultBeforeHandler = Get-FaRunText -Excel $excel -Procedure 'PCCM_AutomationResult'
+        $excel.Run('PCCM_AutomationBegin', $true, $script:OpenFailpoint) | Out-Null
+    } finally { $excel.EnableEvents = $true }
+    $null = Add-FaCheck 'rowo.open-suppressed' `
+        (($null -ne $suppressed) -and (-not $suppressed.Applied) -and ($suppressed.Protected -eq 0) -and (-not $suppressed.Structure) -and ($suppressed.Depth -eq 0) -and ($resultBeforeHandler -eq '')) `
+        ('opened with events off: ' + $(if ($null -eq $suppressed) { '<no state>' } else { $suppressed.Raw }) + '; recorded=' + $resultBeforeHandler)
+    $screenBefore = [bool]$excel.ScreenUpdating
+    $calcBefore = [int]$excel.Calculation
+    $eventsBefore = [bool]$excel.EnableEvents
+    $handlerFailure = ''
+    try { $excel.Run("'" + [string]$wb.Name + "'!ThisWorkbook.Workbook_Open") | Out-Null }
+    catch { $handlerFailure = (Format-Err $_) }
+    $recorded = Get-FaRunText -Excel $excel -Procedure 'PCCM_AutomationResult'
+    $prompted = Get-FaRunText -Excel $excel -Procedure 'PCCM_AutomationPrompt'
+    $expectedRecord = "Workbook_Open: Injected structural failure after stage '" + $script:OpenFailpoint + "'."
+    $null = Add-FaCheck 'rowo.handler-entered' (($handlerFailure -eq '') -and ($recorded -clike 'Workbook_Open: *')) `
+        $(if ($handlerFailure -eq '') { ('the real handler ran and recorded: ' + $recorded) } else { $handlerFailure })
+    $null = Add-FaCheck 'rowo.failure-path' ($recorded -ceq $expectedRecord) `
+        ('expected exactly ' + $expectedRecord + '; recorded ' + $recorded)
+    $null = Add-FaCheck 'rowo.disclosed-once' (($recorded -ceq $expectedRecord) -and ($prompted -eq '') -and $eventsBefore) `
+        'one record through the accepted mechanism, no prompt, no dialog: the unattended runner is still running'
+    $null = Add-FaCheck 'rowo.screen-updating-restored' ([bool]$excel.ScreenUpdating -eq $screenBefore) `
+        ('ScreenUpdating before ' + [string]$screenBefore + ', after ' + [string]$excel.ScreenUpdating)
+    $null = Add-FaCheck 'rowo.calculation-unchanged' ([int]$excel.Calculation -eq $calcBefore) `
+        ('Calculation before ' + [string]$calcBefore + ', after ' + [string][int]$excel.Calculation)
+    $null = Add-FaCheck 'rowo.events-unchanged' ([bool]$excel.EnableEvents -eq $eventsBefore) `
+        ('EnableEvents before ' + [string]$eventsBefore + ', after ' + [string]$excel.EnableEvents)
+    $released = Get-FaProtectionState -Excel $excel
+    $null = Add-FaCheck 'rowo.released-not-half-protected' `
+        ((-not $released.Applied) -and ($released.Protected -eq 0) -and (-not $released.Structure) -and ($released.Depth -eq 0)) `
+        ('after the failed open: ' + $released.Raw)
+    $usableFailure = ''
+    $valueAfterOpenFailure = ''
+    $worksheets = $null; $methodWs = $null; $usableCell = $null
+    try {
+        $worksheets = $wb.Worksheets
+        $methodWs = $worksheets.Item([string]$methodology.sheet)
+        $usableCell = $methodWs.Range($lockedAddress)
+        $usableCell.Value2 = [string]$sourceRevisionRow.label
+        $valueAfterOpenFailure = [string]$usableCell.Value2
+    } catch { $usableFailure = (Format-Err $_) }
+    finally {
+        if ($null -ne $usableCell)  { Release-Transient $usableCell  'Range(usable)'; $usableCell  = $null }
+        if ($null -ne $methodWs)    { Release-Transient $methodWs    'Worksheet';     $methodWs    = $null }
+        if ($null -ne $worksheets)  { Release-Transient $worksheets  'Worksheets';    $worksheets  = $null }
+    }
+    $null = Add-FaCheck 'rowo.usable' (($usableFailure -eq '') -and ($valueAfterOpenFailure -ceq [string]$sourceRevisionRow.label)) `
+        $(if ($usableFailure -eq '') { ([string]$methodology.sheet + '!' + $lockedAddress + ' accepted its own value with no protection in force') } else { $usableFailure })
+    # THE CONTRACT'S LAST SENTENCE: protection is attempted again the next time
+    # the handler runs. The seam stays begun - a real failure would record, not
+    # deadlock - with no failpoint, and the same handler applies protection.
+    $excel.Run('PCCM_AutomationBegin', $true, '') | Out-Null
+    $reopenFailure = ''
+    try { $excel.Run("'" + [string]$wb.Name + "'!ThisWorkbook.Workbook_Open") | Out-Null }
+    catch { $reopenFailure = (Format-Err $_) }
+    $recordedAfterReopen = Get-FaRunText -Excel $excel -Procedure 'PCCM_AutomationResult'
+    $null = Add-FaCheck 'rowo.reopen-silent' (($reopenFailure -eq '') -and ($recordedAfterReopen -eq '')) `
+        $(if ($reopenFailure -eq '') { ('the handler ran again and recorded nothing; ScreenUpdating ' + [string]$excel.ScreenUpdating) } else { $reopenFailure })
+    $null = Assert-FaProtectionApplied -Excel $excel -Protection $protection -Scenario 'rowo.reopen-applied'
+    $excel.Run('PCCM_AutomationEnd') | Out-Null
+    # --- P10-R3 WORKBOOK_OPEN FAILURE: end --------------------------------------
 } catch {
     $fatal = (Format-Err $_)
     Write-FaLine ''

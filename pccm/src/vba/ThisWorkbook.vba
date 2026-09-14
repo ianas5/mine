@@ -25,6 +25,20 @@ Option Explicit
 ' unlocked is modProtection's question and the contracts' answer. This is a
 ' four-line delegation on purpose: policy in a document module would be policy
 ' in the one place no static control globs.
+'
+' THE ONE FAILPOINT, AND WHY IT SITS AFTER THE APPLY. The settled contract calls
+' Workbook_Open failure safety a required Windows scenario, and nothing outside
+' this handler can make the real apply fail deterministically without a dialog
+' or a workbook that cannot be put right afterwards. So the handler carries the
+' project's ordinary failpoint, through the same owner every other command uses:
+' modAppState.FailPointCheck exits at once unless the accepted automation seam
+' has been begun with exactly this stage name, and no user command, button or
+' open ever begins it - a workbook opened by a person runs this handler with the
+' seam dormant and the check costs one comparison. It is placed AFTER a
+' successful apply so that what the injected failure proves is the whole of the
+' failure path from a fully protected workbook: the release, the application
+' state put back, the record, and the dialog withheld under automation.
+Private Const FAILPOINT_WORKBOOK_OPEN As String = "Phase10WorkbookOpen"
 
 Private Sub Workbook_Open()
     Dim detail As String
@@ -40,12 +54,19 @@ Private Sub Workbook_Open()
     restored = False
 
     If Not modProtection.ProtectionApply(detail) Then GoTo Failed
+    modAppState.FailPointCheck FAILPOINT_WORKBOOK_OPEN
 
     Application.ScreenUpdating = previousUpdating
     restored = True
     Exit Sub
 
 Failed:
+    ' THE ERROR IS READ BEFORE ANYTHING ELSE RUNS. A runtime error arrives here
+    ' with detail empty and its description in Err, and Err is cleared by the
+    ' next On Error statement executed - which is the first line of the release
+    ' owner called below. Read after that call, the description would be gone
+    ' and the record would name nothing.
+    If Len(detail) = 0 Then detail = Err.Description
     ' A HALF-PROTECTED WORKBOOK IS THE ONE OUTCOME TO AVOID. If protection could
     ' not be established, it is released rather than left partly applied: a
     ' workbook the user can edit is recoverable, and one where some sheets are
@@ -55,7 +76,6 @@ Failed:
     If Not modProtection.ProtectionRelease(releaseDetail) Then
         detail = detail & " (and it could not be released again: " & releaseDetail & ")"
     End If
-    If Len(detail) = 0 Then detail = Err.Description
 
     ' REPORTED THE WAY EVERY OTHER COMMAND REPORTS. The accepted idiom is that
     ' the CALLER asks whether automation is active and ReportFailure stays

@@ -414,11 +414,16 @@ def test_33_a_restoration_failure_cannot_be_an_ordinary_success() -> None:
 # E. WHAT MUST NOT HAVE MOVED
 # ===========================================================================
 def test_40_workbook_open_still_establishes_the_protected_resting_state() -> None:
-    """REQUIRED CONTROL 15. Untouched, and a control says so."""
+    """REQUIRED CONTROL 15. Untouched but for the declared P10-R3 closure - the
+    dormant failpoint and the early Err read - which comes off exactly and
+    leaves the accepted handler byte for byte; a control says so."""
+    from vba_open_failpoint import strip_open_failpoint
     current = (SRC / "ThisWorkbook.vba").read_bytes()
     accepted = subprocess.run(["git", "show", "58b2394:pccm/src/vba/ThisWorkbook.vba"],
                               cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE).stdout
-    assert current == accepted, "the open handler moved"
+    assert current != accepted, "the declared closure is absent"
+    assert strip_open_failpoint("ThisWorkbook.vba", current.decode("utf-8")) == accepted.decode("utf-8"), \
+        "the open handler moved outside the declared closure"
     text = current.decode("utf-8")
     assert "modProtection.ProtectionApply(detail)" in text
     assert "BeginStructuralOperation" not in text
@@ -438,17 +443,28 @@ def test_41_command_feedback_is_unchanged() -> None:
 
 
 def test_42_the_reconciliation_is_the_only_production_change() -> None:
-    """AND IT IS PROVED BY REVERSAL, not asserted."""
+    """AND IT IS PROVED BY REVERSAL, not asserted. Every production path that
+    moved since the accepted tree is a DECLARED layer - the reconciliation, the
+    P10-2C Repair reconstruction on top of it, the P10-R3 Workbook_Open closure
+    on top of that - and taking every layer off reproduces the accepted bytes."""
     from vba_structural_window import (ACCEPTED_BEFORE_RECONCILIATION,
                                        DECLARED_STRUCTURAL_WINDOW_CHANGES,
+                                       declared_production_changes,
+                                       strip_declared_changes,
                                        strip_structural_window)
 
     changed = [line for line in subprocess.run(
         ["git", "diff", "--name-only", ACCEPTED_BEFORE_RECONCILIATION, "--",
          "pccm/src", "pccm/spec"], cwd=REPO_ROOT, check=True,
         stdout=subprocess.PIPE, text=True).stdout.splitlines() if line.strip()]
-    declared = {f"pccm/src/vba/{name}" for name in DECLARED_STRUCTURAL_WINDOW_CHANGES}
+    declared = {f"pccm/src/vba/{name}" for name in declared_production_changes()}
     assert set(changed) <= declared, sorted(set(changed) - declared)
+    for path in sorted(set(changed) - {f"pccm/src/vba/{name}" for name in DECLARED_STRUCTURAL_WINDOW_CHANGES}):
+        name = Path(path).name
+        accepted = subprocess.run(
+            ["git", "show", f"{ACCEPTED_BEFORE_RECONCILIATION}:{path}"],
+            cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE).stdout.decode("utf-8")
+        assert strip_declared_changes(name, _src(name)) == accepted, name
     for name in DECLARED_STRUCTURAL_WINDOW_CHANGES:
         accepted = subprocess.run(
             ["git", "show", f"{ACCEPTED_BEFORE_RECONCILIATION}:pccm/src/vba/{name}"],
