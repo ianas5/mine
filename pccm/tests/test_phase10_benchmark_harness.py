@@ -1832,9 +1832,12 @@ def test_137_the_correction_introduces_no_release_of_protection() -> None:
     # P10-2C DECLARED: the Repair reconstruction rule in modRepair.bas (final
     # acceptance run 7), and P10-R3 DECLARED: the Workbook_Open failpoint closure
     # in ThisWorkbook.vba, both proved by reversal in _production_changed_since below.
+    # P10-R4 DECLARED: the runtime year-cell lock state in modWorkbook.bas
+    # (final acceptance run 10), proved by the same reversal.
     assert changed == ["pccm/builder/pccm_builder/workbook_builder.py",
                        "pccm/src/vba/ThisWorkbook.vba",
-                       "pccm/src/vba/modRepair.bas"], \
+                       "pccm/src/vba/modRepair.bas",
+                       "pccm/src/vba/modWorkbook.bas"], \
         f"production changed for a harness correction: {changed}"
     assert _production_changed_since("0119bee") == []
     _assert_only_source_revision_added(_git("diff", "0119bee", "--",
@@ -3380,7 +3383,7 @@ def test_292_production_vba_is_unchanged() -> None:
     # modRepair.bas and ThisWorkbook.vba, and _production_changed_since has just
     # proved each move is its declared reversal and nothing else.
     assert set(_git("diff", "--name-only", "d90a186", "--", "pccm/src/vba").split()) <= {
-        "pccm/src/vba/modRepair.bas", "pccm/src/vba/ThisWorkbook.vba"}
+        "pccm/src/vba/modRepair.bas", "pccm/src/vba/ThisWorkbook.vba", "pccm/src/vba/modWorkbook.bas"}
 
 
 def test_293_calcequiv_remains_an_independent_requirement() -> None:
@@ -3648,7 +3651,7 @@ def test_304_the_snapshot_calcequiv_production_and_timed_path_are_unchanged() ->
                     "pccm/bootstrap/windows/build_stage_b.ps1", "pccm/bootstrap/windows/com_lifecycle.ps1",
                     "pccm/bootstrap/windows/phase5_gate_b_scenarios.ps1",
                     "pccm/bootstrap/windows/phase10_fixture_window.bas").split()) <= {
-        "pccm/src/vba/modRepair.bas", "pccm/src/vba/ThisWorkbook.vba"}
+        "pccm/src/vba/modRepair.bas", "pccm/src/vba/ThisWorkbook.vba", "pccm/src/vba/modWorkbook.bas"}
     for name in ("Invoke-BenchmarkExecution", "Test-BenchmarkSample", "Get-BenchmarkMedian",
                  "New-BenchmarkWeightBlock", "New-BenchmarkRegisterBlock", "Set-BenchmarkRangeBlock",
                  "Set-BenchmarkRegisterRowCount", "Set-BenchmarkBulkFixture",

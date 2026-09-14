@@ -39,6 +39,7 @@ Public Type TableSnapshot
     Headers()     As Variant
     Values()      As Variant
     Fills()       As Variant
+    Locks()       As Variant
     NumberFormats() As Variant
     ColumnWidths()  As Variant
 End Type
@@ -376,12 +377,27 @@ End Function
 ' FILL_INPUT / FILL_LOCKED constants, so a generated editable region is never
 ' visually ambiguous.
 '
-' Keyed-ness decides the treatment:
+' Keyed-ness decides the FILL:
 '
 '   row HAS a key      -> editable input. The user owns these percentages/rates.
 '   row has NO key     -> model-controlled. An unkeyed reserved row must not invite
 '                         input, because the model cannot own what it cannot key,
 '                         and anything typed there becomes orphan data.
+'
+' THE LOCK STATE IS NOT THE FILL, AND IT DOES NOT FOLLOW THE KEY. The accepted
+' protection policy - the builder's grid_year_columns rule and the projection it
+' emits - unlocks the year columns over EVERY reserved body row, keyed or not,
+' and keeps the fixed columns locked; a row keyed later must already be a cell
+' the user can type in. Stage A marks those worksheet cells unlocked, but the
+' year columns themselves do not exist at Stage A: they are materialised here at
+' runtime by ListColumns.Add, and final acceptance run 10 proved on Windows that
+' the cells Excel materialises that way read Locked=True - a keyed year cell from
+' the first Apply Timeline, a regrown keyed year cell and a regrown unkeyed
+' reserved year cell alike, every one of them declared unlocked. So the one
+' treatment every runtime year cell receives is applied here, explicitly, by the
+' owner that already paints it: Locked = False on every year body cell this
+' procedure traverses, and nothing outside that range. Headers and fixed columns
+' are never touched by this procedure and keep what Stage A gave them.
 Public Sub PaintYearCells(ByVal Target As ListObject, ByVal FirstYearColumn As Long, _
                           ByVal YearCount As Long, ByVal KeyColumn As Long)
     If YearCount < 1 Then Exit Sub
@@ -391,6 +407,7 @@ Public Sub PaintYearCells(ByVal Target As ListObject, ByVal FirstYearColumn As L
     For r = 1 To rowCount
         keyed = (Len(TextOf(CellIn(Target, r, KeyColumn))) > 0)
         For c = FirstYearColumn To FirstYearColumn + YearCount - 1
+            CellIn(Target, r, c).Locked = False
             If keyed Then
                 CellIn(Target, r, c).Interior.Color = FILL_INPUT
             Else
@@ -471,6 +488,7 @@ Public Function SnapshotTable(ByVal Target As ListObject) As TableSnapshot
     ReDim s.ColumnWidths(1 To s.ColumnCount)
     ReDim s.Values(1 To IIf(s.RowCount < 1, 1, s.RowCount), 1 To s.ColumnCount)
     ReDim s.Fills(1 To IIf(s.RowCount < 1, 1, s.RowCount), 1 To s.ColumnCount)
+    ReDim s.Locks(1 To IIf(s.RowCount < 1, 1, s.RowCount), 1 To s.ColumnCount)
 
     For c = 1 To s.ColumnCount
         s.Headers(c) = Target.HeaderRowRange.Cells(1, c).Value
@@ -488,6 +506,11 @@ Public Function SnapshotTable(ByVal Target As ListObject) As TableSnapshot
             ' Per cell, not per column: within one year column an identified row is
             ' editable while an unkeyed reserved row is model-controlled.
             s.Fills(r, c) = Target.DataBodyRange.Cells(r, c).Interior.Color
+            ' And the lock state with the fill: a rollback that rebuilds a column or
+            ' a row through ListColumns.Add / ListRows.Add gets cells Excel
+            ' materialises locked, so what the user could type in before the
+            ' operation is captured here and put back by RestoreTable.
+            s.Locks(r, c) = Target.DataBodyRange.Cells(r, c).Locked
         Next c
     Next r
 
@@ -575,6 +598,7 @@ Public Sub RestoreTable(ByVal Target As ListObject, ByRef Snapshot As TableSnaps
             ' workbook is restored in name only: the user could not tell which cells
             ' they still own.
             Target.DataBodyRange.Cells(r, c).Interior.Color = Snapshot.Fills(r, c)
+            Target.DataBodyRange.Cells(r, c).Locked = CBool(Snapshot.Locks(r, c))
         Next c
     Next r
 End Sub

@@ -552,11 +552,11 @@ def test_66_the_runner_unlocking_a_cell_itself_is_refused() -> None:
             "        $wb.Worksheets.Item($gridSheet).Range('D13').Locked = $false\n        $state = Get-FaCellLockState -Workbook $wb -SheetName $gridSheet -TableName $gridTable -RowIndex $probe.Row -ColumnIndex $probe.Column\n")
 
 
-def test_67_a_lock_rule_added_to_the_paint_owner_for_the_harness_is_refused() -> None:
-    """PRODUCTION IS PINNED TO THE CANDIDATE; the fill-only owner is the accepted state."""
+def test_67_a_keyed_only_lock_rule_in_the_paint_owner_is_refused() -> None:
+    """RESTATED AT P10-R4: the owner unlocks every painted year cell, not by key."""
     _mutate_source("test_58", "workbook", conformance.WORKBOOK_VBA,
-                   "                CellIn(Target, r, c).Interior.Color = FILL_INPUT\n",
-                   "                CellIn(Target, r, c).Interior.Color = FILL_INPUT\n                CellIn(Target, r, c).Locked = False\n")
+                   "            CellIn(Target, r, c).Locked = False\n            If keyed Then\n                CellIn(Target, r, c).Interior.Color = FILL_INPUT\n",
+                   "            If keyed Then\n                CellIn(Target, r, c).Locked = False\n                CellIn(Target, r, c).Interior.Color = FILL_INPUT\n")
 
 
 def test_68_a_repair_only_lock_special_case_is_refused() -> None:

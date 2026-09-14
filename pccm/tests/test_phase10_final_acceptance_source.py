@@ -617,18 +617,24 @@ def test_58_production_is_byte_identical_to_the_candidate_the_width_growth_fixtu
     """RUN 8 WAS A HARNESS DEFECT AND PRODUCTION WAS RIGHT. The candidate that
     executed, 3af1837, is byte-identical in every production, spec and builder
     file; the semantic gate it refused with is exactly the one still there."""
-    assert _git("diff", "--name-only", "3af1837", "--", "pccm/src", "pccm/spec", "pccm/builder").strip() == ""
+    # RESTATED AT P10-R4 (final acceptance run 10): the one production change
+    # since 3af1837 is the declared runtime lock-state layer in modWorkbook.bas.
+    from vba_runtime_lock_state import strip_runtime_lock_state
+    assert _git("diff", "--name-only", "3af1837", "--", "pccm/src", "pccm/spec", "pccm/builder").split() == ["pccm/src/vba/modWorkbook.bas"]
     for key, path in (("repair", REPAIR_VBA), ("handler", HANDLER_VBA), ("appstate", APPSTATE_VBA),
-                      ("workbook", WORKBOOK_VBA), ("profiling", PROFILING_VBA), ("inflation", INFLATION_VBA),
+                      ("profiling", PROFILING_VBA), ("inflation", INFLATION_VBA),
                       ("protection", PROTECTION_VBA)):
         assert _src(key, path) == _git("show", f"3af1837:pccm/src/vba/{path.name}"), path.name
-    # RUN 9: the shared input-language owner paints a fill only. That is the
-    # accepted state - Stage A already unlocks the year columns over every
-    # reserved body row of the three grids - and no Repair-only lock rule exists.
-    paint = _src("workbook", WORKBOOK_VBA)
-    paint = paint[paint.index("Public Sub PaintYearCells"): paint.index("End Sub", paint.index("Public Sub PaintYearCells"))]
+    workbook = _src("workbook", WORKBOOK_VBA)
+    assert strip_runtime_lock_state("modWorkbook.bas", workbook) == _git("show", "3af1837:pccm/src/vba/modWorkbook.bas")
+    # RUN 10 PROVED the runtime-materialised year cells locked while the
+    # projection declares them unlocked, so the shared owner now unlocks EVERY
+    # year body cell it paints - not by key - and the fill still follows the key.
+    # No Repair-only, profiling-only or inflation-only lock rule exists.
+    paint = workbook[workbook.index("Public Sub PaintYearCells"): workbook.index("End Sub", workbook.index("Public Sub PaintYearCells"))]
     assert "CellIn(Target, r, c).Interior.Color = FILL_INPUT" in paint and "CellIn(Target, r, c).Interior.Color = FILL_LOCKED" in paint
-    assert ".Locked" not in paint
+    assert paint.count("CellIn(Target, r, c).Locked = False") == 1
+    assert paint.index("CellIn(Target, r, c).Locked = False") < paint.index("If keyed Then")
     for key, path in (("repair", REPAIR_VBA), ("profiling", PROFILING_VBA), ("inflation", INFLATION_VBA)):
         assert ".Locked" not in _src(key, path), path.name
     repair = _src("repair", REPAIR_VBA)
@@ -1837,7 +1843,16 @@ def test_70_production_vba_spec_and_builder_are_byte_identical_to_the_accepted_h
     taking it off reproduces the tree run 7 executed byte for byte, and no other
     production, spec or builder byte has moved since the accepted head."""
     changed = _git("diff", "--name-only", ACCEPTED, "--", "pccm/src", "pccm/spec", "pccm/builder").split()
-    assert sorted(changed) == ["pccm/src/vba/ThisWorkbook.vba", "pccm/src/vba/modRepair.bas"], changed
+    assert sorted(changed) == ["pccm/src/vba/ThisWorkbook.vba", "pccm/src/vba/modRepair.bas", "pccm/src/vba/modWorkbook.bas"], changed
+    # P10-R4 (final acceptance run 10): the runtime year-cell lock state, in
+    # modWorkbook.bas only, reversing to 5e0df9b, which is byte-identical to the
+    # accepted head for that file.
+    from vba_runtime_lock_state import ACCEPTED_BEFORE_RUNTIME_LOCK_STATE, strip_runtime_lock_state
+    assert ACCEPTED_BEFORE_RUNTIME_LOCK_STATE == "5e0df9b"
+    workbook = _src("workbook", WORKBOOK_VBA)
+    workbook_then = _git("show", "5e0df9b:pccm/src/vba/modWorkbook.bas")
+    assert strip_runtime_lock_state("modWorkbook.bas", workbook) == workbook_then and workbook != workbook_then
+    assert _git("diff", "--name-only", ACCEPTED, "5e0df9b", "--", "pccm/src/vba/modWorkbook.bas").strip() == ""
     sys.path.insert(0, str(PCCM_ROOT / "tests"))
     from vba_open_failpoint import ACCEPTED_BEFORE_OPEN_FAILPOINT, strip_open_failpoint
     from vba_repair_reconstruction import (ACCEPTED_BEFORE_REPAIR_RECONSTRUCTION,
@@ -1857,8 +1872,9 @@ def test_70_production_vba_spec_and_builder_are_byte_identical_to_the_accepted_h
     assert handler != handler_then, "the declared closure is absent"
     assert _git("diff", "--name-only", ACCEPTED, ACCEPTED_BEFORE_OPEN_FAILPOINT, "--",
                 "pccm/src/vba/ThisWorkbook.vba").strip() == ""
-    assert _git("diff", "--name-only", ACCEPTED_BEFORE_OPEN_FAILPOINT, "--",
-                "pccm/src", "pccm/spec", "pccm/builder").split() == ["pccm/src/vba/ThisWorkbook.vba"]
+    assert sorted(_git("diff", "--name-only", ACCEPTED_BEFORE_OPEN_FAILPOINT, "--",
+                       "pccm/src", "pccm/spec", "pccm/builder").split()) == \
+        ["pccm/src/vba/ThisWorkbook.vba", "pccm/src/vba/modWorkbook.bas"]
 
 
 def test_71_the_runner_is_declared_and_documented() -> None:
