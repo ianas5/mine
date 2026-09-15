@@ -1142,6 +1142,13 @@ def test_30_no_production_source_changed() -> None:
     Windows evidence exists to prevent."""
     changed = [line for line in _git("diff", "--name-only", ACCEPTED, "--",
                                      "pccm/src", "pccm/spec").splitlines() if line.strip()]
+    # FINAL-DELIVERY CHART POLISH, DECLARED THE SAME WAY (tests/chart_polish_declaration.py):
+    # the manifest's chart layer moved later, under its own authorisation, and
+    # reverses to this commit's bytes exactly on both sides.
+    import sys as _sys
+    _sys.path.insert(0, str(PCCM_ROOT / "tests"))
+    from chart_polish_declaration import undeclared_after_chart_polish
+    changed = undeclared_after_chart_polish(ACCEPTED, changed, PCCM_ROOT)
     # P10-RP. PRODUCTION HAS NOW MOVED, UNDER ITS OWN AUTHORISATION, and this
     # control says so rather than being deleted. The probe's classification was
     # established BEFORE the code moved - that is the claim, and it still holds:

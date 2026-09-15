@@ -762,6 +762,11 @@ def test_30_the_declared_correction_reverses_exactly_to_the_tree_run_7_executed(
     assert strip_structural_window("modRepair.bas", current) == base
     changed = subprocess.run(["git", "diff", "--name-only", ACCEPTED_BEFORE_REPAIR_RECONSTRUCTION, "--", "pccm/src", "pccm/spec", "pccm/builder"],
                              cwd=PCCM_ROOT.parent, capture_output=True, text=True, check=True).stdout.split()
+    # FINAL-DELIVERY CHART POLISH, DECLARED THE SAME WAY (tests/chart_polish_declaration.py):
+    # the manifest's chart layer and three builder files moved later, under their own
+    # authorisation, and each reverses to this commit's bytes exactly on both sides.
+    from chart_polish_declaration import undeclared_after_chart_polish
+    changed = undeclared_after_chart_polish(ACCEPTED_BEFORE_REPAIR_RECONSTRUCTION, changed, PCCM_ROOT)
     # Every other production change since run 7 is a LATER declared layer (the
     # P10-R3 Workbook_Open closure), reversed to that tree the same way.
     from vba_structural_window import declared_production_changes, strip_declared_changes

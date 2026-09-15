@@ -1112,7 +1112,11 @@ def test_58_production_is_byte_identical_to_the_candidate_the_width_growth_fixtu
     # RESTATED AT P10-R4 (final acceptance run 10): the one production change
     # since 3af1837 is the declared runtime lock-state layer in modWorkbook.bas.
     from vba_runtime_lock_state import strip_runtime_lock_state
-    assert _git("diff", "--name-only", "3af1837", "--", "pccm/src", "pccm/spec", "pccm/builder").split() == ["pccm/src/vba/modWorkbook.bas"]
+    # FINAL-DELIVERY CHART POLISH, DECLARED THE SAME WAY (tests/chart_polish_declaration.py):
+    # the manifest's chart layer and three builder files moved later, under their own
+    # authorisation, and each reverses to this commit's bytes exactly on both sides.
+    from chart_polish_declaration import undeclared_after_chart_polish
+    assert undeclared_after_chart_polish("3af1837", _git("diff", "--name-only", "3af1837", "--", "pccm/src", "pccm/spec", "pccm/builder").split(), PCCM_ROOT) == ["pccm/src/vba/modWorkbook.bas"]
     for key, path in (("repair", REPAIR_VBA), ("handler", HANDLER_VBA), ("appstate", APPSTATE_VBA),
                       ("profiling", PROFILING_VBA), ("inflation", INFLATION_VBA),
                       ("protection", PROTECTION_VBA)):
@@ -2821,7 +2825,12 @@ def test_70_production_vba_spec_and_builder_are_byte_identical_to_the_accepted_h
     contract says blank. The correction is one declared layer in modRepair.bas;
     taking it off reproduces the tree run 7 executed byte for byte, and no other
     production, spec or builder byte has moved since the accepted head."""
-    changed = _git("diff", "--name-only", ACCEPTED, "--", "pccm/src", "pccm/spec", "pccm/builder").split()
+    # FINAL-DELIVERY CHART POLISH, DECLARED THE SAME WAY (tests/chart_polish_declaration.py):
+    # the manifest's chart layer and three builder files moved later, under their own
+    # authorisation, and each reverses to this commit's bytes exactly on both sides.
+    from chart_polish_declaration import undeclared_after_chart_polish
+    changed = undeclared_after_chart_polish(
+        ACCEPTED, _git("diff", "--name-only", ACCEPTED, "--", "pccm/src", "pccm/spec", "pccm/builder").split(), PCCM_ROOT)
     assert sorted(changed) == ["pccm/src/vba/ThisWorkbook.vba", "pccm/src/vba/modRepair.bas", "pccm/src/vba/modWorkbook.bas"], changed
     # P10-R4 (final acceptance run 10): the runtime year-cell lock state, in
     # modWorkbook.bas only, reversing to 5e0df9b, which is byte-identical to the
@@ -2851,8 +2860,10 @@ def test_70_production_vba_spec_and_builder_are_byte_identical_to_the_accepted_h
     assert handler != handler_then, "the declared closure is absent"
     assert _git("diff", "--name-only", ACCEPTED, ACCEPTED_BEFORE_OPEN_FAILPOINT, "--",
                 "pccm/src/vba/ThisWorkbook.vba").strip() == ""
-    assert sorted(_git("diff", "--name-only", ACCEPTED_BEFORE_OPEN_FAILPOINT, "--",
-                       "pccm/src", "pccm/spec", "pccm/builder").split()) == \
+    assert sorted(undeclared_after_chart_polish(
+        ACCEPTED_BEFORE_OPEN_FAILPOINT,
+        _git("diff", "--name-only", ACCEPTED_BEFORE_OPEN_FAILPOINT, "--",
+             "pccm/src", "pccm/spec", "pccm/builder").split(), PCCM_ROOT)) == \
         ["pccm/src/vba/ThisWorkbook.vba", "pccm/src/vba/modWorkbook.bas"]
 
 

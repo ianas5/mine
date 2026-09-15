@@ -804,3 +804,22 @@ def strip_chart_polish(path: str, text: str) -> str:
     for current, accepted in hunks:
         text = text.replace(current, accepted)
     return text
+
+
+def undeclared_after_chart_polish(commit: str, changed: list[str], pccm_root) -> list[str]:
+    """`changed` (pccm/-prefixed paths from `git diff --name-only commit`) with
+    the declared chart-polish files taken out - after proving each reverses to
+    `commit`'s bytes exactly, the reversal applied to BOTH sides so a pin that
+    sits before or after the polish still compares the trees beneath it."""
+    import subprocess
+    from pathlib import Path as _Path
+    root = _Path(pccm_root)
+    polished = {f"pccm/{name}" for name in DECLARED_CHART_POLISH_CHANGES}
+    for path in sorted(set(changed) & polished):
+        name = path[len("pccm/"):]
+        current = strip_chart_polish(name, (root / name).read_text(encoding="utf-8"))
+        accepted = subprocess.run(["git", "show", f"{commit}:{path}"], cwd=root.parent,
+                                  check=True, stdout=subprocess.PIPE).stdout.decode("utf-8")
+        accepted = strip_chart_polish(name, accepted)
+        assert current == accepted, f"{path} moved outside the declared chart polish"
+    return [path for path in changed if path not in polished]

@@ -457,6 +457,11 @@ def test_42_the_reconciliation_is_the_only_production_change() -> None:
         ["git", "diff", "--name-only", ACCEPTED_BEFORE_RECONCILIATION, "--",
          "pccm/src", "pccm/spec"], cwd=REPO_ROOT, check=True,
         stdout=subprocess.PIPE, text=True).stdout.splitlines() if line.strip()]
+    # FINAL-DELIVERY CHART POLISH, DECLARED THE SAME WAY (tests/chart_polish_declaration.py):
+    # the manifest's chart layer and three builder files moved later, under their own
+    # authorisation, and each reverses to this commit's bytes exactly on both sides.
+    from chart_polish_declaration import undeclared_after_chart_polish
+    changed = undeclared_after_chart_polish(ACCEPTED_BEFORE_RECONCILIATION, changed, PCCM_ROOT)
     declared = {f"pccm/src/vba/{name}" for name in declared_production_changes()}
     assert set(changed) <= declared, sorted(set(changed) - declared)
     for path in sorted(set(changed) - {f"pccm/src/vba/{name}" for name in DECLARED_STRUCTURAL_WINDOW_CHANGES}):
@@ -686,6 +691,11 @@ def _undeclared_production_changes(commit: str) -> list[str]:
     changed = [line for line in subprocess.run(
         ["git", "diff", "--name-only", commit, "--", "pccm/src", "pccm/spec"],
         cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE, text=True).stdout.splitlines() if line.strip()]
+    # FINAL-DELIVERY CHART POLISH, DECLARED THE SAME WAY (tests/chart_polish_declaration.py):
+    # the manifest's chart layer and three builder files moved later, under their own
+    # authorisation, and each reverses to this commit's bytes exactly on both sides.
+    from chart_polish_declaration import undeclared_after_chart_polish
+    changed = undeclared_after_chart_polish(commit, changed, PCCM_ROOT)
     for path in sorted(set(changed) & declared):
         name = Path(path).name
         current = strip_declared_changes(name, (PCCM_ROOT / "src" / "vba" / name).read_bytes().decode("utf-8"))
