@@ -993,14 +993,32 @@ def test_42_no_production_vba_or_spec_changed() -> None:
             name, (PCCM_ROOT / "src" / "vba" / name).read_bytes().decode("utf-8"))
         accepted = strip_declared_changes(name, _git("show", f"{ACCEPTED}:{path}"))
         assert current.replace("\r\n", "\n") == accepted.replace("\r\n", "\n"), path
+    # FINAL-DELIVERY CHART POLISH DECLARED: the manifest's chart layer and three
+    # builder files moved for the four Dashboard charts; each reverses to the
+    # accepted bytes exactly, on both sides, before anything else is claimed.
+    import difflib
+    from chart_polish_declaration import DECLARED_CHART_POLISH_CHANGES, strip_chart_polish
+    polished = {f"pccm/{name}" for name in DECLARED_CHART_POLISH_CHANGES}
+    stripped_builder = None
+    for path in sorted(set(changed) & polished):
+        name = path[len("pccm/"):]
+        current = strip_chart_polish(name, (PCCM_ROOT / name).read_text(encoding="utf-8"))
+        accepted = strip_chart_polish(name, _git("show", f"{ACCEPTED}:{path}"))
+        if name == "builder/pccm_builder/workbook_builder.py":
+            stripped_builder = (accepted, current)
+        else:
+            assert current == accepted, path
     # P10-9 DECLARED. The final static reconciliation added the contract's Source
     # Revision row to the builder; lines added, none removed, and it must be there.
     builder = "pccm/builder/pccm_builder/workbook_builder.py"
     assert builder in changed, "the declared Source Revision change is absent"
-    diff = _git("diff", ACCEPTED, "--", builder)
+    assert stripped_builder is not None
+    diff = "".join(difflib.unified_diff(stripped_builder[0].splitlines(keepends=True),
+                                        stripped_builder[1].splitlines(keepends=True),
+                                        fromfile="a", tofile="b", n=0))
     assert [l for l in diff.splitlines() if l.startswith("-") and not l.startswith("---")] == []
     assert "+def resolve_source_revision() -> str:" in diff
-    assert [p for p in changed if p not in declared and p != builder] == [], changed
+    assert [p for p in changed if p not in declared and p not in polished] == [], changed
 
 
 def test_43_strict_mode_is_still_on() -> None:

@@ -915,14 +915,32 @@ def test_71_no_implementation_owner_in_the_builder_changed() -> None:
         # `benchmark.py` is none of those - it emits a list of what to measure
         # and computes nothing - and its own battery proves that separately.
         "benchmark.py",
+        # FINAL-DELIVERY CHART POLISH. DECLARED, NOT EXEMPTED, and proved by
+        # reversal below: the Phase-8 chart projection is a presentation owner
+        # - it plots published values and computes none - and its polish
+        # reverses to the accepted bytes exactly.
+        "phase8_charts.py",
     }
     forbidden = sorted(changed - allowed)
     assert forbidden == [], f"implementation modules changed: {forbidden}"
+    import difflib
+    import sys as _sys
+    _sys.path.insert(0, str(PCCM_ROOT / "tests"))
+    from chart_polish_declaration import strip_chart_polish
+    name = "builder/pccm_builder/phase8_charts.py"
+    if "phase8_charts.py" in changed:
+        assert strip_chart_polish(name, (PCCM_ROOT / name).read_text(encoding="utf-8")) == \
+            _git("show", f"{ACCEPTED}:pccm/{name}"), "phase8_charts.py moved outside the chart polish"
     # AND THE TWO SHARED FILES CHANGED ONLY WHERE THEY HAD TO. `workbook_builder`
-    # gained a dispatch arm and a version literal; nothing else in it moved.
-    diff = _git("diff", "-U0", ACCEPTED, "--",
-                "pccm/builder/pccm_builder/workbook_builder.py")
-    removed = [line for line in diff.splitlines()
+    # gained a dispatch arm and a version literal; nothing else in it moved -
+    # beneath the declared chart polish, which is taken off the current side.
+    name = "builder/pccm_builder/workbook_builder.py"
+    current = strip_chart_polish(name, (PCCM_ROOT / name).read_text(encoding="utf-8"))
+    accepted = _git("show", f"{ACCEPTED}:pccm/{name}")
+    diff = "".join(difflib.unified_diff(accepted.splitlines(keepends=True),
+                                        current.splitlines(keepends=True),
+                                        fromfile="a", tofile="b", n=0))
+    removed = [line.rstrip("\n") for line in diff.splitlines()
                if line.startswith("-") and not line.startswith("---")]
     assert removed == ['-BUILDER_VERSION = "0.5.0"'], removed
 
@@ -941,7 +959,13 @@ def test_73_the_manifest_changed_only_where_this_batch_was_authorised_to() -> No
     except the two P10-3 additions must be identical to the accepted tree.
     """
     accepted = yaml.safe_load(_accepted_text("spec/workbook.yaml"))
-    current = yaml.safe_load(_manifest_text())
+    # FINAL-DELIVERY CHART POLISH: the manifest's chart layer moved later, under
+    # its own authorisation; the declared polish is taken off before this
+    # batch's claim is made on what is left.
+    import sys as _sys
+    _sys.path.insert(0, str(PCCM_ROOT / "tests"))
+    from chart_polish_declaration import strip_chart_polish
+    current = yaml.safe_load(strip_chart_polish("spec/workbook.yaml", _manifest_text()))
 
     assert set(current) - set(accepted) == {"methodology"}
     assert set(accepted) - set(current) == set()

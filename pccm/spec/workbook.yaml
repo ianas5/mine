@@ -1044,6 +1044,11 @@ phase6_shell:
       money: "#,##0"
       year: "0"
       rho: "0.000"
+      # CHART POLISH (final delivery). The tornado's VALUE AXIS reads two
+      # decimals; the bridge cells behind it keep `rho` at three. An axis label
+      # is a tick, not a published value, and 0.00 is the resolution a reader
+      # compares bars at.
+      rho_axis: "0.00"
       text: "General"
       # UX-001. THE AXIS FORMAT, AND IT CHANGES NO VALUE. Excel's scaling commas
       # divide what is DISPLAYED, never what is stored, so a 1.2 billion total
@@ -1076,12 +1081,14 @@ phase6_shell:
       # plot; this says the same thing to the chart for anything Excel would
       # otherwise interpolate across.
       display_blanks_as: "gap"
-      # DELIBERATELY NOT SET: a tick-label interval. A build-time skip would have
-      # to be chosen against the 200-column ceiling and would then hide four
-      # labels in five on a ten-year project, which is a worse chart than the one
-      # it fixes. Excel's automatic interval reads the rendered width at open
-      # time and is the only thing that can know; enlarging the plot and shrinking
-      # the label font is how this batch makes that automatic choice a good one.
+      # DELIBERATELY NOT SET HERE: a tick-label interval for the YEAR axes. A
+      # build-time skip chosen against the 200-column ceiling would hide four
+      # labels in five on a ten-year project. The year axes are instead bound to
+      # the APPLIED year population (bridge.annual.applied_binding below), so
+      # Excel's automatic interval reads a plot that holds only real years. The
+      # histogram is the one axis whose population is FIXED at build time - the
+      # declared bin count - so it, and only it, carries a declared interval on
+      # its own chart entry (category_label_interval).
     # -----------------------------------------------------------------
     # THE BRIDGE, ON RESULTS, BELOW EVERYTHING THE EARLIER STEPS OWN
     # -----------------------------------------------------------------
@@ -1097,6 +1104,28 @@ phase6_shell:
         first_row: 279
         heading: "Annual Series"
         note: "The published annual profile, bounded by the stamped year count, plus its running total. NA() past the last stamped year and whenever no annual result is produced."
+        # CHART POLISH (final delivery). THE APPLIED-YEAR BINDING. The block
+        # below is written over the whole reserved window - 200 rows, the
+        # structural year ceiling - and a chart bound to the whole window plots
+        # 200 category slots, of which a ten-year project fills ten: the real
+        # years crowd the far left and the labels overlap. Each column of this
+        # block therefore also gets a SHEET-SCOPED DEFINED NAME on the bridge
+        # sheet, `<name_prefix>_<key>`, whose formula is the column's window
+        # range cut to the applied year count:
+        #
+        #   Results!$H$279:INDEX(Results!$H$279:$H$478, MAX(1, MIN(200, N(years))))
+        #
+        # and the two year charts plot THOSE names. `years` is the Results annual
+        # state row the bridge guard already reads (`extent`, the stamped year
+        # count) - the ONE year-count authority, not a second - so the names cut
+        # exactly where the guard turns the values to NA(). MIN keeps INDEX
+        # inside the window; MAX(1, N()) keeps a blank or NOT PRODUCED count on
+        # one row, whose value is NA() and whose category is blank, so an empty
+        # Dashboard still draws nothing. No value moves: the names SELECT rows
+        # this block already holds.
+        applied_binding:
+          name_prefix: "chartAnnual"
+          extent: "year_count"
         columns:
           - {key: "project_index", header: "Project Year", column: "B", source: "annual", field: "project_index", format: "year"}
           # UX-001. BLANK WHEN ABSENT, NOT NA(). This column is a chart's
@@ -1194,7 +1223,8 @@ phase6_shell:
         height: 11.5
         value_axis_format: "money_axis"
         category_axis_format: "year"
-        title: "Cumulative Cost"
+        # CHART POLISH (final delivery): renamed from "Cumulative Cost".
+        title: "Cumulative Cost Profile"
         source: "annual"
         categories: "calendar_year"
         series:
@@ -1213,6 +1243,11 @@ phase6_shell:
         categories: "lower"
         series:
           - {key: "count", name: "Iterations"}
+        # CHART POLISH (final delivery). Twenty bin-edge labels in a compact
+        # money format crowd an 18 cm axis; every second label is shown. The
+        # bins, their edges and their counts are untouched - this decides which
+        # of the twenty captions are PRINTED, nothing about what is plotted.
+        category_label_interval: 2
         # THE PUBLISHED SIMULATION'S OWN STATE, not the annual product's. The
         # annual line reads NOT PRODUCED whenever the annual step has not run,
         # which says nothing about a histogram whose data is present.
@@ -1250,8 +1285,18 @@ phase6_shell:
         anchor: "I89"
         width: 18.0
         height: 11.5
-        value_axis_format: "rho"
+        value_axis_format: "rho_axis"
         category_axis_format: "text"
+        # CHART POLISH (final delivery). THE VALUE AXIS IS FIXED: 0 to 0.45 in
+        # steps of 0.10, two decimals. In openpyxl - and in the chart part - the
+        # value axis of a horizontal bar chart is `y_axis` / <c:valAx>, drawn
+        # HORIZONTALLY on screen, so "the x-axis" a reader sees is this axis's
+        # <c:scaling> min/max and <c:majorUnit>. Presentation only: the plotted
+        # rho values, the ranking and the driver population are untouched.
+        value_axis_scale:
+          min: 0
+          max: 0.45
+          major_unit: 0.10
         # Fractions of the CHART area, edge-anchored: the plot starts 34% in and
         # is 62% wide, leaving 4% right margin; it starts 16% down, below the
         # title, and is 74% tall, leaving 10% for the value-axis numbers.

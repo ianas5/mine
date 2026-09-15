@@ -696,7 +696,18 @@ def _production_changed_since(commit: str) -> list[str]:
     declared = {f"pccm/src/vba/{name}" for name in declared_production_changes()}
     changed = [line for line in _git("diff", "--name-only", commit, "--",
                                      "pccm/src", "pccm/spec").splitlines() if line.strip()]
-    for path in sorted(set(changed) & declared):
+    # FINAL-DELIVERY CHART POLISH, DECLARED THE SAME WAY: the manifest's chart
+    # layer moved for the four Dashboard charts, and the same reversal is
+    # applied to both sides before the comparison.
+    from chart_polish_declaration import DECLARED_CHART_POLISH_CHANGES, strip_chart_polish
+    polished = {f"pccm/{name}" for name in DECLARED_CHART_POLISH_CHANGES}
+    for path in sorted(set(changed) & polished):
+        name = path[len("pccm/"):]
+        current = strip_chart_polish(name, (PCCM_ROOT / name).read_text(encoding="utf-8"))
+        accepted = strip_chart_polish(name, _git("show", f"{commit}:{path}"))
+        assert current == accepted, f"{path} moved outside the declared chart polish"
+    declared = declared | polished
+    for path in sorted((set(changed) & declared) - polished):
         name = Path(path).name
         # LINE ENDINGS NORMALISED ON BOTH SIDES. modCalcReport.bas is CRLF on
         # disk and _git returns text, so one side arrives translated. This
@@ -724,11 +735,35 @@ def test_55_no_builder_owner_changed_except_the_new_plan_and_its_wiring() -> Non
                if line.strip()}
     # P10-9 DECLARED. The final static reconciliation added the contract's Source
     # Revision row to workbook_builder.py - additively, and it must be there.
+    # FINAL-DELIVERY CHART POLISH DECLARED: phase8_charts.py and spec_loader.py
+    # moved for the four Dashboard charts, and workbook_builder.py moved for
+    # them too; each is proved by exact reversal before the Source Revision
+    # claim is made on what is left.
     assert changed <= {"benchmark.py", "__init__.py", "build_stage_a.py",
-                       "workbook_builder.py"}, sorted(changed)
+                       "workbook_builder.py", "phase8_charts.py", "spec_loader.py"}, sorted(changed)
     assert "workbook_builder.py" in changed, "the declared Source Revision change is absent"
-    _assert_only_source_revision_added(_git("diff", ACCEPTED, "--",
-                                            "pccm/builder/pccm_builder/workbook_builder.py"))
+    _assert_only_source_revision_added(_builder_diff_beneath_the_chart_polish(ACCEPTED))
+
+
+def _builder_diff_beneath_the_chart_polish(commit: str) -> str:
+    """A unified diff of workbook_builder.py against `commit` with the declared
+    chart polish taken off the current side - the diff the Source Revision
+    claim is about. The two other builder files the polish touched must
+    reverse to `commit` exactly."""
+    import difflib
+    import sys as _sys
+    _sys.path.insert(0, str(PCCM_ROOT / "tests"))
+    from chart_polish_declaration import strip_chart_polish
+    for name in ("builder/pccm_builder/phase8_charts.py", "builder/pccm_builder/spec_loader.py"):
+        current = strip_chart_polish(name, (PCCM_ROOT / name).read_text(encoding="utf-8"))
+        assert current == _git("show", f"{commit}:pccm/{name}"), (
+            f"{name} moved outside the declared chart polish")
+    name = "builder/pccm_builder/workbook_builder.py"
+    current = strip_chart_polish(name, (PCCM_ROOT / name).read_text(encoding="utf-8"))
+    accepted = _git("show", f"{commit}:pccm/{name}")
+    return "".join(difflib.unified_diff(accepted.splitlines(keepends=True),
+                                        current.splitlines(keepends=True),
+                                        fromfile="a", tofile="b", n=0))
 
 
 def _assert_only_source_revision_added(diff: str) -> None:
@@ -783,6 +818,13 @@ CHANGED_BY_DECLARATION = {
     # imports, and edits no accepted harness. tests/test_phase10_final_acceptance_source.py
     # owns it.
     "phase10_final_acceptance.ps1",
+    # FINAL-DELIVERY CHART POLISH. A NEW read-only inspector that opens a built
+    # workbook and prints the four Dashboard charts' series formulas, point
+    # counts, value-axis scale and category label spacing, so a presentation
+    # review on Windows is recorded exactly. It runs no endpoint, writes no
+    # cell, saves nothing and edits no accepted harness.
+    # tests/test_phase8_chart_polish.py owns the properties it reports.
+    "phase10_chart_polish_inspect.ps1",
     # W7 also lists that runner in the directory's README. Documentation, not a
     # harness; the freeze below covers only scenario harnesses.
     "README.md",
@@ -1834,14 +1876,19 @@ def test_137_the_correction_introduces_no_release_of_protection() -> None:
     # in ThisWorkbook.vba, both proved by reversal in _production_changed_since below.
     # P10-R4 DECLARED: the runtime year-cell lock state in modWorkbook.bas
     # (final acceptance run 10), proved by the same reversal.
-    assert changed == ["pccm/builder/pccm_builder/workbook_builder.py",
+    # FINAL-DELIVERY CHART POLISH DECLARED: the manifest's chart layer,
+    # phase8_charts.py and spec_loader.py, proved by reversal in
+    # _production_changed_since and _builder_diff_beneath_the_chart_polish.
+    assert changed == ["pccm/builder/pccm_builder/phase8_charts.py",
+                       "pccm/builder/pccm_builder/spec_loader.py",
+                       "pccm/builder/pccm_builder/workbook_builder.py",
+                       "pccm/spec/workbook.yaml",
                        "pccm/src/vba/ThisWorkbook.vba",
                        "pccm/src/vba/modRepair.bas",
                        "pccm/src/vba/modWorkbook.bas"], \
         f"production changed for a harness correction: {changed}"
     assert _production_changed_since("0119bee") == []
-    _assert_only_source_revision_added(_git("diff", "0119bee", "--",
-                                            "pccm/builder/pccm_builder/workbook_builder.py"))
+    _assert_only_source_revision_added(_builder_diff_beneath_the_chart_polish("0119bee"))
 
 
 def test_138_the_fixture_build_is_still_outside_every_measured_interval() -> None:

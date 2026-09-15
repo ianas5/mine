@@ -572,6 +572,24 @@ def _check_charts_layout(charts: dict[str, Any], results: dict[str, Any],
                     f"{where}.number_formats: no format is declared for "
                     f"{column['format']!r}")
 
+    # CHART POLISH (final delivery). THE APPLIED-YEAR BINDING NAMES AN EXTENT
+    # THE RESULTS ANNUAL BLOCK PUBLISHES, and a prefix that can be a defined
+    # name. The names themselves are projected by the builder from the same
+    # cell the bridge guard reads; this only refuses a binding that could not
+    # be resolved.
+    binding = bridge["annual"].get("applied_binding")
+    if binding is not None:
+        prefix = str(binding.get("name_prefix", ""))
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", prefix):
+            raise SpecError(
+                f"{where}.bridge.annual.applied_binding: name_prefix {prefix!r} "
+                "cannot begin a defined name")
+        extent = str(binding.get("extent", ""))
+        if f"{extent}_row" not in results["annual"]:
+            raise SpecError(
+                f"{where}.bridge.annual.applied_binding: extent {extent!r} is not a "
+                "row the Results annual block publishes")
+
     published = {
         "annual": {str(c["key"]) for c in bridge["annual"]["columns"]},
         "distribution": {str(c["key"]) for c in bridge["distribution"]["columns"]},
@@ -613,6 +631,29 @@ def _check_charts_layout(charts: dict[str, Any], results: dict[str, Any],
         # no data here and distorts the comparison the chart exists to make.
         if str(chart["kind"]) not in ("line", "column", "bar"):
             raise SpecError(f"{where}: chart {key!r} is a {chart['kind']!r} chart")
+        # CHART POLISH (final delivery). A declared value-axis scale is three
+        # numbers that describe an axis; a declared label interval is a count.
+        scale = chart.get("value_axis_scale")
+        if scale is not None:
+            if set(scale) != {"min", "max", "major_unit"}:
+                raise SpecError(
+                    f"{where}: chart {key!r} value_axis_scale carries {sorted(scale)}")
+            try:
+                low, high, step = (float(scale["min"]), float(scale["max"]),
+                                   float(scale["major_unit"]))
+            except (TypeError, ValueError) as error:
+                raise SpecError(
+                    f"{where}: chart {key!r} value_axis_scale is not numeric") from error
+            if not (low < high and 0.0 < step <= high - low):
+                raise SpecError(
+                    f"{where}: chart {key!r} value_axis_scale {low}..{high} by {step} "
+                    "is not an axis")
+        interval = chart.get("category_label_interval")
+        if interval is not None and (not isinstance(interval, int)
+                                     or isinstance(interval, bool) or interval < 1):
+            raise SpecError(
+                f"{where}: chart {key!r} category_label_interval {interval!r} is not "
+                "a positive count")
         if chart["anchor"] in anchors:
             raise SpecError(f"{where}: two charts are anchored at {chart['anchor']}")
         anchors.add(str(chart["anchor"]))

@@ -31,6 +31,7 @@ from typing import Any
 from .artifact_io import write_lf_artifact
 from .workbook_builder import (
     TORNADO_ELIGIBILITY_FIELD as _TORNADO_ELIGIBILITY_FIELD,
+    applied_year_bindings as _applied_year_bindings,
 )
 from .spec_loader import WorkbookSpec
 
@@ -64,7 +65,8 @@ AUTHORITIES = {
 }
 
 
-def _bridge_blocks(charts: dict[str, Any], window: int) -> dict[str, Any]:
+def _bridge_blocks(charts: dict[str, Any], window: int,
+                   bindings: dict[str, dict[str, str]] | None) -> dict[str, Any]:
     """The four blocks, plus the two rows that mark where the bridge begins."""
     bridge = charts["bridge"]
     sheet = str(charts["bridge_sheet"])
@@ -98,8 +100,24 @@ def _bridge_blocks(charts: dict[str, Any], window: int) -> dict[str, Any]:
                          "absent": ('""' if str(column.get("absent", "na")) == "blank"
                                     else "NA()"),
                          "range": (f"{sheet}!${column['column']}${first}"
-                                   f":${column['column']}${first + counts[name] - 1}")}
+                                   f":${column['column']}${first + counts[name] - 1}"),
+                         # CHART POLISH (final delivery). THE APPLIED-YEAR NAME
+                         # this column is plotted through, where the block
+                         # declares one: the sheet-scoped defined name, its
+                         # formula, and the extent cell it cuts at. The
+                         # `range` above stays the whole window the block
+                         # WRITES; the name is what a chart READS.
+                         "applied_binding": (
+                             dict(bindings[str(column["key"])])
+                             if (name == "annual" and bindings) else None)}
                         for column in block["columns"]],
+        }
+    if bindings:
+        out["annual"]["applied_binding"] = {
+            "name_prefix": str(bridge["annual"]["applied_binding"]["name_prefix"]),
+            "extent": str(bridge["annual"]["applied_binding"]["extent"]),
+            "extent_cell": next(iter(bindings.values()))["extent_cell"],
+            "window_rows": int(window),
         }
     status = bridge["status"]
     out["status"] = {
@@ -127,7 +145,8 @@ def build_phase8_charts_inspection(spec: WorkbookSpec, window: int,
             "workbook.yaml carries no phase6_shell.charts; there is no chart layer "
             "to project")
 
-    blocks = _bridge_blocks(charts, window)
+    bindings = _applied_year_bindings(charts, shell["results"], window)
+    blocks = _bridge_blocks(charts, window, bindings)
     bridge = charts["bridge"]
     # WHERE THE WHOLE BRIDGE STARTS. A reader - or a control asking what lives
     # above the chart layer and what belongs to it - needs the boundary, not
@@ -143,6 +162,22 @@ def build_phase8_charts_inspection(spec: WorkbookSpec, window: int,
         source = str(chart["source"])
         block = blocks[source]
         columns = {column["key"]: column for column in block["columns"]}
+
+        # WHAT A CHART READS: the applied-year name where its block declares
+        # one, the whole window range otherwise. `window_range` is carried
+        # beside it so a control can see both what the block writes and what
+        # the chart is bound to - and refuse a chart bound to the whole window
+        # of a block that has a name for it.
+        def bound(key: str) -> dict[str, Any]:
+            column = columns[key]
+            binding = column.get("applied_binding")
+            return {
+                "key": key,
+                "range": binding["reference"] if binding else column["range"],
+                "window_range": column["range"],
+                "binding": binding["name"] if binding else None,
+            }
+
         projected.append({
             "key": str(chart["key"]),
             "kind": str(chart["kind"]),
@@ -152,12 +187,8 @@ def build_phase8_charts_inspection(spec: WorkbookSpec, window: int,
             "title": str(chart["title"]),
             "source_block": source,
             "authority": block["authority"],
-            "categories": {
-                "key": str(chart["categories"]),
-                "range": columns[str(chart["categories"])]["range"],
-            },
-            "series": [{"key": str(series["key"]), "name": str(series["name"]),
-                        "range": columns[str(series["key"])]["range"]}
+            "categories": bound(str(chart["categories"])),
+            "series": [dict(bound(str(series["key"])), name=str(series["name"]))
                        for series in chart["series"]],
             # THE CELL WHOSE WORD SAYS WHETHER THE PLOT MEANS ANYTHING. A chart
             # carries no state logic of its own; it inherits the state its
@@ -199,6 +230,14 @@ def build_phase8_charts_inspection(spec: WorkbookSpec, window: int,
             "category_axis_format": str(
                 charts["number_formats"][str(chart["category_axis_format"])]),
             "legend": len(chart["series"]) > 1,
+            # CHART POLISH (final delivery). PRESENTATION ONLY, BOTH OF THEM. A
+            # fixed value-axis scale (the tornado: 0 to 0.45 by 0.10) and a
+            # category label interval (the histogram: every second caption).
+            # Neither names a range, a series or a state word.
+            "value_axis_scale": ({k: float(v) for k, v in chart["value_axis_scale"].items()}
+                                 if chart.get("value_axis_scale") else None),
+            "category_label_interval": (int(chart["category_label_interval"])
+                                        if chart.get("category_label_interval") else None),
         })
 
     # THE PUBLISHED SENSITIVITY SURFACE, PROJECTED BY KEY. The tornado bridge
@@ -350,6 +389,61 @@ def validate_phase8_charts_inspection(inspection: dict[str, Any]) -> None:
             raise ValueError(
                 f"{INSPECTION_FILENAME}: chart {key!r} declares a legend that does not "
                 "match its series count")
+        # CHART POLISH (final delivery). A CHART WHOSE BLOCK CARRIES AN
+        # APPLIED-YEAR BINDING PLOTS THE NAMES, NEVER THE WINDOW. Bound to the
+        # whole window it would draw every reserved slot again - the crowded
+        # left-hand plot this correction exists to remove - and look fine.
+        block = inspection["bridge"][chart["source_block"]]
+        binding = block.get("applied_binding")
+        for entry in [chart["categories"]] + list(chart["series"]):
+            column = next(c for c in block["columns"] if c["key"] == entry["key"])
+            if entry["window_range"] != column["range"]:
+                raise ValueError(
+                    f"{INSPECTION_FILENAME}: chart {key!r} says {entry['key']!r} "
+                    f"is written over {entry['window_range']}, the block says "
+                    f"{column['range']}")
+            if binding:
+                bound = column["applied_binding"]
+                if not bound or entry["binding"] != bound["name"]:
+                    raise ValueError(
+                        f"{INSPECTION_FILENAME}: chart {key!r} plots {entry['key']!r} "
+                        "without its applied-year name")
+                if entry["range"] != bound["reference"]:
+                    raise ValueError(
+                        f"{INSPECTION_FILENAME}: chart {key!r} reads {entry['range']} "
+                        f"for {entry['key']!r}; the whole reserved window, not the "
+                        f"applied years ({bound['reference']})")
+                if entry["range"] == entry["window_range"]:
+                    raise ValueError(
+                        f"{INSPECTION_FILENAME}: chart {key!r} is bound to the whole "
+                        f"window {entry['window_range']}")
+                _check_applied_binding_formula(key, entry["key"], bound,
+                                               column["range"], binding)
+            else:
+                if entry["binding"] is not None or entry["range"] != column["range"]:
+                    raise ValueError(
+                        f"{INSPECTION_FILENAME}: chart {key!r} reads {entry['range']} "
+                        f"for {entry['key']!r}, which is not the block's column")
+        scale = chart["value_axis_scale"]
+        if scale is not None:
+            if set(scale) != {"min", "max", "major_unit"}:
+                raise ValueError(
+                    f"{INSPECTION_FILENAME}: chart {key!r} declares a value-axis "
+                    f"scale with {sorted(scale)}")
+            if not scale["min"] < scale["max"]:
+                raise ValueError(
+                    f"{INSPECTION_FILENAME}: chart {key!r} value axis runs from "
+                    f"{scale['min']} to {scale['max']}")
+            if not 0.0 < scale["major_unit"] <= (scale["max"] - scale["min"]):
+                raise ValueError(
+                    f"{INSPECTION_FILENAME}: chart {key!r} value axis step "
+                    f"{scale['major_unit']} does not fit its scale")
+        interval = chart["category_label_interval"]
+        if interval is not None:
+            if interval < 1 or interval >= int(block["row_count"]):
+                raise ValueError(
+                    f"{INSPECTION_FILENAME}: chart {key!r} prints every "
+                    f"{interval} label(s) of {block['row_count']} categories")
         # UX-001. AN ABSENT VALUE IS NEVER A ZERO AND NEVER A BLANK. The
         # category may be blank - it is a label - but the series must be NA(),
         # and a projection that said otherwise would be describing a chart that
@@ -485,6 +579,32 @@ def validate_phase8_charts_inspection(inspection: dict[str, Any]) -> None:
     if contract["bin_count"] < 2:
         raise ValueError(
             f"{INSPECTION_FILENAME}: {contract['bin_count']} bins is not a histogram")
+
+
+def _check_applied_binding_formula(chart_key: str, column_key: str,
+                                   bound: dict[str, Any], window_range: str,
+                                   binding: dict[str, Any]) -> None:
+    """The name's formula is the column's window range cut at the ONE extent
+    cell, inside the window, never below one row."""
+    sheet, cells = window_range.split("!", 1)
+    first_cell = cells.split(":", 1)[0]
+    expected = (f"{sheet}!{first_cell}:INDEX({window_range},"
+                f"MAX(1,MIN({int(binding['window_rows'])},N({binding['extent_cell']}))))")
+    if bound["formula"] != expected:
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: chart {chart_key!r} plots {column_key!r} "
+            f"through {bound['formula']}, not {expected}")
+    if bound["extent_cell"] != binding["extent_cell"]:
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: chart {chart_key!r} cuts {column_key!r} at "
+            f"{bound['extent_cell']}; the block's extent is {binding['extent_cell']}")
+    if bound["window_range"] != window_range or bound["scope"] != sheet:
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: chart {chart_key!r} binds {column_key!r} "
+            "to a window that is not its column's")
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(bound["name"])):
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: {bound['name']!r} is not a defined name")
 
 
 def emit_phase8_charts(spec: WorkbookSpec, window: int, build_dir: Path,

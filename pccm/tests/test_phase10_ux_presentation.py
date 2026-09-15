@@ -62,6 +62,8 @@ REVIEWED_AREA_CM2 = REVIEWED_WIDTH_CM * REVIEWED_HEIGHT_CM
 # THE FOUR PLOTS, BY KEY. Named so a fifth appearing - or one of these being
 # quietly dropped while the others grow - fails here.
 CHART_KEYS = ("s_curve", "histogram", "annual_cash_flow", "tornado")
+# FINAL-DELIVERY CHART POLISH: the one declared title change.
+CHART_POLISH_TITLES = {"s_curve": "Cumulative Cost Profile"}
 
 # WHERE THE TIMELINE BUTTON WAS, AND WHY IT WAS WRONG. E43 is the "Applied
 # Timeline" section heading row and E is that block's NOTE column.
@@ -144,8 +146,9 @@ def test_02_there_are_still_exactly_four_charts_and_they_are_the_same_four() -> 
     assert [chart["key"] for chart in _projection()["charts"]] == list(CHART_KEYS)
     assert len(_workbook()["Dashboard"]._charts) == len(CHART_KEYS)
     titles = {chart["key"]: chart["title"] for chart in _projection()["charts"]}
+    # FINAL-DELIVERY CHART POLISH: the s-curve is "Cumulative Cost Profile".
     assert titles == {
-        "s_curve": "Cumulative Cost",
+        "s_curve": "Cumulative Cost Profile",
         "histogram": "Total Cost Distribution",
         "annual_cash_flow": "Annual Cash Flow",
         "tornado": "Top Drivers by Rank Correlation",
@@ -179,7 +182,8 @@ def test_03_no_chart_source_identity_moved() -> None:
                           "also_qualified_by"):
                 assert before.get(field) == after.get(field), (key, field)
             assert before["series"] == after["series"], key
-            assert before["title"] == after["title"], key
+            # FINAL-DELIVERY CHART POLISH: the one declared rename.
+            assert after["title"] == CHART_POLISH_TITLES.get(key, before["title"]), key
         # AND THE BRIDGE BLOCKS THEMSELVES: same rows, same columns, same
         # letters. Only the `absent` marker on the three CATEGORY columns is
         # allowed to differ, and test_04 is what checks it.
@@ -256,7 +260,10 @@ def test_05_the_tornado_has_the_most_category_room_and_its_labels_are_pinned() -
               for chart in _workbook()["Dashboard"]._charts}
     plot = charts["Top Drivers by Rank Correlation"]
     assert plot.x_axis.tickLblPos == "low"
-    assert plot.y_axis.numFmt.formatCode == _charts()["number_formats"]["rho"]
+    # FINAL-DELIVERY CHART POLISH: the value AXIS reads the declared axis format
+    # (two decimals); the bridge cells behind it keep `rho` at three.
+    assert plot.y_axis.numFmt.formatCode == _by_key()["tornado"]["value_axis_format"]
+    assert _charts()["number_formats"]["rho"] == "0.000"
 
 
 def test_06_the_axes_carry_a_compact_format_and_a_smaller_label_font() -> None:
@@ -629,15 +636,28 @@ def test_17_the_balanced_geometry_left_every_source_identity_alone() -> None:
     was = {str(chart["key"]): chart for chart in accepted["charts"]}
     now = {str(chart["key"]): chart for chart in _charts()["charts"]}
     assert set(was) == set(now)
-    # ONLY THESE THREE KEYS MAY DIFFER, and `plot_area` is the only new one.
+    # ONLY THESE THREE KEYS MAY DIFFER, and `plot_area` is the only new one -
+    # PLUS THE FINAL-DELIVERY CHART POLISH, DECLARED BY KEY: the s-curve's
+    # title, the tornado's value-axis format and fixed scale, and the
+    # histogram's label interval. test_phase8_chart_polish pins each one.
     allowed = {"anchor", "width", "plot_area"}
+    polish = {"s_curve": {"title"}, "tornado": {"value_axis_format", "value_axis_scale"},
+              "histogram": {"category_label_interval"}, "annual_cash_flow": set()}
     for key, before in was.items():
         after = now[key]
-        assert set(after) - set(before) <= allowed, (key, set(after) - set(before))
-        for field in set(before) - allowed:
+        assert set(after) - set(before) <= allowed | polish[key], (key, set(after) - set(before))
+        for field in set(before) - allowed - polish[key]:
             assert before[field] == after[field], (key, field)
-    assert accepted["bridge"] == _charts()["bridge"], "the chart bridge moved"
-    assert accepted["number_formats"] == _charts()["number_formats"]
+    # THE BRIDGE: untouched, apart from the applied-year binding the annual
+    # block DECLARES beside its columns - the columns themselves are equal.
+    import copy
+    bridge_now = copy.deepcopy(_charts()["bridge"])
+    assert bridge_now["annual"].pop("applied_binding") == {"name_prefix": "chartAnnual",
+                                                             "extent": "year_count"}
+    assert accepted["bridge"] == bridge_now, "the chart bridge moved"
+    formats_now = dict(_charts()["number_formats"])
+    assert formats_now.pop("rho_axis") == "0.00"
+    assert accepted["number_formats"] == formats_now
     assert accepted["axis_presentation"] == _charts()["axis_presentation"]
     # AND THE HEIGHT DID NOT MOVE EITHER, which is why it is not in `allowed`.
     for key, before in was.items():

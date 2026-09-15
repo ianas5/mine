@@ -431,7 +431,7 @@ def render_phase6_shell(
                                 shell.get("charts"))
         if ("charts" in shell) and (structure is not None):
             _render_dashboard_charts(
-                worksheet, shell["charts"],
+                worksheet, shell["charts"], shell["results"],
                 int(structure.limits.max_generated_year_columns))
 
 
@@ -1173,7 +1173,9 @@ def _chart_bridge_annual(block: dict[str, Any], results: dict[str, Any],
     display = {str(column["field"]): str(column["column"]) for column in annual["columns"]}
     nominal_col = results["nominal_column"]
     state = f"${nominal_col}${annual['distribution_state_row']}"
-    years = f"${nominal_col}${annual['year_count_row']}"
+    # THE ONE YEAR-COUNT AUTHORITY: the same cell the applied-year chart names
+    # cut at (_annual_extent_cell), so a chart can never outreach its guard.
+    years = _annual_extent_cell(results, "year_count")
     first = int(annual["first_row"])
     out: list[tuple[int, str, str]] = []
     for offset in range(window):
@@ -1436,6 +1438,15 @@ def _render_chart_bridge(worksheet: Worksheet, charts: dict[str, Any],
 
     header(bridge["annual"])
     emit(bridge["annual"], _chart_bridge_annual(bridge["annual"], results, raw, window))
+    bindings = applied_year_bindings(charts, results, window)
+    if bindings:
+        from openpyxl.workbook.defined_name import DefinedName
+        for entry in bindings.values():
+            if entry["name"] in worksheet.defined_names:
+                raise ValueError(
+                    f"defined name {entry['name']!r} already exists on {worksheet.title}")
+            worksheet.defined_names[entry["name"]] = DefinedName(
+                name=entry["name"], attr_text=entry["formula"])
     header(bridge["distribution"])
     emit(bridge["distribution"],
          _chart_bridge_distribution(bridge["distribution"], results, raw))
@@ -1467,6 +1478,68 @@ def _render_chart_bridge(worksheet: Worksheet, charts: dict[str, Any],
 # READS: two dimensions only, a legend only when there is more than one series
 # to tell apart, no gridlines on the category axis, and the title on the chart
 # once - never repeated in a cell above it.
+
+
+def _annual_extent_cell(results: dict[str, Any], extent: str) -> str:
+    """The Results annual state cell holding one stamped extent - `year_count`
+    for the applied year population - as a $-anchored address on its own sheet.
+    One resolution for the bridge guard and the applied-year chart names."""
+    annual = results["annual"]
+    row_key = f"{extent}_row"
+    if row_key not in annual:
+        raise ValueError(
+            f"the Results annual block declares no {row_key!r}; the applied-year "
+            f"binding cannot cut at an extent nobody publishes")
+    return f"${results['nominal_column']}${int(annual[row_key])}"
+
+
+# CHART POLISH (final delivery). THE APPLIED-YEAR BINDING.
+#
+# The annual bridge block is written over the whole reserved window - the
+# structural year ceiling - and a chart bound to that window plots every one of
+# its category slots, so a ten-year project sits in the leftmost twentieth of
+# the axis with its labels on top of each other. The block's columns therefore
+# each get a SHEET-SCOPED DEFINED NAME on the bridge sheet whose formula is the
+# window range cut to the stamped year count:
+#
+#   Results!$H$279:INDEX(Results!$H$279:$H$478, MAX(1, MIN(200, N(years))))
+#
+# `years` is the same Results state cell the bridge guard reads, so the names
+# cut exactly where the guard turns the values to NA(); MIN keeps INDEX inside
+# the window for any count; MAX(1, N()) keeps a blank or NOT PRODUCED count on
+# one row - whose value is NA() and whose category is blank - so an empty
+# Dashboard still draws nothing. The names SELECT rows the block already holds;
+# no value is computed here and no second year-count authority exists.
+def applied_year_bindings(charts: dict[str, Any], results: dict[str, Any],
+                          window: int) -> dict[str, dict[str, str]] | None:
+    """Per annual bridge column: the defined name, its scope, its formula, the
+    reference a chart plots, the window range it cuts, and the extent cell.
+    None when the manifest declares no applied binding."""
+    block = charts["bridge"]["annual"]
+    binding = block.get("applied_binding")
+    if not binding:
+        return None
+    sheet = str(charts["bridge_sheet"])
+    first = int(block["first_row"])
+    last = first + int(window) - 1
+    extent = _annual_extent_cell(results, str(binding["extent"]))
+    prefix = str(binding["name_prefix"])
+    out: dict[str, dict[str, str]] = {}
+    for column in block["columns"]:
+        key = str(column["key"])
+        letter = str(column["column"])
+        name = f"{prefix}_{key}"
+        window_range = f"${letter}${first}:${letter}${last}"
+        out[key] = {
+            "name": name,
+            "scope": sheet,
+            "reference": f"{sheet}!{name}",
+            "window_range": f"{sheet}!{window_range}",
+            "extent_cell": f"{sheet}!{extent}",
+            "formula": (f"{sheet}!${letter}${first}:INDEX({sheet}!{window_range},"
+                        f"MAX(1,MIN({int(window)},N({sheet}!{extent}))))"),
+        }
+    return out
 
 
 def _chart_ranges(charts: dict[str, Any], window: int) -> dict[str, dict[str, Any]]:
@@ -1512,11 +1585,27 @@ def _axis_label_text(size: int):
                                  endParaRPr=properties)])
 
 
+# A SERIES OVER A REFERENCE THAT MAY BE A DEFINED NAME. openpyxl's Series
+# factory parses its argument as a cell range, which a name is not, so the
+# series is assembled from its parts: the value reference, the literal series
+# name, and the category reference - exactly what the factory builds for a
+# range, written the same way into the chart part.
+def _chart_series(reference: str, title: str, categories: str):
+    from openpyxl.chart.data_source import AxDataSource, NumDataSource, NumRef
+    from openpyxl.chart.series import Series, SeriesLabel
+
+    item = Series(val=NumDataSource(numRef=NumRef(f=reference)),
+                  tx=SeriesLabel(v=title))
+    item.cat = AxDataSource(numRef=NumRef(f=categories))
+    return item
+
+
 def _render_dashboard_charts(worksheet: Worksheet, charts: dict[str, Any],
-                             window: int) -> None:
-    from openpyxl.chart import BarChart, LineChart, Series
+                             results: dict[str, Any], window: int) -> None:
+    from openpyxl.chart import BarChart, LineChart
 
     ranges = _chart_ranges(charts, window)
+    bindings = applied_year_bindings(charts, results, window) or {}
     formats = charts["number_formats"]
     axes = charts["axis_presentation"]
     label_text = _axis_label_text(axes["label_font_size"])
@@ -1524,6 +1613,18 @@ def _render_dashboard_charts(worksheet: Worksheet, charts: dict[str, Any],
         block = ranges[str(spec["source"])]
         sheet = block["sheet"]
         first, last = int(block["first_row"]), int(block["last_row"])
+        bound = bindings if str(spec["source"]) == "annual" else {}
+
+        # WHAT ONE COLUMN IS PLOTTED THROUGH: its applied-year name where the
+        # block declares one, its whole window range otherwise. Spelled with
+        # its sheet either way, because an openpyxl reference without one
+        # resolves against the chart's OWN sheet - the Dashboard - which holds
+        # none of this data.
+        def reference(key: str) -> str:
+            if key in bound:
+                return f"'{sheet}'!{bound[key]['name']}"
+            column = block["columns"][key]
+            return f"'{sheet}'!${column}${first}:${column}${last}"
 
         if str(spec["kind"]) == "line":
             chart = LineChart()
@@ -1557,21 +1658,13 @@ def _render_dashboard_charts(worksheet: Worksheet, charts: dict[str, Any],
                 x=float(area["x"]), y=float(area["y"]),
                 w=float(area["w"]), h=float(area["h"])))
 
-        # THE RANGE IS SPELLED WITH ITS SHEET, always. An openpyxl Reference
-        # built without a worksheet resolves against the chart's OWN sheet -
-        # the Dashboard - which holds none of this data, so every range below
-        # is an explicit string naming the bridge sheet.
+        categories = reference(str(spec["categories"]))
         for series in spec["series"]:
-            column = block["columns"][str(series["key"])]
-            item = Series(f"'{sheet}'!${column}${first}:${column}${last}",
-                          title=str(series["name"]))
+            item = _chart_series(reference(str(series["key"])), str(series["name"]),
+                                 categories)
             if str(spec["kind"]) == "line":
                 item.smooth = False
             chart.series.append(item)
-
-        category_column = block["columns"][str(spec["categories"])]
-        chart.set_categories(
-            f"'{sheet}'!${category_column}${first}:${category_column}${last}")
 
         # A LEGEND EARNS ITS SPACE OR IT GOES. One series needs no key.
         if len(spec["series"]) < 2:
@@ -1604,6 +1697,22 @@ def _render_dashboard_charts(worksheet: Worksheet, charts: dict[str, Any],
         # An absent point is a gap. NA() already declines to plot; this says so
         # for anything Excel would otherwise close over.
         chart.dispBlanksAs = str(axes["display_blanks_as"])
+        # CHART POLISH (final delivery). A FIXED VALUE-AXIS SCALE, where one is
+        # declared. `y_axis` is the VALUE axis for every chart type here; on the
+        # horizontal bar it is the axis Excel draws along the bottom, so this is
+        # the tornado's "x-axis" minimum, maximum and step as a reader sees them:
+        # <c:valAx><c:scaling><c:min/><c:max/></c:scaling><c:majorUnit/>.
+        scale = spec.get("value_axis_scale")
+        if scale:
+            chart.y_axis.scaling.min = float(scale["min"])
+            chart.y_axis.scaling.max = float(scale["max"])
+            chart.y_axis.majorUnit = float(scale["major_unit"])
+        # AND A CATEGORY LABEL INTERVAL, where one is declared: every n-th
+        # caption is printed (<c:catAx><c:tickLblSkip/>). Which captions are
+        # printed, not what is plotted - every category and every value stays.
+        interval = spec.get("category_label_interval")
+        if interval:
+            chart.x_axis.tickLblSkip = int(interval)
         worksheet.add_chart(chart, str(spec["anchor"]))
 
 
