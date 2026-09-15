@@ -52,6 +52,8 @@ BUILD = PCCM_ROOT / "build"
 MANIFEST = SPEC / "workbook.yaml"
 # THE HEAD BEFORE THIS CORRECTION: the runner tail audit, production at 548799f.
 PREVIOUS_HEAD = "ebeae65"
+# THE ACCEPTED CHART PACKAGE, before the value-axis bounds were taken off.
+ACCEPTED_CHART_PACKAGE = "e87d566"
 
 YEAR_CHARTS = ("s_curve", "annual_cash_flow")
 _CACHE: dict = {}
@@ -299,7 +301,7 @@ def test_06_the_manifest_refuses_a_binding_it_cannot_resolve() -> None:
          "not a row the Results annual block publishes"),
         ('          name_prefix: "chartAnnual"\n', '          name_prefix: "9charts"\n',
          "cannot begin a defined name"),
-        ("          major_unit: 0.10\n", "          major_unit: 0.50\n", "is not an axis"),
+        ("          major_unit: 0.10\n", "          major_unit: 0\n", "is not a step"),
         ("        category_label_interval: 2\n", "        category_label_interval: 0\n",
          "is not a positive count"),
     ):
@@ -333,32 +335,196 @@ def test_10_the_annual_cash_flow_is_still_a_column_chart_of_the_published_profil
 # ===========================================================================
 # 3. TOP DRIVERS BY RANK CORRELATION
 # ===========================================================================
-def test_20_the_tornado_value_axis_is_fixed_at_0_to_0_45_by_0_10_and_reads_two_decimals() -> None:
-    """THE EQUIVALENT REPRESENTATION, STATED. openpyxl calls the VALUE axis
+def test_20_the_tornado_value_axis_declares_a_step_and_no_bounds() -> None:
+    """THE SAFETY CORRECTION. The tornado RANKS by |rho| and PLOTS signed rho,
+    so a top-ranked negative driver is drawn to the LEFT of zero and a strong
+    positive one can exceed any figure chosen at build time. The earlier fixed
+    0..0.45 axis would have hidden the first and clipped the second - a
+    presentation setting deciding what a reader sees of a published analytical
+    value. The step and the format stay; the bounds are Excel's, read off the
+    plotted data.
+
+    THE EQUIVALENT REPRESENTATION, STATED. openpyxl calls the VALUE axis
     `y_axis` for every chart type, and on a horizontal bar chart Excel draws
-    that axis along the bottom - so the "x-axis" minimum, maximum and major
-    unit a reader sees are `<c:valAx><c:scaling><c:min/><c:max/></c:scaling>`
-    and `<c:majorUnit/>` in the chart part, which is what this asserts."""
+    that axis along the bottom - so the "x-axis" step a reader sees is
+    `<c:valAx><c:majorUnit/>` in the chart part, and the absence of bounds is
+    `<c:scaling>` carrying its orientation and nothing else."""
     spec = _by_key()["tornado"]
     assert spec["kind"] == "bar"
-    assert spec["value_axis_scale"] == {"min": 0.0, "max": 0.45, "major_unit": 0.1}
-    assert spec["value_axis_format"] == "0.00"
+    # 1. NO MINIMUM AND NO MAXIMUM, anywhere: the manifest, the projection, the
+    #    loaded chart and the chart part.
+    assert spec["value_axis_scale"] == {"major_unit": 0.1}
+    assert "min" not in spec["value_axis_scale"] and "max" not in spec["value_axis_scale"]
+    declared = _shell()["charts"]["charts"]
+    tornado = next(c for c in declared if str(c["key"]) == "tornado")
+    assert tornado["value_axis_scale"] == {"major_unit": 0.10}
     chart = _chart_objects()["Top Drivers by Rank Correlation"]
-    assert type(chart).__name__ == "BarChart" and chart.type == "bar"
-    assert chart.y_axis.scaling.min == 0.0
-    assert chart.y_axis.scaling.max == 0.45
-    assert chart.y_axis.majorUnit == 0.1
-    assert chart.y_axis.numFmt.formatCode == "0.00"
-    assert chart.y_axis.numFmt.sourceLinked is False
+    assert chart.y_axis.scaling.min is None and chart.y_axis.scaling.max is None
     part = _part_for("Top Drivers by Rank Correlation")
     value_axis = part[part.index("<valAx>"): part.index("</valAx>")]
-    assert '<min val="0"' in value_axis and '<max val="0.45"' in value_axis, value_axis
+    scaling = re.search(r"<scaling>.*?</scaling>", value_axis, re.S).group(0)
+    assert scaling == "<scaling><orientation val=\"minMax\" /></scaling>", scaling
+    assert re.search(r"<min val=", value_axis) is None, value_axis
+    assert re.search(r"<max val=", value_axis) is None, value_axis
+    # 2. THE STEP REMAINS 0.10, and 3. THE FORMAT REMAINS 0.00.
+    assert chart.y_axis.majorUnit == 0.1
     assert '<majorUnit val="0.1"' in value_axis, value_axis
+    assert spec["value_axis_format"] == "0.00"
+    assert chart.y_axis.numFmt.formatCode == "0.00"
+    assert chart.y_axis.numFmt.sourceLinked is False
     assert 'formatCode="0.00"' in value_axis, value_axis
-    # NO OTHER CHART HAS A FIXED SCALE.
+    # AND NO OTHER CHART CARRIES A BOUND EITHER: a value a reader cannot see is
+    # not a presentation choice this workbook makes anywhere.
     for key, other in _by_key().items():
-        if key != "tornado":
-            assert other["value_axis_scale"] is None, key
+        scale = other["value_axis_scale"]
+        assert scale is None or set(scale) == {"major_unit"}, (key, scale)
+        plot = _chart_objects()[other["title"]]
+        for axis in (plot.y_axis, plot.x_axis):
+            assert axis.scaling.min is None and axis.scaling.max is None, key
+    for chart_part in _chart_parts():
+        axes = re.findall(r"<scaling>.*?</scaling>", chart_part, re.S)
+        assert axes and all(a == "<scaling><orientation val=\"minMax\" /></scaling>"
+                            for a in axes), axes
+
+
+def test_20b_a_bound_on_any_chart_value_axis_is_refused() -> None:
+    """THE REGRESSION THIS CORRECTION FORBIDS: a minimum or a maximum coming
+    back, as the projection and as the manifest. Both layers refuse it by name,
+    so the safety property is structural rather than merely absent."""
+    structure = load_structure_contract(SPEC / "structure_contract.yaml")
+    from pccm_builder import load_sim_contract
+    inspection = build_phase8_charts_inspection(
+        load_spec(MANIFEST), structure.limits.max_generated_year_columns,
+        load_sim_contract(SPEC / "sim_contract.yaml"))
+    validate_phase8_charts_inspection(inspection)
+    assert inspection == _projection()
+    for bound in ({"min": 0.0}, {"max": 0.45}, {"min": 0.0, "max": 0.45}):
+        damaged = copy.deepcopy(inspection)
+        chart = next(c for c in damaged["charts"] if c["key"] == "tornado")
+        chart["value_axis_scale"] = dict(chart["value_axis_scale"], **bound)
+        with pytest.raises(ValueError, match="bound can hide a plotted value"):
+            validate_phase8_charts_inspection(damaged)
+    damaged = copy.deepcopy(inspection)
+    chart = next(c for c in damaged["charts"] if c["key"] == "tornado")
+    chart["value_axis_scale"] = {"major_unit": 0.0}
+    with pytest.raises(ValueError, match="is not a step"):
+        validate_phase8_charts_inspection(damaged)
+    # AND THE MANIFEST REFUSES IT BEFORE THE PROJECTION IS EVER BUILT.
+    text = MANIFEST.read_text(encoding="utf-8")
+    old = "        value_axis_scale:\n          major_unit: 0.10\n"
+    assert text.count(old) == 1
+    for injected, message in (
+        ("        value_axis_scale:\n          min: 0\n          major_unit: 0.10\n",
+         "value_axis_scale declares ['min']"),
+        ("        value_axis_scale:\n          max: 0.45\n          major_unit: 0.10\n",
+         "value_axis_scale declares ['max']"),
+    ):
+        path = MANIFEST.with_name("workbook.bounds-mutation.yaml")
+        path.write_text(text.replace(old, injected, 1), encoding="utf-8")
+        try:
+            with pytest.raises(SpecError, match=re.escape(message)):
+                load_spec(path)
+        finally:
+            path.unlink(missing_ok=True)
+
+
+def test_20c_no_plotted_rho_can_be_hidden_or_clipped_by_the_chart() -> None:
+    """4 AND 5, STATED AS THE PROPERTY THEY ARE. The bridge mirrors the SIGNED
+    rho the Sensitivity sheet publishes, cell for cell, with no absolute value,
+    no clamp, no floor and no ceiling; the chart declares no bound; so a
+    negative rho and a rho above any particular figure both reach the plot
+    exactly as published."""
+    block = _projection()["bridge"]["drivers"]
+    results = _workbook()[_projection()["bridge_sheet"]]
+    rho = next(c for c in block["columns"] if c["key"] == "rho")
+    source = {c["key"]: c["column"] for c in _projection()["sensitivity_source"]["columns"]}
+    first_source = int(_projection()["sensitivity_source"]["first_row"])
+    sheet = _projection()["sensitivity_sheet"]
+    eligibility = _projection()["sensitivity_source"]["eligibility"]["column"]
+    for offset in range(int(block["row_count"])):
+        formula = results[f"{rho['column']}{int(block['first_row']) + offset}"].value
+        row = first_source + offset
+        # THE MIRROR, EXACTLY: eligible and non-blank -> the published cell itself.
+        assert formula == (
+            f"=IF({sheet}!${eligibility}${row}=\"\",NA(),"
+            f"IF({sheet}!${source['rho']}${row}=\"\",NA(),{sheet}!${source['rho']}${row}))"), formula
+        for banned in ("ABS(", "MAX(", "MIN(", "IFERROR(", "ROUND(", "-"):
+            assert banned not in formula.replace("=IF(", "", 1) or banned == "-", (banned, formula)
+        assert "ABS(" not in formula and "MAX(" not in formula and "MIN(" not in formula
+    # THE SIGN IS THE POINT OF THE CHART, and the manifest says so.
+    manifest = MANIFEST.read_text(encoding="utf-8")
+    assert "ranked by the ABSOLUTE value of rho" in manifest
+    assert "a strongly negative driver ranks alongside an equally strong positive one" in manifest
+    # AND THE SOURCE IS THE SIGNED COLUMN, never the magnitude beside it.
+    assert not any(c["key"].startswith("abs_")
+                   for c in _projection()["sensitivity_source"]["columns"])
+    assert [c["key"] for c in block["columns"]] == ["driver_name", "rho"]
+
+
+def test_20d_the_safety_correction_moved_the_bounds_and_nothing_else() -> None:
+    """6 AND 7 TOGETHER. The whole chart projection is rebuilt from the manifest
+    as it stood at e87d566 - the accepted chart package - and compared with the
+    one this tree produces, field for field. The tornado's value-axis scale is
+    the ONLY difference: the ranking source and its ranges, both applied-year
+    bindings, the histogram's label interval and the s-curve's title all come
+    through identical."""
+    import tempfile
+    import yaml as _yaml
+    from pccm_builder import load_sim_contract
+    structure = load_structure_contract(SPEC / "structure_contract.yaml")
+    window = structure.limits.max_generated_year_columns
+    accepted_text = subprocess.run(
+        ["git", "show", f"{ACCEPTED_CHART_PACKAGE}:pccm/spec/workbook.yaml"],
+        cwd=PCCM_ROOT.parent, check=True, stdout=subprocess.PIPE).stdout.decode("utf-8")
+    scratch = Path(tempfile.mkdtemp(prefix="pccm-bounds-")) / "workbook.yaml"
+    scratch.write_text(accepted_text, encoding="utf-8")
+    # THE ACCEPTED PACKAGE DID CARRY THE BOUNDS - and the loader now REFUSES it
+    # unread, which is the correction's whole point and is stronger than any
+    # comparison: the manifest that produced the unsafe axis can no longer be
+    # built at all.
+    accepted_chart = next(
+        c for c in _yaml.safe_load(accepted_text)["phase6_shell"]["charts"]["charts"]
+        if str(c["key"]) == "tornado")
+    assert accepted_chart["value_axis_scale"] == {"min": 0, "max": 0.45, "major_unit": 0.10}
+    with pytest.raises(SpecError, match=re.escape("value_axis_scale declares ['max', 'min']")):
+        load_spec(scratch)
+    # SO THE COMPARISON IS MADE ACROSS THE DECLARED DELTA AND NOTHING ELSE: the
+    # two bound lines taken out of the accepted manifest, everything else its
+    # own bytes. If any other byte of the chart layer had moved, the projection
+    # below would differ somewhere other than the scale - and it does not.
+    without_bounds = accepted_text.replace(
+        "        value_axis_scale:\n          min: 0\n          max: 0.45\n          major_unit: 0.10\n",
+        "        value_axis_scale:\n          major_unit: 0.10\n", 1)
+    assert without_bounds != accepted_text
+    scratch.write_text(without_bounds, encoding="utf-8")
+    before = build_phase8_charts_inspection(load_spec(scratch), window,
+                                            load_sim_contract(SPEC / "sim_contract.yaml"))
+    now = _projection()
+    assert set(before) == set(now)
+    for key in set(before) - {"charts"}:
+        assert before[key] == now[key], f"{key} moved"
+    assert before["charts"] == now["charts"], "the chart layer moved beyond the bounds"
+    was = {c["key"]: c for c in before["charts"]}
+    current = {c["key"]: c for c in now["charts"]}
+    assert list(was) == list(current), "the chart order moved"
+    for key, chart in was.items():
+        after = current[key]
+        assert set(chart) == set(after), key
+        for field in set(chart):
+            assert chart[field] == after[field], (key, field)
+        if key == "tornado":
+            assert after["value_axis_scale"] == {"major_unit": 0.1}
+    # AND THE THREE OTHER CORRECTIONS, NAMED, straight out of that comparison.
+    assert current["s_curve"]["title"] == was["s_curve"]["title"] == "Cumulative Cost Profile"
+    for year_chart in YEAR_CHARTS:
+        assert current[year_chart]["categories"]["binding"] == "chartAnnual_calendar_year"
+        assert [s["binding"] for s in current[year_chart]["series"]] == \
+            [s["binding"] for s in was[year_chart]["series"]]
+    assert current["histogram"]["category_label_interval"] == 2
+    assert _chart_objects()["Total Cost Distribution"].x_axis.tickLblSkip == 2
+    assert current["tornado"]["categories"]["range"] == was["tornado"]["categories"]["range"]
+    assert [s["range"] for s in current["tornado"]["series"]] == \
+        [s["range"] for s in was["tornado"]["series"]]
 
 
 def test_21_the_tornado_ranking_source_and_rho_values_are_untouched() -> None:

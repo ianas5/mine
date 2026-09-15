@@ -1697,15 +1697,18 @@ def _render_dashboard_charts(worksheet: Worksheet, charts: dict[str, Any],
         # An absent point is a gap. NA() already declines to plot; this says so
         # for anything Excel would otherwise close over.
         chart.dispBlanksAs = str(axes["display_blanks_as"])
-        # CHART POLISH (final delivery). A FIXED VALUE-AXIS SCALE, where one is
-        # declared. `y_axis` is the VALUE axis for every chart type here; on the
+        # CHART POLISH (final delivery). A DECLARED VALUE-AXIS STEP, and NO
+        # BOUNDS. `y_axis` is the VALUE axis for every chart type here; on the
         # horizontal bar it is the axis Excel draws along the bottom, so this is
-        # the tornado's "x-axis" minimum, maximum and step as a reader sees them:
-        # <c:valAx><c:scaling><c:min/><c:max/></c:scaling><c:majorUnit/>.
+        # the tornado's "x-axis" step as a reader sees it: <c:valAx><c:majorUnit/>.
+        # <c:scaling> is left with its orientation alone - no <c:min/>, no
+        # <c:max/> - so Excel reads the extent off the plotted values. The
+        # tornado ranks by |rho| and plots SIGNED rho: a minimum of 0 would have
+        # hidden a top-ranked negative driver and a maximum would have clipped a
+        # stronger one, which is a presentation setting deciding what a reader
+        # sees of a published analytical value.
         scale = spec.get("value_axis_scale")
         if scale:
-            chart.y_axis.scaling.min = float(scale["min"])
-            chart.y_axis.scaling.max = float(scale["max"])
             chart.y_axis.majorUnit = float(scale["major_unit"])
         # AND A CATEGORY LABEL INTERVAL, where one is declared: every n-th
         # caption is printed (<c:catAx><c:tickLblSkip/>). Which captions are

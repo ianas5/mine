@@ -231,9 +231,11 @@ def build_phase8_charts_inspection(spec: WorkbookSpec, window: int,
                 charts["number_formats"][str(chart["category_axis_format"])]),
             "legend": len(chart["series"]) > 1,
             # CHART POLISH (final delivery). PRESENTATION ONLY, BOTH OF THEM. A
-            # fixed value-axis scale (the tornado: 0 to 0.45 by 0.10) and a
-            # category label interval (the histogram: every second caption).
-            # Neither names a range, a series or a state word.
+            # value-axis STEP (the tornado: 0.10) and a category label interval
+            # (the histogram: every second caption). Neither names a range, a
+            # series or a state word - and neither can hide one: the step
+            # divides whatever bounds Excel reads off the data, and the interval
+            # decides which captions are printed, not which points are plotted.
             "value_axis_scale": ({k: float(v) for k, v in chart["value_axis_scale"].items()}
                                  if chart.get("value_axis_scale") else None),
             "category_label_interval": (int(chart["category_label_interval"])
@@ -424,20 +426,27 @@ def validate_phase8_charts_inspection(inspection: dict[str, Any]) -> None:
                     raise ValueError(
                         f"{INSPECTION_FILENAME}: chart {key!r} reads {entry['range']} "
                         f"for {entry['key']!r}, which is not the block's column")
+        # A VALUE-AXIS SCALE IS A STEP AND NOTHING ELSE. A declared minimum or
+        # maximum would let the presentation layer hide a published value: this
+        # workbook's tornado ranks by |rho| and plots SIGNED rho, so a minimum
+        # of 0 would draw no bar for a top-ranked negative driver and any
+        # maximum would clip a stronger one. The bounds belong to the data.
         scale = chart["value_axis_scale"]
         if scale is not None:
-            if set(scale) != {"min", "max", "major_unit"}:
+            bounds = sorted({"min", "max"} & set(scale))
+            if bounds:
+                raise ValueError(
+                    f"{INSPECTION_FILENAME}: chart {key!r} declares value-axis "
+                    f"{bounds}; a bound can hide a plotted value, and the extent "
+                    "belongs to the data")
+            if set(scale) != {"major_unit"}:
                 raise ValueError(
                     f"{INSPECTION_FILENAME}: chart {key!r} declares a value-axis "
                     f"scale with {sorted(scale)}")
-            if not scale["min"] < scale["max"]:
-                raise ValueError(
-                    f"{INSPECTION_FILENAME}: chart {key!r} value axis runs from "
-                    f"{scale['min']} to {scale['max']}")
-            if not 0.0 < scale["major_unit"] <= (scale["max"] - scale["min"]):
+            if not scale["major_unit"] > 0.0:
                 raise ValueError(
                     f"{INSPECTION_FILENAME}: chart {key!r} value axis step "
-                    f"{scale['major_unit']} does not fit its scale")
+                    f"{scale['major_unit']} is not a step")
         interval = chart["category_label_interval"]
         if interval is not None:
             if interval < 1 or interval >= int(block["row_count"]):

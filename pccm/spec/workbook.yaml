@@ -1287,15 +1287,22 @@ phase6_shell:
         height: 11.5
         value_axis_format: "rho_axis"
         category_axis_format: "text"
-        # CHART POLISH (final delivery). THE VALUE AXIS IS FIXED: 0 to 0.45 in
-        # steps of 0.10, two decimals. In openpyxl - and in the chart part - the
-        # value axis of a horizontal bar chart is `y_axis` / <c:valAx>, drawn
+        # CHART POLISH (final delivery). THE VALUE AXIS CARRIES A STEP AND A
+        # FORMAT, AND NO BOUNDS. In openpyxl - and in the chart part - the value
+        # axis of a horizontal bar chart is `y_axis` / <c:valAx>, drawn
         # HORIZONTALLY on screen, so "the x-axis" a reader sees is this axis's
-        # <c:scaling> min/max and <c:majorUnit>. Presentation only: the plotted
-        # rho values, the ranking and the driver population are untouched.
+        # <c:majorUnit> and, where one is declared, its <c:scaling> min/max.
+        #
+        # WHY NO MINIMUM AND NO MAXIMUM. The tornado RANKS by |rho| and PLOTS
+        # signed rho, so a strongly negative driver ranks alongside an equally
+        # strong positive one and is drawn to the left of zero. A declared
+        # minimum of 0 would have hidden that bar, and a declared maximum would
+        # have clipped any |rho| above it - a presentation setting deciding what
+        # a reader can see of a published analytical value. Excel's automatic
+        # bounds read the data that is actually there, so every ranked driver is
+        # visible whatever its sign or magnitude. The STEP is safe to declare
+        # because it divides whatever range Excel chooses; it fixes no extent.
         value_axis_scale:
-          min: 0
-          max: 0.45
           major_unit: 0.10
         # Fractions of the CHART area, edge-anchored: the plot starts 34% in and
         # is 62% wide, leaving 4% right margin; it starts 16% down, below the

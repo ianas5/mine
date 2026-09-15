@@ -633,21 +633,31 @@ def _check_charts_layout(charts: dict[str, Any], results: dict[str, Any],
             raise SpecError(f"{where}: chart {key!r} is a {chart['kind']!r} chart")
         # CHART POLISH (final delivery). A declared value-axis scale is three
         # numbers that describe an axis; a declared label interval is a count.
+        # A DECLARED VALUE-AXIS SCALE IS A STEP, AND ONLY A STEP. A minimum or a
+        # maximum here would decide what a reader can see of a published value:
+        # the tornado ranks by |rho| and plots SIGNED rho, so a minimum of 0
+        # hides every negative driver and any maximum clips whatever exceeds it.
+        # Excel's automatic bounds read the data that is actually there. The
+        # step divides whatever range they choose and fixes no extent.
         scale = chart.get("value_axis_scale")
         if scale is not None:
-            if set(scale) != {"min", "max", "major_unit"}:
+            bounds = sorted({"min", "max"} & set(scale))
+            if bounds:
+                raise SpecError(
+                    f"{where}: chart {key!r} value_axis_scale declares {bounds}; a "
+                    "presentation bound can hide or clip a published value, and the "
+                    "axis extent belongs to the data")
+            if set(scale) != {"major_unit"}:
                 raise SpecError(
                     f"{where}: chart {key!r} value_axis_scale carries {sorted(scale)}")
             try:
-                low, high, step = (float(scale["min"]), float(scale["max"]),
-                                   float(scale["major_unit"]))
+                step = float(scale["major_unit"])
             except (TypeError, ValueError) as error:
                 raise SpecError(
                     f"{where}: chart {key!r} value_axis_scale is not numeric") from error
-            if not (low < high and 0.0 < step <= high - low):
+            if not step > 0.0:
                 raise SpecError(
-                    f"{where}: chart {key!r} value_axis_scale {low}..{high} by {step} "
-                    "is not an axis")
+                    f"{where}: chart {key!r} value_axis_scale step {step} is not a step")
         interval = chart.get("category_label_interval")
         if interval is not None and (not isinstance(interval, int)
                                      or isinstance(interval, bool) or interval < 1):
