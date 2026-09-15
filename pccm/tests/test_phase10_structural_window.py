@@ -478,9 +478,16 @@ def test_42_the_reconciliation_is_the_only_production_change() -> None:
     assert set(changed) <= declared, sorted(set(changed) - declared)
     for path in sorted(set(changed) - {f"pccm/src/vba/{name}" for name in DECLARED_STRUCTURAL_WINDOW_CHANGES}):
         name = Path(path).name
-        accepted = subprocess.run(
+        # A DECLARED MODULE THAT DID NOT EXIST THEN IS AN ADDITION: there is
+        # nothing to reverse it to, and asking git for its bytes at a commit
+        # before it existed would fail on the question, not the answer.
+        at_commit = subprocess.run(
             ["git", "show", f"{ACCEPTED_BEFORE_RECONCILIATION}:{path}"],
-            cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE).stdout.decode("utf-8")
+            cwd=REPO_ROOT, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        if at_commit.returncode != 0:
+            assert (PCCM_ROOT / "src" / "vba" / name).is_file(), path
+            continue
+        accepted = at_commit.stdout.decode("utf-8")
         assert strip_declared_changes(name, _src(name)) == accepted, name
     for name in DECLARED_STRUCTURAL_WINDOW_CHANGES:
         accepted = subprocess.run(
@@ -710,9 +717,15 @@ def _undeclared_production_changes(commit: str) -> list[str]:
     changed = undeclared_after_chart_polish(commit, changed, PCCM_ROOT)
     for path in sorted(set(changed) & declared):
         name = Path(path).name
+        at_commit = subprocess.run(["git", "show", f"{commit}:{path}"], cwd=REPO_ROOT,
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        if at_commit.returncode != 0:
+            # A DECLARED ADDITION: it did not exist at `commit`, so there is
+            # nothing to reverse it to.
+            assert (PCCM_ROOT / "src" / "vba" / name).is_file(), path
+            continue
         current = strip_declared_changes(name, (PCCM_ROOT / "src" / "vba" / name).read_bytes().decode("utf-8"))
-        accepted = strip_declared_changes(name, subprocess.run(
-            ["git", "show", f"{commit}:{path}"], cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE, text=True).stdout)
+        accepted = strip_declared_changes(name, at_commit.stdout)
         assert current.replace("\r\n", "\n") == accepted.replace("\r\n", "\n"), \
             f"{path} moved outside the declared layers"
     return [path for path in changed if path not in declared]

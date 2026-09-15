@@ -887,6 +887,12 @@ def test_70_no_vba_source_changed_since_the_accepted_tree() -> None:
     declared = {f"pccm/src/vba/{name}" for name in declared_production_changes()}
     for path in sorted(set(changed) & declared):
         name = path.rsplit("/", 1)[1]
+        import subprocess as _sp
+        if _sp.run(["git", "show", f"{ACCEPTED}:{path}"], cwd=PCCM_ROOT.parent,
+                   stdout=_sp.DEVNULL, stderr=_sp.DEVNULL).returncode != 0:
+            # A DECLARED ADDITION has nothing to reverse to.
+            assert (PCCM_ROOT / "src" / "vba" / name).is_file(), path
+            continue
         current = strip_declared_changes(
             name, (PCCM_ROOT / "src" / "vba" / name).read_bytes().decode("utf-8"))
         accepted = strip_declared_changes(name, _git("show", f"{ACCEPTED}:{path}"))

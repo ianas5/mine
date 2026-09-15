@@ -215,6 +215,15 @@ def test_08_the_projection_and_the_protection_policy_are_untouched() -> None:
     assert "sheet.Protect UserInterfaceOnly:=True, _" in protection
 
 
+def _git_raw(*args: str):
+    """`git args`, or None when the object does not exist at that commit."""
+    import subprocess as _sp
+    done = _sp.run(["git", *args], cwd=PCCM_ROOT.parent, stdout=_sp.PIPE, stderr=_sp.DEVNULL)
+    if done.returncode != 0:
+        return None
+    return done.stdout.decode("utf-8")
+
+
 def test_09_the_correction_reverses_exactly_to_the_candidate_and_nothing_else_moved() -> None:
     sys.path.insert(0, str(PCCM_ROOT / "tests"))
     from vba_runtime_lock_state import (ACCEPTED_BEFORE_RUNTIME_LOCK_STATE, DECLARED_RUNTIME_LOCK_STATE_CHANGES,
@@ -236,7 +245,21 @@ def test_09_the_correction_reverses_exactly_to_the_candidate_and_nothing_else_mo
         current = strip_chart_polish(name, (PCCM_ROOT / name).read_text(encoding="utf-8"))
         accepted = strip_chart_polish(name, _git("show", f"{CANDIDATE}:{path}"))
         assert current == accepted, f"{path} moved outside the declared chart polish"
-    assert [path for path in changed if path not in polished] == ["pccm/src/vba/modWorkbook.bas"], changed
+    # THE PRESENTATION OWNER AND ITS CALL SITES ARE DECLARED TOO, and the
+    # newest layer comes off first through the shared reverser.
+    from vba_structural_window import declared_production_changes, strip_declared_changes
+    vba_declared = {f"pccm/src/vba/{name}" for name in declared_production_changes()}
+    for path in sorted((set(changed) & vba_declared) - polished - {"pccm/src/vba/modWorkbook.bas"}):
+        name = path.rsplit("/", 1)[1]
+        at_commit = _git_raw("show", f"{CANDIDATE}:{path}")
+        if at_commit is None:
+            assert (PCCM_ROOT / "src" / "vba" / name).is_file(), path
+            continue
+        assert strip_declared_changes(name, _src(name)) == strip_declared_changes(name, at_commit), path
+    remaining = [path for path in changed
+                 if path not in polished and path not in vba_declared]
+    assert remaining == [], remaining
+    assert "pccm/src/vba/modWorkbook.bas" in changed
 
 
 # ===========================================================================

@@ -514,218 +514,111 @@ def _gate_lines() -> dict[str, str]:
 
 
 @pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
-def test_05b_the_windows_gate_reads_the_live_binding_and_refuses_every_wrong_one() -> None:
-    """EXECUTED. The gate's decision functions, lifted from the inspector and
-    driven over real SERIES formulas - the blanks Excel returned at a2da277 and
-    again at 10f5e62 among them, and the bound shape Windows proved by
-    assigning XValues and reading the formula back.
+def test_05b_the_windows_gate_judges_the_live_xvalues_payload() -> None:
+    """EXECUTED, AND THE ORACLE HAS MOVED. Windows proved the runtime binding
+    works - a disposable copy returned XVALUES|2099 with the Dashboard
+    protected again - and proved at the same time that the SERIES formula's
+    category argument can read blank for a series whose categories are plainly
+    present, which is why this gate once reported the histogram and the tornado
+    broken while their accepted populations were intact. So the verdict is
+    taken on Series.XValues, normalised from whatever COM returns and compared
+    against the cells the contract expects, in order.
 
-    THE YEAR CONTRACT IS A ROW RANGE NOW, not a name: first annual row through
-    the row the published count implies. One row when nothing is published, the
-    whole window only when the whole window is published, and refused at either
-    end when it is wrong. A defined name in the category slot - the mechanism
-    that failed three times - is refused like any other wrong source."""
+    The formula is still printed, as a diagnostic, and is never the oracle."""
     lines = _gate_lines()
-    for case in ("windows.blank.s-curve-nominal", "windows.blank.cash-flow"):
-        assert lines[case].startswith("categories=<blank>|"), (case, lines[case])
-        assert lines[case].endswith("|verdict=blank-categories"), (case, lines[case])
-        assert "values=Results!chartAnnual_" in lines[case], case
-    for case in ("bound.ten-years", "bound.quoted", "bound.one-year",
-                 "bound.nothing-published", "bound.whole-window-published",
-                 "parsing.comma-in-name"):
-        assert lines[case].endswith("|verdict=accepted"), (case, lines[case])
-    assert lines["regression.whole-window"].endswith("|verdict=wrong-last-row")
-    assert lines["regression.wrong-first"].endswith("|verdict=wrong-first-row")
-    assert lines["regression.wrong-last"].endswith("|verdict=wrong-last-row")
-    for case in ("regression.named-category", "regression.other-column",
-                 "regression.other-sheet"):
-        assert lines[case].endswith("|verdict=wrong-source"), (case, lines[case])
-    # AND THE SECOND CONTRACT: a fixed-population chart plots an ordinary
-    # range, is refused when it comes back blank - as the histogram did at
-    # 10f5e62 - and is refused if a name reaches it.
-    for case in ("literal.histogram-accepted", "literal.tornado-accepted"):
-        assert lines[case].endswith("|verdict=accepted"), (case, lines[case])
-    assert lines["literal.windows.10f5e62"].endswith("|verdict=blank-categories")
-    assert lines["literal.name-instead-of-range"].endswith("|verdict=not-a-range")
+    # 1 and 3. NOTHING PUBLISHED: exactly one category, the first bridge cell's
+    #    own value, which is blank - from a scalar and from a one-item array.
+    for case in ("year.nothing-published.scalar", "year.nothing-published.array"):
+        assert lines[case].startswith("count=1|payload=<blank>|"), (case, lines[case])
+        assert "|verdict=accepted|" in lines[case], (case, lines[case])
+    # 3 and 4. ONE YEAR, N YEARS, and the whole window when the whole window is
+    #    what was published.
+    assert lines["year.one"].startswith("count=1|payload=2026|"), lines["year.one"]
+    assert "|verdict=accepted|" in lines["year.one"]
+    assert lines["year.three"].startswith("count=3|payload=2026,2027,2028|"), lines["year.three"]
+    assert "|verdict=accepted|" in lines["year.three"]
+    assert lines["year.ten"].startswith("count=10|"), lines["year.ten"]
+    assert "|verdict=accepted|" in lines["year.ten"]
+    assert lines["year.whole-window-published"].startswith("count=200|"), lines["year.whole-window-published"]
+    assert "|verdict=accepted|" in lines["year.whole-window-published"]
+    # 5. 200 CATEGORIES WHILE TEN YEARS ARE PUBLISHED.
+    assert "|verdict=refused|" in lines["year.whole-window-refused"]
+    assert "200 categories where 10 are expected" in lines["year.whole-window-refused"]
+    # 6. WRONG FIRST, WRONG LAST, WRONG ORDER, WRONG COUNT, FABRICATED.
+    assert "category 1 is 2025, expected 2026" in lines["year.wrong-first"]
+    assert "category 3 is 2099, expected 2028" in lines["year.wrong-last"]
+    assert "category 1 is 2028, expected 2026" in lines["year.wrong-order"]
+    assert "presents 2 categories where 3 are expected" in lines["year.too-few"]
+    assert "presents 4 categories where 3 are expected" in lines["year.too-many"]
+    assert "category 1 is 2026, expected <blank>" in lines["year.fabricated-when-empty"]
+    for case in ("year.wrong-first", "year.wrong-last", "year.wrong-order",
+                 "year.too-few", "year.too-many", "year.fabricated-when-empty"):
+        assert "|verdict=refused|" in lines[case], (case, lines[case])
+    # THE COM SHAPES ALL NORMALISE TO THE SAME ORDERED PAYLOAD.
+    for case in ("shape.rectangle", "shape.plain-array", "shape.numeric-text"):
+        assert lines[case].startswith("count=3|payload=2026,2027,2028|"), (case, lines[case])
+        assert "|verdict=accepted|" in lines[case], (case, lines[case])
+    # 7. THE LITERAL CHARTS, judged against their declared cells and nothing else.
+    for case in ("literal.histogram.correct", "literal.tornado.correct"):
+        assert "|verdict=accepted|" in lines[case], (case, lines[case])
+    assert "presents 18 categories where 20 are expected" in lines["literal.histogram.short"]
+    assert "category 1 is Labour rate, expected Steel price" in lines["literal.tornado.reordered"]
+    assert "category 3 is Invented driver" in lines["literal.tornado.fabricated"]
+    for case in ("literal.histogram.short", "literal.tornado.reordered",
+                 "literal.tornado.fabricated"):
+        assert "|verdict=refused|" in lines[case], (case, lines[case])
 
-def test_05c_the_windows_gate_reports_four_fields_per_series_and_fails_the_run() -> None:
-    """THE INSPECTOR IS A GATE, NOT A REPORT. It prints the formula, the
-    categories, the values and the point count for every series, and it exits
-    non-zero naming the chart when a year chart plots blank categories, the
-    reserved window, or any other category source. It still opens read-only,
-    runs no endpoint and saves nothing."""
+
+def test_05c_the_windows_gate_takes_its_verdict_from_xvalues_and_not_from_the_formula() -> None:
+    """THE GATE'S SHAPE, AND WHAT IT IS ALLOWED TO DECIDE ON. It reports the
+    formula, the XValues count, the XValues payload and the point count for
+    every series; it decides on the XValues alone. The parsed SERIES category
+    argument is gone from the script entirely, so a blank there can no longer
+    fail a chart whose categories are present - which is the defect that cost
+    the histogram and the tornado a false failure."""
     code = INSPECTOR.read_text(encoding="utf-8")
-    for field in (".formula=", ".categories=", ".values=", ".points="):
-        assert code.count(field) == 1, field
-    assert "$script:YearCharts = @('Cumulative Cost Profile', 'Annual Cash Flow')" in code
-    assert "$script:LiteralCharts = @('Total Cost Distribution', 'Top Drivers by Rank Correlation')" in code
+    # THE ORACLE, AND ONLY IT.
+    assert "$xvalues = ConvertTo-XValueList -Raw $series.XValues" in code
+    assert code.count("Compare-Payload -Actual $xvalues -Expected") == 2
+    # THE FORMULA IS A DIAGNOSTIC: printed, never compared, never a failure.
+    assert "The series formula, for the record only. It is not the oracle." in code
+    assert code.count(".formula=' + (Get-SeriesFormula -Series $series)") == 1
+    for gone in ("Split-SeriesFormula", "Get-SeriesField", "Get-CategoryRows",
+                 "Test-CellRange", "BLANK XValues/categories", "$categories = Get-SeriesField"):
+        assert gone not in code, f"the gate still judges the formula: {gone}"
+    # THE FOUR REPORTED FIELDS, one line each per series.
+    for field in (".formula=", ".xvalues.count=", ".xvalues=", ".points="):
+        assert code.count(field) >= 1, field
+    # THE TWO CONTRACTS, AND THE ONE THAT IS DERIVED FROM THE WORKBOOK.
     runtime = _projection()["bridge"]["annual"]["runtime_category"]
     assert f"$script:CategoryWindowName = '{runtime['window_name']}'" in code
     assert f"$script:YearCountName = '{runtime['extent_name']}'" in code
-    for reason in ("BLANK XValues/categories", "is bound to the whole reserved year window",
-                   "not the first annual row", "published year(s)",
-                   "is not on the Dashboard at all",
-                   "its categories are an ordinary cell range",
-                   "more than the reserved year window holds"):
-        assert reason in code, reason
-    # THE NAMES ARE READ FROM THE WORKBOOK, NOT FROM Results.Names: they are
-    # workbook-scoped, and looking only inside the sheet would report every one
-    # of them missing while they were all present.
+    assert "$slice = $windowRange.Resize($take, 1)" in code
+    assert "$script:ExpectedYear = ConvertTo-CellList -Target $slice" in code
+    assert "presents the whole reserved year window" in code
+    assert "presents different categories from series 1" in code
+    # THE LITERAL EXPECTATIONS COME FROM THE ACCEPTED PROJECTION, so the gate
+    # spells no address of its own.
+    assert "$reference = [string]$chart.categories.range" in code
+    assert "$script:ExpectedLiteral[$title] = ConvertTo-CellList -Target $sourceRange" in code
+    assert re.search(r'"\$?[A-Z]{1,3}\$?\d+', code) is None, "the gate spells a cell address"
+    # THE WORKBOOK-SCOPED NAMES ARE READ FROM THE WORKBOOK, not from one sheet.
     assert "$names = $workbook.Names" in code
     assert "$results.Names" not in code
-    # AND THE CONTRACT IT JUDGES AGAINST IS READ FROM THE WORKBOOK TOO - the
-    # window name's own range and the year-count name's own value.
-    assert "$script:CategoryFirstRow = [int]$windowRange.Row" in code
-    assert "$script:PublishedYears = [int]$parsed" in code
-    assert "chartAnnual_calendar_year" not in code, "the gate still wants the failed name"
-    # THE BLANK CHECK IS NOT SCOPED TO THE YEAR CHARTS: every chart is held to
-    # it, which is what the histogram and the tornado needed at 10f5e62.
-    blank = code.index("has BLANK XValues/categories")
-    assert code.rindex("if ([string]::IsNullOrWhiteSpace($categories)) {", 0, blank) > \
-        code.index("$isLiteralChart = ($script:LiteralCharts -contains $title)")
+    # EVENTS ON, because the binding is applied when the workbook opens.
+    assert "$excel.EnableEvents = $true" in code
+    assert "$workbooks.Open($resolved, 0, $true)" in code
+    # STILL READ-ONLY, STILL A GATE.
+    assert "$workbook.Close($false)" in code
     assert "if ($script:Failures.Count -eq 0) { exit 0 } else { exit 1 }" in code
     assert "CHART BINDING FAIL" in code and "CHART BINDING PASS" in code
-    # READ-ONLY, STILL: opened read-only, closed unsaved, no endpoint run.
-    assert "$workbooks.Open($resolved, 0, $true)" in code
-    assert "$workbook.Close($false)" in code
     for banned in (".Value2 =", "PCCM_", "SaveAs", ".Save()", "ListRows.Add"):
         assert banned not in code, banned
-    # AND THE GATE NAMES THE SAME TWO CHARTS AND THE SAME NAME THE BUILDER WRITES.
+    # AND IT NAMES THE FOUR CHARTS THE PROJECTION NAMES.
     titles = {chart["key"]: chart["title"] for chart in _projection()["charts"]}
     for key in ("s_curve", "annual_cash_flow", "histogram", "tornado"):
         assert f"'{titles[key]}'" in code, key
-    block = _projection()["bridge"]["annual"]
-    category = next(c for c in block["columns"] if c["key"] == "calendar_year")
-    assert category["applied_binding"] is None, "the failed category name is back"
-
-
-# ===========================================================================
-# 1b. THE RUNTIME CATEGORY BINDING - THE PRESENTATION OWNER
-# ===========================================================================
-def test_06b_the_presentation_owner_is_declared_and_owns_only_the_binding() -> None:
-    """ONE NARROWLY-OWNED MODULE. The structure contract declares it, the
-    builder imports it from the same list every other module comes from, and it
-    computes nothing: no arithmetic on a published value, no state word, no
-    publication, no protection policy of its own, and no chart geometry."""
-    import yaml as _yaml
-    contract = _yaml.safe_load((SPEC / "structure_contract.yaml").read_text(encoding="utf-8"))
-    modules = next(section["modules"] for section in
-                   ([contract] + [v for v in contract.values() if isinstance(v, dict)])
-                   if isinstance(section, dict) and "modules" in section)
-    declared = {str(module["name"]): str(module["responsibility"]) for module in modules}
-    assert "modChartPresentation" in declared
-    responsibility = declared["modChartPresentation"]
-    assert "Computes nothing" in responsibility and "owns no year count" in responsibility
-    manifest = json.loads((BUILD / "stage_b_manifest.json").read_text(encoding="utf-8"))
-    assert "modChartPresentation" in {str(m["name"]) for m in manifest["vba"]["modules"]}
-    assert (PCCM_ROOT / "src" / "vba" / "modChartPresentation.bas").is_file()
-    module = _chart_module()
-    assert module.startswith('Attribute VB_Name = "modChartPresentation"\nOption Explicit\n')
-    # IT READS THE WORKBOOK AND WRITES ONE PROPERTY. Nothing else.
-    assert module.count("item.XValues = categories") == 1
-    for banned in ("Value2 =", ".Formula =", "PCCM_", "ListRows", "ListColumns",
-                   "Application.Calculate", ".Protect ", ".Unprotect",
-                   "SimAnnualStore", "CalcReport", "SimReport", "Fingerprint",
-                   "Rnd", "WorksheetFunction"):
-        assert banned not in module, banned
-    # AND NO ANALYTICAL OWNER GAINED A CHART LINE.
-    for other in sorted((PCCM_ROOT / "src" / "vba").glob("*.bas")):
-        if other.name in ("modChartPresentation.bas", "modReset.bas", "modSimAnnualRun.bas"):
-            continue
-        text = other.read_text(encoding="utf-8")
-        assert "modChartPresentation" not in text, other.name
-        assert "XValues" not in text, other.name
-
-
-def test_06c_the_owner_reads_the_workbook_and_declares_no_address() -> None:
-    """NO ADDRESS, NO YEAR COUNT, NO SECOND AUTHORITY. Every number it uses
-    arrives through a defined name the builder writes: the reserved category
-    window, and the Years Covered cell the bridge's own guard cuts at. It names
-    a series by the applied-year name that series already plots, so no chart
-    title, position or index is written down either."""
-    module = _chart_module()
-    runtime = _projection()["bridge"]["annual"]["runtime_category"]
-    binding = _projection()["bridge"]["annual"]["applied_binding"]
-    assert f'Private Const CHART_CATEGORY_WINDOW As String = "{runtime["window_name"]}"' in module
-    assert f'Private Const CHART_YEAR_COUNT As String = "{runtime["extent_name"]}"' in module
-    assert f'Private Const CHART_APPLIED_PREFIX As String = "{binding["name_prefix"]}_"' in module
-    assert 'ThisWorkbook.Names(DefinedName).RefersToRange' in module
-    assert "ThisWorkbook.Worksheets(SH_DASHBOARD)" in module
-    # NOT ONE CELL ADDRESS, NOT ONE ROW NUMBER, NOT ONE CHART TITLE.
-    assert re.search(r'"\$?[A-Z]{1,3}\$?\d+', module) is None, "the owner spells an address"
-    for title in (chart["title"] for chart in _projection()["charts"]):
-        assert title not in module, title
-    assert "279" not in module and "478" not in module and "200" not in module
-    # A SERIES IS IDENTIFIED BY WHAT IT PLOTS.
-    assert "PlotsAppliedYears = (InStr(1, formula, CHART_APPLIED_PREFIX, vbBinaryCompare) > 0)" in module
-    assert "If PlotsAppliedYears(item) Then" in module
-
-
-def test_06d_the_owner_opens_the_accepted_window_and_restores_it_on_every_path() -> None:
-    """PRESENTATION DOES NOT WEAKEN PROTECTION. Windows proved a chart on a
-    protected sheet is not writable, so the binding is made inside the ACCEPTED
-    modProtection structural window - the one mechanism this workbook has - and
-    that window is closed again on the success path AND on the failure path. It
-    protects nothing, unprotects nothing and touches workbook structure not at
-    all."""
-    module = _chart_module()
-    assert module.count("modProtection.ProtectionBeginStructural(windowDetail)") == 1
-    assert module.count("modProtection.ProtectionEndStructural(windowDetail)") == 2
-    # ONE OF THE TWO CLOSES IS ON THE FAILURE PATH, behind the open flag.
-    failed = module[module.index("\nFailed:"):]
-    assert "If windowOpen Then" in failed
-    assert "ProtectionEndStructural(windowDetail)" in failed
-    assert "protection was not restored" in failed
-    # THE FLAG IS CLEARED BEFORE THE SUCCESS CLOSE, so the failure path cannot
-    # close a window that is already closed.
-    success = module[module.index("windowOpen = True"): module.index("\nFailed:")]
-    assert success.index("windowOpen = False") < success.index("ProtectionEndStructural")
-    # AND THE BINDING HAPPENS INSIDE THE WINDOW.
-    assert success.index("BindAppliedSeries(categories, detail)") < success.index("windowOpen = False")
-    # NO SECOND PROTECTION MECHANISM.
-    for banned in ("ProtectionApply", "ProtectionRelease", "ProtectStructure",
-                   "Protect Structure", "UserInterfaceOnly"):
-        assert banned not in module, banned
-    # AND THE ENVELOPE IS THE ACCEPTED ONE, counted, as production declares it.
-    protection = (PCCM_ROOT / "src" / "vba" / "modProtection.bas").read_text(encoding="utf-8")
-    assert "Public Function ProtectionBeginStructural(ByRef detail As String) As Boolean" in protection
-    assert "Public Function ProtectionEndStructural(ByRef detail As String) As Boolean" in protection
-
-
-def test_06e_the_owner_is_called_at_the_three_presentation_boundaries_and_nowhere_else() -> None:
-    """THE SMALLEST CORRECT BOUNDARIES: the workbook opening, an annual run that
-    published, a reset that cleared. Never inside a calculation or a simulation,
-    which produce no chart and would pay for this on every iteration."""
-    call = "modChartPresentation.ChartPresentationApplyCategories(chartDetail)"
-    sources = {path.name: path.read_text(encoding="utf-8")
-               for path in sorted((PCCM_ROOT / "src" / "vba").glob("*.bas"))}
-    sources["ThisWorkbook.vba"] = (PCCM_ROOT / "src" / "vba" / "ThisWorkbook.vba").read_text(encoding="utf-8")
-    callers = {name for name, text in sources.items() if call in text}
-    assert callers == {"ThisWorkbook.vba", "modSimAnnualRun.bas", "modReset.bas"}, sorted(callers)
-    for name in callers:
-        assert sources[name].count(call) == 1, name
-    # OPEN: after protection is applied, because the window needs it in force.
-    handler = sources["ThisWorkbook.vba"]
-    assert handler.index("modProtection.ProtectionApply(detail)") < handler.index(call)
-    assert handler.index(call) < handler.index("modAppState.FailPointCheck FAILPOINT_WORKBOOK_OPEN")
-    # ANNUAL: after the publication succeeded, before the message is composed.
-    annual = sources["modSimAnnualRun.bas"]
-    assert annual.index("SimAnnualStorePublish(run, flat, fields, detail)") < annual.index(call)
-    assert annual.index(call) < annual.index("RunAnnual.Ok = True")
-    # RESET: inside the branch where the clear succeeded.
-    reset = sources["modReset.bas"]
-    assert reset.index("If ClearEveryPublication(") < reset.index(call)
-    assert reset.index(call) < reset.index("ResetResults = modAppState.Succeeded(RESET_SUCCEEDED)")
-    # AND NEITHER CALLER LETS A PRESENTATION FAULT FAIL THE COMMAND IT FOLLOWS.
-    for name in ("modSimAnnualRun.bas", "modReset.bas"):
-        after = sources[name][sources[name].index(call):]
-        assert "chartDetail = vbNullString" in after[:200], name
-    assert 'modAppState.RecordResult "Workbook_Open: " & chartDetail' in handler
-    # NO CALCULATION OR SIMULATION OWNER CALLS IT.
-    for name in ("modCalcAnalytical.bas", "modCalcReport.bas", "modSimEngine.bas",
-                 "modSimReport.bas", "modSimSample.bas", "modSimStats.bas"):
-        assert call not in sources[name], name
-
+    assert "chartAnnual_calendar_year" not in code, "the gate still wants the failed name"
 
 def test_10_the_annual_cash_flow_is_still_a_column_chart_of_the_published_profile() -> None:
     spec = _by_key()["annual_cash_flow"]

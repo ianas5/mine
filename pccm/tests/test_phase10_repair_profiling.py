@@ -774,8 +774,13 @@ def test_30_the_declared_correction_reverses_exactly_to_the_tree_run_7_executed(
     assert set(changed) <= declared, sorted(set(changed) - declared)
     for path in sorted(set(changed) - {"pccm/src/vba/modRepair.bas"}):
         name = path.rsplit("/", 1)[1]
-        then = subprocess.run(["git", "show", f"{ACCEPTED_BEFORE_REPAIR_RECONSTRUCTION}:{path}"],
-                              cwd=PCCM_ROOT.parent, capture_output=True, text=True, check=True).stdout
+        at_commit = subprocess.run(["git", "show", f"{ACCEPTED_BEFORE_REPAIR_RECONSTRUCTION}:{path}"],
+                                   cwd=PCCM_ROOT.parent, capture_output=True, text=True)
+        if at_commit.returncode != 0:
+            # A DECLARED ADDITION has nothing to reverse to.
+            assert (PCCM_ROOT / "src" / "vba" / name).is_file(), path
+            continue
+        then = at_commit.stdout
         assert strip_declared_changes(name, (PCCM_ROOT / "src" / "vba" / name).read_text(encoding="utf-8")) == strip_declared_changes(name, then), path
 
 

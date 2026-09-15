@@ -989,6 +989,12 @@ def test_42_no_production_vba_or_spec_changed() -> None:
                     "pccm/src", "pccm/spec", "pccm/builder").splitlines() if line.strip()]
     for path in sorted(set(changed) & declared):
         name = Path(path).name
+        import subprocess as _sp
+        if _sp.run(["git", "show", f"{ACCEPTED}:{path}"], cwd=PCCM_ROOT.parent,
+                   stdout=_sp.DEVNULL, stderr=_sp.DEVNULL).returncode != 0:
+            # A DECLARED ADDITION has nothing to reverse to.
+            assert (PCCM_ROOT / "src" / "vba" / name).is_file(), path
+            continue
         current = strip_declared_changes(
             name, (PCCM_ROOT / "src" / "vba" / name).read_bytes().decode("utf-8"))
         accepted = strip_declared_changes(name, _git("show", f"{ACCEPTED}:{path}"))

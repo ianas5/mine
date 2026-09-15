@@ -1,16 +1,19 @@
 <#
 .SYNOPSIS
     Executes the Windows chart-binding gate's PURE decision functions -
-    Split-SeriesFormula, Test-CategoryBinding and Test-CellRange - lifted out of
-    bootstrap/windows/phase10_chart_polish_inspect.ps1 by AST and driven over
-    real Excel SERIES formulas under Set-StrictMode 2.0. Excel is never started.
-    IT ASSERTS NOTHING: it prints GATE|<case>|<text> lines and the Python control
-    decides.
+    ConvertTo-ComparableValue, ConvertTo-XValueList, Compare-Payload and
+    Format-Payload - lifted out of bootstrap/windows/phase10_chart_polish_inspect.ps1
+    by AST and driven over the COM shapes Series.XValues really returns, under
+    Set-StrictMode 2.0. Excel is never started. IT ASSERTS NOTHING: it prints
+    GATE|<case>|<text> lines and the Python control decides.
 
-    WHY THIS EXISTS. The gate is the only thing that can catch the defect it
-    exists for - Excel dropping a category binding is invisible in the chart
-    XML - so the gate's own reading of a SERIES formula has to be proved, and
-    the formula Windows actually returned at a2da277 is one of the cases.
+    WHY THIS EXISTS. The gate's oracle is Series.XValues, and Windows proved
+    that is the live truth - a disposable copy returned XVALUES|2099 with the
+    Dashboard protected again, while the SERIES formula's category argument can
+    read blank for a series whose categories are plainly present. So the gate
+    must normalise whatever COM hands back and compare it, in order, against
+    the cells the contract expects. That normalisation and that comparison are
+    what is exercised here.
 #>
 param([string]$Inspector)
 Set-StrictMode -Version 2.0
@@ -18,86 +21,106 @@ $ErrorActionPreference = 'Stop'
 
 $source = Get-Content -LiteralPath $Inspector -Raw
 $ast = [System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$null, [ref]$null)
-foreach ($name in @('Split-SeriesFormula', 'Get-SeriesField', 'Get-CategoryRows', 'Test-CellRange')) {
+foreach ($name in @('ConvertTo-ComparableValue', 'ConvertTo-XValueList', 'ConvertTo-CellList',
+                    'Compare-Payload', 'Format-Payload')) {
     $definition = $ast.FindAll({ param($node)
         ($node -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and ($node.Name -eq $name) }, $true)
     if (@($definition).Count -ne 1) { throw ('the inspector defines ' + $name + ' ' + [string]@($definition).Count + ' times') }
     . ([scriptblock]::Create(@($definition)[0].Extent.Text))
 }
-# The two script variables the lifted functions read, bound exactly as the
-# inspector binds them.
-$script:CategorySheet = 'Results'
-$script:CategoryColumn = 'D'
-$script:CategoryFirstRow = 279
-$script:CategoryLastRow = 478
 
 function Emit { param([string]$Case, [string]$Text) Write-Output ('GATE|' + $Case + '|' + $Text) }
-# THE LITERAL CONTRACT, read the same way: a fixed-population chart plots an
-# ordinary cell range and must never come back blank either.
-function Read-Literal {
-    param([string]$Case, [string]$Formula)
-    $parts = Split-SeriesFormula -Formula $Formula
-    $categories = Get-SeriesField -Parts $parts -Index 1
-    $verdict = 'accepted'
-    if ([string]::IsNullOrWhiteSpace($categories)) { $verdict = 'blank-categories' }
-    elseif (-not (Test-CellRange -Reference $categories)) { $verdict = 'not-a-range' }
-    Emit $Case ('categories=' + $(if ($categories -eq '') { '<blank>' } else { $categories }) + '|verdict=' + $verdict)
-}
 
-# THE YEAR-CHART CONTRACT, read exactly as the gate reads it: the categories
-# must cover the first annual row through the row the published count implies.
-function Read-Series {
-    param([string]$Case, [string]$Formula, [int]$PublishedYears)
-    $parts = Split-SeriesFormula -Formula $Formula
-    $categories = Get-SeriesField -Parts $parts -Index 1
-    $values = Get-SeriesField -Parts $parts -Index 2
-    $wantFirst = $script:CategoryFirstRow
-    $wantLast = $wantFirst
+# THE CONTRACT THE YEAR CHARTS ARE JUDGED BY, in the gate's own terms: the first
+# N cells of the reserved window, one when nothing is published, capped at the
+# window. This mirrors what the inspector derives from the workbook.
+$script:WindowRows = 200
+function Expected-Year {
+    param([int]$PublishedYears, $WindowCells)
+    $take = 1
     if ($PublishedYears -ge 1) {
-        $wantLast = $wantFirst + $PublishedYears - 1
-        if ($wantLast -gt $script:CategoryLastRow) { $wantLast = $script:CategoryLastRow }
+        $take = $PublishedYears
+        if ($take -gt $script:WindowRows) { $take = $script:WindowRows }
     }
+    return @(@($WindowCells)[0..($take - 1)])
+}
+# The reserved window as the bridge holds it with N years published: N calendar
+# years, then blanks to the end of the window.
+function Window-Cells {
+    param([int]$PublishedYears)
+    $cells = @()
+    for ($i = 0; $i -lt $script:WindowRows; $i++) {
+        if ($i -lt $PublishedYears) { $cells += (ConvertTo-ComparableValue (2026 + $i)) }
+        else { $cells += '' }
+    }
+    return @($cells)
+}
+function Read-Year {
+    param([string]$Case, $RawXValues, [int]$PublishedYears)
+    $window = Window-Cells -PublishedYears $PublishedYears
+    $expected = Expected-Year -PublishedYears $PublishedYears -WindowCells $window
+    $actual = ConvertTo-XValueList -Raw $RawXValues
     $verdict = 'accepted'
-    if ([string]::IsNullOrWhiteSpace($categories)) { $verdict = 'blank-categories' }
-    else {
-        $rows = Get-CategoryRows -Reference $categories
-        if (@($rows)[0] -eq 0) { $verdict = 'wrong-source' }
-        elseif (@($rows)[0] -ne $wantFirst) { $verdict = 'wrong-first-row' }
-        elseif (@($rows)[1] -ne $wantLast) { $verdict = 'wrong-last-row' }
-        elseif ((@($rows)[1] -eq $script:CategoryLastRow) -and ($PublishedYears -lt ($script:CategoryLastRow - $script:CategoryFirstRow + 1))) {
-            $verdict = 'whole-window'
-        }
+    $problem = Compare-Payload -Actual $actual -Expected $expected
+    if ($problem -ne '') { $verdict = 'refused' }
+    elseif ((@($actual).Count -eq $script:WindowRows) -and ($PublishedYears -lt $script:WindowRows)) {
+        $verdict = 'whole-window'
+        $problem = 'presents the whole reserved year window'
     }
-    Emit $Case ('categories=' + $(if ($categories -eq '') { '<blank>' } else { $categories }) +
-                '|values=' + $(if ($values -eq '') { '<blank>' } else { $values }) + '|verdict=' + $verdict)
+    Emit $Case ('count=' + [string]@($actual).Count + '|payload=' + (Format-Payload $actual) +
+                '|verdict=' + $verdict + '|problem=' + $(if ($problem -eq '') { '<none>' } else { $problem }))
+}
+function Read-Literal {
+    param([string]$Case, $RawXValues, $ExpectedCells)
+    $actual = ConvertTo-XValueList -Raw $RawXValues
+    $problem = Compare-Payload -Actual $actual -Expected @($ExpectedCells)
+    Emit $Case ('count=' + [string]@($actual).Count + '|payload=' + (Format-Payload $actual) +
+                '|verdict=' + $(if ($problem -eq '') { 'accepted' } else { 'refused' }) +
+                '|problem=' + $(if ($problem -eq '') { '<none>' } else { $problem }))
+}
+# A 1-BASED VARIANT ARRAY, which is what Excel hands back for a multi-point
+# series, and a 2-D rectangle, which is what a range-shaped answer looks like.
+function New-ComArray {
+    param([object[]]$Items)
+    $out = [Array]::CreateInstance([object], @($Items.Count), @(1))
+    for ($i = 0; $i -lt $Items.Count; $i++) { $out.SetValue($Items[$i], $i + 1) }
+    return , $out
+}
+function New-ComRectangle {
+    param([object[]]$Items)
+    $out = [Array]::CreateInstance([object], @($Items.Count, 1), @(1, 1))
+    for ($i = 0; $i -lt $Items.Count; $i++) { $out.SetValue($Items[$i], $i + 1, 1) }
+    return , $out
 }
 
-# 1. THE DEFECT EXCEL RETURNED AT a2da277 AND AGAIN AT 10f5e62, verbatim.
-Read-Series 'windows.blank.s-curve-nominal' '=SERIES("Cumulative Nominal",,Results!chartAnnual_cumulative_nominal,1)' 10
-Read-Series 'windows.blank.cash-flow' '=SERIES("Annual Nominal",,Results!chartAnnual_annual_nominal,1)' 10
-# 2. THE SHAPE THE RUNTIME BINDING PRODUCES, which Windows proved by assigning
-#    XValues and reading the SERIES formula back. Both spellings Excel uses.
-Read-Series 'bound.ten-years' '=SERIES("Cumulative Nominal",Results!$D$279:$D$288,Results!chartAnnual_cumulative_nominal,1)' 10
-Read-Series 'bound.quoted' "=SERIES(`"Cumulative Nominal`",'Results'!`$D`$279:`$D`$288,'Results'!chartAnnual_cumulative_nominal,1)" 10
-Read-Series 'bound.one-year' '=SERIES("Annual Nominal",Results!$D$279,Results!chartAnnual_annual_nominal,1)' 1
-Read-Series 'bound.nothing-published' '=SERIES("Annual Nominal",Results!$D$279,Results!chartAnnual_annual_nominal,1)' 0
-Read-Series 'bound.whole-window-published' '=SERIES("Annual Nominal",Results!$D$279:$D$478,Results!chartAnnual_annual_nominal,1)' 200
-# 3. THE RESERVED WINDOW COMING BACK while less than that is published.
-Read-Series 'regression.whole-window' '=SERIES("Cumulative Nominal",Results!$D$279:$D$478,Results!chartAnnual_cumulative_nominal,1)' 10
-# 4. THE WRONG ROWS, either end.
-Read-Series 'regression.wrong-first' '=SERIES("Annual Nominal",Results!$D$280:$D$289,Results!chartAnnual_annual_nominal,1)' 10
-Read-Series 'regression.wrong-last' '=SERIES("Annual Nominal",Results!$D$279:$D$300,Results!chartAnnual_annual_nominal,1)' 10
-# 5. A CATEGORY SOURCE THAT IS NOT THE CALENDAR-YEAR COLUMN AT ALL - including
-#    the failed defined name, which must no longer be accepted.
-Read-Series 'regression.named-category' '=SERIES("Annual Nominal",Results!chartAnnual_calendar_year,Results!chartAnnual_annual_nominal,1)' 10
-Read-Series 'regression.other-column' '=SERIES("Annual Nominal",Results!$B$279:$B$288,Results!chartAnnual_annual_nominal,1)' 10
-Read-Series 'regression.other-sheet' '=SERIES("Annual Nominal",Dashboard!$D$279:$D$288,Results!chartAnnual_annual_nominal,1)' 10
-# 5b. A SERIES NAME CARRYING A COMMA, which a naive split would misread as the
-#     category argument.
-Read-Series 'parsing.comma-in-name' '=SERIES("Cumulative, Nominal",Results!$D$279:$D$288,Results!chartAnnual_cumulative_nominal,1)' 10
-# 6. THE FIXED-POPULATION CHARTS, whose categories Windows also found blank at
-#    10f5e62 and whose accepted source is an ordinary range.
-Read-Literal 'literal.histogram-accepted' '=SERIES("Iterations",Results!$B$487:$B$506,Results!$F$487:$F$506,1)'
-Read-Literal 'literal.tornado-accepted' '=SERIES("Rho",Results!$B$515:$B$524,Results!$D$515:$D$524,1)'
-Read-Literal 'literal.windows.10f5e62' '=SERIES("Iterations",,Results!$F$487:$F$506,1)'
-Read-Literal 'literal.name-instead-of-range' '=SERIES("Iterations",Results!chartAnnual_calendar_year,Results!$F$487:$F$506,1)'
+# 1. NOTHING PUBLISHED: exactly one category, the first bridge cell's own value,
+#    which is blank. A scalar is what Excel returns for a single point.
+Read-Year 'year.nothing-published.scalar' '' 0
+Read-Year 'year.nothing-published.array' (New-ComArray @('')) 0
+# 2. ONE YEAR, then three, then two hundred.
+Read-Year 'year.one' (New-ComArray @(2026)) 1
+Read-Year 'year.three' (New-ComArray @(2026, 2027, 2028)) 3
+Read-Year 'year.ten' (New-ComArray @(2026, 2027, 2028, 2029, 2030, 2031, 2032, 2033, 2034, 2035)) 10
+Read-Year 'year.whole-window-published' (New-ComArray (Window-Cells -PublishedYears 200)) 200
+# 3. THE WHOLE RESERVED WINDOW WHILE TEN YEARS ARE PUBLISHED.
+Read-Year 'year.whole-window-refused' (New-ComArray (Window-Cells -PublishedYears 10)) 10
+# 4. THE WRONG PAYLOAD, each way it can be wrong.
+Read-Year 'year.wrong-first' (New-ComArray @(2025, 2027, 2028)) 3
+Read-Year 'year.wrong-last' (New-ComArray @(2026, 2027, 2099)) 3
+Read-Year 'year.wrong-order' (New-ComArray @(2028, 2027, 2026)) 3
+Read-Year 'year.too-few' (New-ComArray @(2026, 2027)) 3
+Read-Year 'year.too-many' (New-ComArray @(2026, 2027, 2028, 2029)) 3
+Read-Year 'year.fabricated-when-empty' (New-ComArray @(2026)) 0
+# 5. THE SHAPES COM CAN RETURN, all normalising to the same ordered payload.
+Read-Year 'shape.rectangle' (New-ComRectangle @(2026, 2027, 2028)) 3
+Read-Year 'shape.plain-array' (@(2026, 2027, 2028)) 3
+Read-Year 'shape.numeric-text' (New-ComArray @('2026', '2027', '2028')) 3
+# 6. THE LITERAL CHARTS, whose populations are fixed and whose SERIES formula
+#    category argument Windows found blank while the categories were present.
+$bins = @(); for ($i = 0; $i -lt 20; $i++) { $bins += (ConvertTo-ComparableValue (1000000 + $i * 50000)) }
+Read-Literal 'literal.histogram.correct' (New-ComArray $bins) $bins
+Read-Literal 'literal.histogram.short' (New-ComArray @($bins[0..17])) $bins
+$drivers = @('Steel price', 'Labour rate', 'Ground conditions')
+Read-Literal 'literal.tornado.correct' (New-ComArray $drivers) $drivers
+Read-Literal 'literal.tornado.reordered' (New-ComArray @('Labour rate', 'Steel price', 'Ground conditions')) $drivers
+Read-Literal 'literal.tornado.fabricated' (New-ComArray @('Steel price', 'Labour rate', 'Invented driver')) $drivers

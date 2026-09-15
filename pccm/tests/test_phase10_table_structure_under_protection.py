@@ -1163,6 +1163,12 @@ def test_30_no_production_source_changed() -> None:
     declared = {f"pccm/src/vba/{name}" for name in declared_production_changes()}
     for path in sorted(set(changed) & declared):
         name = Path(path).name
+        # A DECLARED ADDITION has nothing to reverse to: it did not exist then.
+        import subprocess as _sp
+        if _sp.run(["git", "show", f"{ACCEPTED}:{path}"], cwd=PCCM_ROOT.parent,
+                   stdout=_sp.DEVNULL, stderr=_sp.DEVNULL).returncode != 0:
+            assert (PCCM_ROOT / "src" / "vba" / name).is_file(), path
+            continue
         current = strip_declared_changes(
             name, (PCCM_ROOT / "src" / "vba" / name).read_bytes().decode("utf-8"))
         accepted = strip_declared_changes(name, _git("show", f"{ACCEPTED}:{path}"))

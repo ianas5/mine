@@ -711,15 +711,26 @@ def _production_changed_since(commit: str) -> list[str]:
         accepted = strip_chart_polish(name, _git("show", f"{commit}:{path}"))
         assert current == accepted, f"{path} moved outside the declared chart polish"
     declared = declared | polished
+    import subprocess as _sp
     for path in sorted((set(changed) & declared) - polished):
         name = Path(path).name
+        # A DECLARED MODULE THAT DID NOT EXIST AT `commit` IS AN ADDITION, and an
+        # addition has nothing to reverse to: the chart presentation owner is
+        # the whole of it, declared by name, and a control that asked git for
+        # its bytes at a commit before it existed would fail on the question
+        # rather than on the answer.
+        at_commit = _sp.run(["git", "show", f"{commit}:{path}"], cwd=REPO_ROOT,
+                            stdout=_sp.PIPE, stderr=_sp.DEVNULL)
+        if at_commit.returncode != 0:
+            assert (PCCM_ROOT / "src" / "vba" / name).is_file(), path
+            continue
         # LINE ENDINGS NORMALISED ON BOTH SIDES. modCalcReport.bas is CRLF on
         # disk and _git returns text, so one side arrives translated. This
         # control is about CONTENT; the line-ending convention has its own
         # control (test_phase9_model_check test_46_2) and keeps it.
         current = (PCCM_ROOT / "src" / "vba" / name).read_bytes().decode("utf-8")
         current = strip_declared_changes(name, current).replace("\r\n", "\n")
-        accepted = strip_declared_changes(name, _git("show", f"{commit}:{path}")).replace("\r\n", "\n")
+        accepted = strip_declared_changes(name, at_commit.stdout.decode("utf-8")).replace("\r\n", "\n")
         assert current == accepted, (
             f"{path} moved outside the declared P10-RP structural window and the "
             f"declared P10-2C Repair reconstruction")

@@ -161,6 +161,29 @@ def _git(*args: str) -> str:
 # could say "this file may grow"; this one says "this file may grow, and may
 # lose exactly this line".
 DECLARED_PRODUCTION_CORRECTIONS = {
+    # FINAL-DELIVERY CHART POLISH: THE RUNTIME CATEGORY BINDING. Windows proved
+    # a defined name in a series' CATEGORY slot comes back blank whatever the
+    # markup around it, and proved Series.XValues binds one correctly at
+    # runtime. modChartPresentation - a NEW module, and therefore not in this
+    # table, which is about modules the accepted evidence ran against - resizes
+    # the reserved calendar-year column to the published year count and assigns
+    # it. The three modules below gained ONE CALL to it each, at the three
+    # presentation boundaries, and nothing else: no line was removed from any of
+    # them, which the additive rule below proves line for line. NO CHART,
+    # RESULTS, DASHBOARD, SENSITIVITY, RANKING, STATISTICS OR PUBLICATION
+    # ALGORITHM CHANGED, and the whole layer is mechanically reversible through
+    # tests/chart_polish_declaration.py.
+    # ThisWorkbook.vba and modReset.bas are NOT here: both arrived after the two
+    # Phase-8 acceptance commits this table is measured from, so they are
+    # additions rather than modifications and the rule above already passes over
+    # them. modSimAnnualRun.bas existed then, so its one added call is declared.
+    "pccm/src/vba/modSimAnnualRun.bas": (
+        "final-delivery chart polish: a run that published re-binds the two year "
+        "charts' category axes to the year count it published, after the "
+        "publication succeeded and before the message is composed. It cannot fail "
+        "a run that succeeded. Reversible through tests/chart_polish_declaration.py.",
+        (),
+    ),
     # P10-R4: THE RUNTIME YEAR-CELL LOCK STATE, commit 548799f. Phase 10 final
     # Windows acceptance run 10 read the runtime-materialised project-year cells
     # of the profiling grids Locked=True with protection on, while the accepted
@@ -1727,7 +1750,11 @@ def test_94_the_declared_production_rule_passes_on_the_real_repository() -> None
         "pccm/src/vba/modTimeline.bas",
         "pccm/src/vba/modSimPostReport.bas",
         "pccm/src/vba/modSimReport.bas",
-        "pccm/src/vba/modWorkbook.bas"}, sorted(DECLARED_PRODUCTION_CORRECTIONS)
+        "pccm/src/vba/modWorkbook.bas",
+        # AND BY ONE MORE AT THE FINAL-DELIVERY CHART POLISH: the annual run's
+        # single call to the chart presentation owner, at the boundary where the
+        # year count it published becomes the one the Dashboard shows.
+        "pccm/src/vba/modSimAnnualRun.bas"}, sorted(DECLARED_PRODUCTION_CORRECTIONS)
     # THE P10-R4 ENTRY IS PROVED, NOT WHITELISTED: it names the commit, its one
     # removed line is the reworded comment heading, and taking the declared
     # layer off today's bytes reproduces 5e0df9b - which is byte-identical to
