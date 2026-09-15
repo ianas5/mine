@@ -198,10 +198,16 @@ def test_07_the_lock_state_is_written_by_the_shared_owner_alone() -> None:
 
 def test_08_the_projection_and_the_protection_policy_are_untouched() -> None:
     """RUNTIME MOVES TO MATCH THE PROJECTION, never the other way."""
+    from chart_polish_declaration import strip_chart_polish
     for path in ("pccm/builder/pccm_builder/protection.py", "pccm/spec/structure_contract.yaml",
                  "pccm/src/vba/modProtection.bas"):
         name = path.rsplit("/", 1)[1]
-        assert _src(name) == _git("show", f"{CANDIDATE}:{path}"), path
+        # THE STRUCTURE CONTRACT LATER DECLARED THE CHART PRESENTATION OWNER,
+        # under its own authorisation; the declared layer comes off both sides
+        # and the protection policy this control is about is unchanged beneath.
+        relative = path[len("pccm/"):]
+        assert strip_chart_polish(relative, _src(name)) == \
+            strip_chart_polish(relative, _git("show", f"{CANDIDATE}:{path}")), path
     builder = _src("protection.py")
     assert "for row in range(grid.first_data_row, grid.last_data_row + 1)]" in builder
     assert "return int(structure.limits.max_generated_year_columns)" in builder

@@ -249,6 +249,14 @@ Private Function RunAnnual() As OperationResult
         Exit Function
     End If
 
+    ' THE YEAR COUNT THIS RUN PUBLISHED IS NOW THE ONE THE DASHBOARD SHOWS, so
+    ' the two year charts' category axes are re-bound to it. Presentation only:
+    ' it plots nothing new and changes no published value, and a binding that
+    ' could not be applied does not fail a run that succeeded.
+    Dim chartDetail As String
+    If Not modChartPresentation.ChartPresentationApplyCategories(chartDetail) Then
+        chartDetail = vbNullString
+    End If
     RunAnnual.Ok = True
     RunAnnual.Message = "Annual stochastic complete: " & CStr(run.YearCount) & _
                         " project year(s) over " & CStr(run.Iterations) & _

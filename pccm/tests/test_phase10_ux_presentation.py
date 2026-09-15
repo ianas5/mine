@@ -652,8 +652,10 @@ def test_17_the_balanced_geometry_left_every_source_identity_alone() -> None:
     # block DECLARES beside its columns - the columns themselves are equal.
     import copy
     bridge_now = copy.deepcopy(_charts()["bridge"])
-    assert bridge_now["annual"].pop("applied_binding") == {"name_prefix": "chartAnnual",
-                                                             "extent": "year_count"}
+    assert bridge_now["annual"].pop("applied_binding") == {
+        "name_prefix": "chartAnnual", "extent": "year_count",
+        # The category column is bound at runtime, not by a name.
+        "runtime_category": "calendar_year"}
     assert accepted["bridge"] == bridge_now, "the chart bridge moved"
     formats_now = dict(_charts()["number_formats"])
     assert formats_now.pop("rho_axis") == "0.00"

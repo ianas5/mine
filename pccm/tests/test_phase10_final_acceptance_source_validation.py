@@ -425,8 +425,12 @@ def test_47_an_undeclared_edit_outside_the_row_o_block_is_refused() -> None:
 
 def test_48_a_failpoint_before_the_apply_is_refused() -> None:
     """IT WOULD BYPASS THE RELEASE: nothing applied, nothing to put right."""
+    # THE DECLARED CHART BINDING NOW SITS BETWEEN THE TWO, so the swap is made
+    # across it: the failpoint moves ahead of the apply, which is the defect
+    # this control refuses, and the binding stays where it belongs - after the
+    # apply that gives it a protected workbook to open its window on.
     _mutate_source("test_57", "handler", conformance.HANDLER_VBA,
-                   "    If Not modProtection.ProtectionApply(detail) Then GoTo Failed\n    modAppState.FailPointCheck FAILPOINT_WORKBOOK_OPEN\n",
+                   "    If Not modProtection.ProtectionApply(detail) Then GoTo Failed\n",
                    "    modAppState.FailPointCheck FAILPOINT_WORKBOOK_OPEN\n    If Not modProtection.ProtectionApply(detail) Then GoTo Failed\n")
 
 

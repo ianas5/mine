@@ -404,15 +404,21 @@ def _phase9_formula_cells(spec, contract: InputContract | None = None) -> dict[s
 def _applied_year_chart_names(spec, structure) -> set[str]:
     """Every workbook-scoped name the chart layer's applied-year binding
     produces, asked of the one builder that produces them."""
-    from .workbook_builder import applied_year_bindings
+    from .workbook_builder import applied_year_bindings, runtime_category_binding
 
     shell = getattr(spec, "phase6_shell", None) or {}
     charts = shell.get("charts")
     if not charts or structure is None:
         return set()
-    bindings = applied_year_bindings(
-        charts, shell["results"], int(structure.limits.max_generated_year_columns))
-    return {entry["name"] for entry in (bindings or {}).values()}
+    window = int(structure.limits.max_generated_year_columns)
+    bindings = applied_year_bindings(charts, shell["results"], window)
+    names = {entry["name"] for entry in (bindings or {}).values()}
+    # AND THE TWO THE CHART PRESENTATION OWNER READS: the reserved category
+    # window it resizes, and the Years Covered cell it resizes to.
+    runtime = runtime_category_binding(charts, shell["results"], window)
+    if runtime is not None:
+        names |= {runtime["window_name"], runtime["extent_name"]}
+    return names
 
 
 def _formula_cells(workbook) -> list[str]:

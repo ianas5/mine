@@ -1458,7 +1458,17 @@ def _render_chart_bridge(worksheet: Worksheet, charts: dict[str, Any],
         # NOTHING ELSE MOVES: the same five columns of the same annual bridge,
         # cut at the same Years Covered cell by the same formula.
         book = worksheet.parent
-        for entry in bindings.values():
+        runtime = runtime_category_binding(charts, results, window)
+        entries = list(bindings.values())
+        if runtime is not None:
+            # THE TWO NAMES THE PRESENTATION OWNER READS. The reserved
+            # calendar-year window it resizes, and the Years Covered cell it
+            # resizes to - the SAME cell the bridge guard reads, named here so
+            # that owner needs no address of its own and there is still one
+            # year-count authority.
+            entries.append({"name": runtime["window_name"], "formula": runtime["window_formula"]})
+            entries.append({"name": runtime["extent_name"], "formula": runtime["extent_formula"]})
+        for entry in entries:
             if entry["name"] in book.defined_names:
                 raise ValueError(
                     f"defined name {entry['name']!r} already exists in the workbook")
@@ -1544,10 +1554,17 @@ def applied_year_bindings(charts: dict[str, Any], results: dict[str, Any],
     last = first + int(window) - 1
     extent = _annual_extent_cell(results, str(binding["extent"]))
     prefix = str(binding["name_prefix"])
+    # THE CATEGORY COLUMN GETS NO CUT NAME. Windows proved a name in a series'
+    # category slot comes back blank; that column is bound at runtime from a
+    # range instead, by the chart presentation owner, and the two names it
+    # reads are written below.
+    runtime_category = str(binding.get("runtime_category") or "")
     out: dict[str, dict[str, str]] = {}
     for column in block["columns"]:
         key = str(column["key"])
         letter = str(column["column"])
+        if key == runtime_category:
+            continue
         name = f"{prefix}_{key}"
         window_range = f"${letter}${first}:${letter}${last}"
         out[key] = {
@@ -1563,6 +1580,44 @@ def applied_year_bindings(charts: dict[str, Any], results: dict[str, Any],
                         f"MAX(1,MIN({int(window)},N({sheet}!{extent}))))"),
         }
     return out
+
+
+def runtime_category_binding(charts: dict[str, Any], results: dict[str, Any],
+                             window: int) -> dict[str, Any] | None:
+    """The runtime category contract: the column the charts are built on, the
+    one-row literal range they carry until the presentation owner widens it,
+    and the two names that owner reads - the reserved column window and the
+    Years Covered cell. None when the manifest declares no applied binding."""
+    block = charts["bridge"]["annual"]
+    binding = block.get("applied_binding")
+    if not binding:
+        return None
+    sheet = str(charts["bridge_sheet"])
+    first = int(block["first_row"])
+    last = first + int(window) - 1
+    prefix = str(binding["name_prefix"])
+    key = str(binding.get("runtime_category") or "")
+    if not key:
+        return None
+    letter = next(str(column["column"]) for column in block["columns"]
+                  if str(column["key"]) == key)
+    return {
+        "key": key,
+        "column": letter,
+        "first_row": first,
+        "last_row": last,
+        # WHAT THE CHART IS BUILT ON: the first reserved row alone. A literal
+        # range, which Excel resolves while it reads the chart part, and the
+        # right picture for a workbook with nothing published - the bridge
+        # answers that row blank.
+        "built_range": f"{sheet}!${letter}${first}",
+        "window_name": f"{prefix}_category_window",
+        "window_reference": f"{sheet}!{prefix}_category_window",
+        "window_formula": f"{sheet}!${letter}${first}:${letter}${last}",
+        "extent_name": f"{prefix}_year_count",
+        "extent_reference": f"{sheet}!{prefix}_year_count",
+        "extent_formula": f"{sheet}!{_annual_extent_cell(results, str(binding['extent']))}",
+    }
 
 
 def _chart_ranges(charts: dict[str, Any], window: int) -> dict[str, dict[str, Any]]:
@@ -1626,13 +1681,11 @@ def _axis_label_text(size: int):
 # charts' workbook gained, so it is what cost them their categories, and it is
 # withdrawn. A reference carries its formula and nothing else, exactly as the
 # value references that Windows has twice proved survive.
-def _chart_series(values: str, title: str, categories: str):
-    from openpyxl.chart.data_source import AxDataSource, NumDataSource, NumRef
+def _chart_series(values: str, title: str):
+    from openpyxl.chart.data_source import NumDataSource, NumRef
     from openpyxl.chart.series import Series, SeriesLabel
 
-    item = Series(val=NumDataSource(numRef=NumRef(f=values)), tx=SeriesLabel(v=title))
-    item.cat = AxDataSource(numRef=NumRef(f=categories))
-    return item
+    return Series(val=NumDataSource(numRef=NumRef(f=values)), tx=SeriesLabel(v=title))
 
 
 def _render_dashboard_charts(worksheet: Worksheet, charts: dict[str, Any],
@@ -1641,6 +1694,7 @@ def _render_dashboard_charts(worksheet: Worksheet, charts: dict[str, Any],
 
     ranges = _chart_ranges(charts, window)
     bindings = applied_year_bindings(charts, results, window) or {}
+    runtime_category = runtime_category_binding(charts, results, window)
     formats = charts["number_formats"]
     axes = charts["axis_presentation"]
     label_text = _axis_label_text(axes["label_font_size"])
@@ -1693,25 +1747,28 @@ def _render_dashboard_charts(worksheet: Worksheet, charts: dict[str, Any],
                 x=float(area["x"]), y=float(area["y"]),
                 w=float(area["w"]), h=float(area["h"])))
 
-        # TWO PATHS, AND ORDINARY RANGES TAKE THE ACCEPTED ONE. A chart whose
-        # block declares no applied-year binding is built exactly as every
-        # accepted chart in this workbook has been since P8-3 proved them on
-        # Windows: openpyxl's own Series factory over a range string, and
-        # `set_categories` for the category range. Only a chart plotting the
-        # applied-year NAMES is assembled by hand, because that factory parses
-        # its argument as a cell range and a name is not one.
-        categories = reference(str(spec["categories"]))
+        # EVERY CATEGORY IS A LITERAL RANGE, AND EVERY ONE GOES THROUGH THE
+        # ACCEPTED PATH. `set_categories` is what every accepted chart in this
+        # workbook has used since P8-3 proved them on Windows. A chart whose
+        # block declares an applied-year binding carries the FIRST reserved row
+        # here and is widened at runtime by the presentation owner; the rest
+        # carry their whole block, as they always have. Only a VALUE series over
+        # an applied-year NAME is assembled by hand, because openpyxl's factory
+        # parses its argument as a cell range and a name is not one.
+        if bound:
+            categories = str(runtime_category["built_range"]).replace("!", "'!", 1)
+            categories = f"'{categories}"
+        else:
+            categories = reference(str(spec["categories"]))
         for series in spec["series"]:
             if bound:
-                item = _chart_series(reference(str(series["key"])), str(series["name"]),
-                                     categories)
+                item = _chart_series(reference(str(series["key"])), str(series["name"]))
             else:
                 item = Series(reference(str(series["key"])), title=str(series["name"]))
             if str(spec["kind"]) == "line":
                 item.smooth = False
             chart.series.append(item)
-        if not bound:
-            chart.set_categories(categories)
+        chart.set_categories(categories)
 
         # A LEGEND EARNS ITS SPACE OR IT GOES. One series needs no key.
         if len(spec["series"]) < 2:

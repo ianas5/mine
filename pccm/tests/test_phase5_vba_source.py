@@ -392,7 +392,12 @@ PHASE8_MODULES = ("modResultsState",)
 # P10-2A, NAMED ON THE SAME TERMS PHASES 6, 7 AND 8 WERE. modProtection is
 # hardening, not numerics: naming it here relaxes nothing about Phase 5, and a
 # further Phase-5 module still cannot appear.
-PHASE10_MODULES = ("modProtection", "modReset", "modRepair")
+PHASE10_MODULES = ("modProtection", "modReset", "modRepair",
+                   # The Dashboard chart presentation owner, admitted by name on
+                   # the same terms as every module after Phase 5: it binds the
+                   # two year charts' category axes at runtime and computes
+                   # nothing. The Phase-5 half of the equality is unchanged.
+                   "modChartPresentation")
 """Phase-7 hand-written source modules, named on the same terms as Phase 6's.
 
 The equality below is about PHASE 5: a further Phase-5 module still cannot

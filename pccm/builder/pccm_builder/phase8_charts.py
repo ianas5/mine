@@ -32,6 +32,7 @@ from .artifact_io import write_lf_artifact
 from .workbook_builder import (
     TORNADO_ELIGIBILITY_FIELD as _TORNADO_ELIGIBILITY_FIELD,
     applied_year_bindings as _applied_year_bindings,
+    runtime_category_binding as _runtime_category_binding,
 )
 from .spec_loader import WorkbookSpec
 
@@ -66,7 +67,8 @@ AUTHORITIES = {
 
 
 def _bridge_blocks(charts: dict[str, Any], window: int,
-                   bindings: dict[str, dict[str, str]] | None) -> dict[str, Any]:
+                   bindings: dict[str, dict[str, str]] | None,
+                   runtime: dict[str, Any] | None = None) -> dict[str, Any]:
     """The four blocks, plus the two rows that mark where the bridge begins."""
     bridge = charts["bridge"]
     sheet = str(charts["bridge_sheet"])
@@ -109,7 +111,8 @@ def _bridge_blocks(charts: dict[str, Any], window: int,
                          # WRITES; the name is what a chart READS.
                          "applied_binding": (
                              dict(bindings[str(column["key"])])
-                             if (name == "annual" and bindings) else None)}
+                             if (name == "annual" and bindings
+                                 and str(column["key"]) in bindings) else None)}
                         for column in block["columns"]],
         }
     if bindings:
@@ -119,6 +122,11 @@ def _bridge_blocks(charts: dict[str, Any], window: int,
             "extent_cell": next(iter(bindings.values()))["extent_cell"],
             "window_rows": int(window),
         }
+        if runtime is not None:
+            # THE COLUMN NO NAME CUTS: bound at runtime from a range instead,
+            # because Excel returns a named category blank.
+            out["annual"]["applied_binding"]["runtime_category"] = runtime["key"]
+            out["annual"]["runtime_category"] = dict(runtime)
     status = bridge["status"]
     out["status"] = {
         "sheet": sheet,
@@ -146,7 +154,8 @@ def build_phase8_charts_inspection(spec: WorkbookSpec, window: int,
             "to project")
 
     bindings = _applied_year_bindings(charts, shell["results"], window)
-    blocks = _bridge_blocks(charts, window, bindings)
+    runtime = _runtime_category_binding(charts, shell["results"], window)
+    blocks = _bridge_blocks(charts, window, bindings, runtime)
     bridge = charts["bridge"]
     # WHERE THE WHOLE BRIDGE STARTS. A reader - or a control asking what lives
     # above the chart layer and what belongs to it - needs the boundary, not
@@ -171,11 +180,25 @@ def build_phase8_charts_inspection(spec: WorkbookSpec, window: int,
         def bound(key: str) -> dict[str, Any]:
             column = columns[key]
             binding = column.get("applied_binding")
+            runtime_here = block.get("runtime_category")
+            if runtime_here and key == runtime_here["key"]:
+                # THE RUNTIME-BOUND CATEGORY. What the workbook is BUILT with is
+                # the first reserved row; the presentation owner widens it to
+                # the published year count when the workbook opens, an annual
+                # run publishes or a reset clears.
+                return {
+                    "key": key,
+                    "range": runtime_here["built_range"],
+                    "window_range": column["range"],
+                    "binding": None,
+                    "runtime_binding": runtime_here["window_name"],
+                }
             return {
                 "key": key,
                 "range": binding["reference"] if binding else column["range"],
                 "window_range": column["range"],
                 "binding": binding["name"] if binding else None,
+                "runtime_binding": None,
             }
 
         projected.append({
@@ -397,6 +420,7 @@ def validate_phase8_charts_inspection(inspection: dict[str, Any]) -> None:
         # left-hand plot this correction exists to remove - and look fine.
         block = inspection["bridge"][chart["source_block"]]
         binding = block.get("applied_binding")
+        runtime = block.get("runtime_category")
         for entry in [chart["categories"]] + list(chart["series"]):
             column = next(c for c in block["columns"] if c["key"] == entry["key"])
             if entry["window_range"] != column["range"]:
@@ -404,6 +428,29 @@ def validate_phase8_charts_inspection(inspection: dict[str, Any]) -> None:
                     f"{INSPECTION_FILENAME}: chart {key!r} says {entry['key']!r} "
                     f"is written over {entry['window_range']}, the block says "
                     f"{column['range']}")
+            # THE RUNTIME-BOUND CATEGORY. It carries no cut name - Excel returns
+            # one blank - and is BUILT on the first reserved row, which the
+            # presentation owner widens. A chart built on the whole window here
+            # would show every reserved slot before that owner ever ran.
+            if runtime and entry["key"] == runtime["key"]:
+                if entry is not chart["categories"]:
+                    raise ValueError(
+                        f"{INSPECTION_FILENAME}: chart {key!r} plots the runtime "
+                        f"category column {entry['key']!r} as a series")
+                if entry["binding"] is not None:
+                    raise ValueError(
+                        f"{INSPECTION_FILENAME}: chart {key!r} binds its category "
+                        "through a name; Excel returns a named category blank")
+                if entry["range"] != runtime["built_range"]:
+                    raise ValueError(
+                        f"{INSPECTION_FILENAME}: chart {key!r} is built on "
+                        f"{entry['range']}, not the first reserved row "
+                        f"{runtime['built_range']}")
+                if entry["runtime_binding"] != runtime["window_name"]:
+                    raise ValueError(
+                        f"{INSPECTION_FILENAME}: chart {key!r} names no runtime "
+                        "category window")
+                continue
             if binding:
                 bound = column["applied_binding"]
                 if not bound or entry["binding"] != bound["name"]:
@@ -426,6 +473,10 @@ def validate_phase8_charts_inspection(inspection: dict[str, Any]) -> None:
                     raise ValueError(
                         f"{INSPECTION_FILENAME}: chart {key!r} reads {entry['range']} "
                         f"for {entry['key']!r}, which is not the block's column")
+                if entry["runtime_binding"] is not None:
+                    raise ValueError(
+                        f"{INSPECTION_FILENAME}: chart {key!r} names a runtime binding "
+                        f"for {entry['key']!r}, which is an ordinary range")
         # A VALUE-AXIS SCALE IS A STEP AND NOTHING ELSE. A declared minimum or
         # maximum would let the presentation layer hide a published value: this
         # workbook's tornado ranks by |rho| and plots SIGNED rho, so a minimum
@@ -485,6 +536,31 @@ def validate_phase8_charts_inspection(inspection: dict[str, Any]) -> None:
                         f"{INSPECTION_FILENAME}: chart {key!r} plot area runs past "
                         f"the chart edge ({start}+{extent} = "
                         f"{area[start] + area[extent]})")
+
+    runtime = inspection["bridge"]["annual"].get("runtime_category")
+    if runtime is not None:
+        annual = inspection["bridge"]["annual"]
+        column = next(c for c in annual["columns"] if c["key"] == runtime["key"])
+        if column.get("applied_binding") is not None:
+            raise ValueError(
+                f"{INSPECTION_FILENAME}: the runtime category column "
+                f"{runtime['key']!r} also carries a cut name")
+        if runtime["window_formula"] != column["range"]:
+            raise ValueError(
+                f"{INSPECTION_FILENAME}: the runtime category window is "
+                f"{runtime['window_formula']}, not the column's {column['range']}")
+        # ONE YEAR-COUNT AUTHORITY: the name the presentation owner reads points
+        # at the same cell the bridge guard cuts at.
+        if runtime["extent_formula"] != annual["applied_binding"]["extent_cell"]:
+            raise ValueError(
+                f"{INSPECTION_FILENAME}: the runtime year count reads "
+                f"{runtime['extent_formula']}, not the block's extent cell "
+                f"{annual['applied_binding']['extent_cell']}")
+        first = runtime["built_range"].rsplit("$", 1)[-1].split(":", 1)[0]
+        if int(first) != int(annual["first_row"]):
+            raise ValueError(
+                f"{INSPECTION_FILENAME}: the charts are built on row {first}, not the "
+                f"block's first row {annual['first_row']}")
 
     for name, block in inspection["bridge"].items():
         if not isinstance(block, dict):

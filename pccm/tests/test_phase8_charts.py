@@ -638,11 +638,33 @@ def test_10_no_vba_and_no_new_state_algorithm_arrived_with_the_charts() -> None:
     now DECLARATION rather than prohibition - and it is stricter, because a
     declared file must also be purely additive."""
     _declared_production_changes(_git, P82_ACCEPTANCE)
+    # RESTATED AT THE FINAL-DELIVERY CHART POLISH, AND THE CLAIM IS THE SAME
+    # ONE. P8-3 added no VBA, and no module has learned any chart's identity
+    # since. What the workbook now has is ONE declared presentation owner,
+    # added under its own authorisation after Windows proved a chart category
+    # cannot be bound from the file: it names no chart, no series and no
+    # histogram or tornado, and every OTHER module is held to the letter of the
+    # original control.
+    presentation = "modChartPresentation.bas"
     for module in sorted(SRC.glob("*.bas")):
         code = "\n".join(line for line in module.read_text(encoding="utf-8").splitlines()
                          if not line.lstrip().startswith("'"))
-        for word in ("Chart", "Histogram", "Tornado", "SCurve"):
+        words = ("Chart", "Histogram", "Tornado", "SCurve")
+        if module.name == presentation:
+            for word in ("Histogram", "Tornado", "SCurve"):
+                assert word not in code, f"{module.name} names {word}"
+            continue
+        # THE THREE OWNERS THAT REACH A PRESENTATION BOUNDARY call that owner by
+        # name and know nothing else about a chart: no histogram, no tornado, no
+        # s-curve, and no chart word but the call itself.
+        if module.name in ("modReset.bas", "modSimAnnualRun.bas"):
+            call = "modChartPresentation.ChartPresentationApplyCategories(chartDetail)"
+            assert code.count(call) == 1, module.name
+            code = code.replace(call, "").replace("Dim chartDetail As String", "")
+            code = code.replace("chartDetail = vbNullString", "")
+        for word in words:
             assert word not in code, f"{module.name} names {word}"
+    assert (SRC / presentation).is_file(), "the declared presentation owner is missing"
 
 
 def test_11_the_accepted_p8_1_and_p8_2_geometry_did_not_move() -> None:

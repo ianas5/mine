@@ -2000,9 +2000,27 @@ def test_46_every_production_change_is_declared_and_is_only_plumbing() -> None:
                                         strip_runtime_lock_state)
     phase10_r4 = {f"pccm/src/vba/{name}" for name in DECLARED_RUNTIME_LOCK_STATE_CHANGES}
     assert phase10_r4 == {"pccm/src/vba/modWorkbook.bas"}, phase10_r4
+    # THE FINAL-DELIVERY CHART POLISH, DECLARED THE SAME WAY: the presentation
+    # owner and the three modules that call it at a presentation boundary. The
+    # reversal below proves each carries that layer and nothing else.
+    import sys as _sys
+    _sys.path.insert(0, str(PCCM_ROOT / "tests"))
+    from chart_polish_declaration import DECLARED_CHART_POLISH_CHANGES, strip_chart_polish
+    chart_polish = {f"pccm/{name}" for name in DECLARED_CHART_POLISH_CHANGES
+                    if name.startswith("src/vba/")} | {"pccm/src/vba/modChartPresentation.bas"}
+    for path in sorted(set(modified) & chart_polish):
+        name = path[len("pccm/"):]
+        if name == "src/vba/modChartPresentation.bas":
+            continue  # a new file: it reverses to nothing because it did not exist
+        current = strip_chart_polish(name, (PCCM_ROOT / name).read_text(encoding="utf-8"))
+        accepted = strip_chart_polish(name, subprocess.run(
+            ["git", "show", f"{head}:{path}"], cwd=REPO_ROOT, check=True,
+            stdout=subprocess.PIPE).stdout.decode("utf-8"))
+        assert current == accepted, f"{path} moved outside the declared chart polish"
     undeclared = [p for p in modified
                   if p not in DECLARED_PHASE9_CORRECTIONS and p not in phase8
-                  and p not in phase10_rp and p not in phase10_r4]
+                  and p not in phase10_rp and p not in phase10_r4
+                  and p not in chart_polish]
     assert not undeclared, f"production changed without being declared: {undeclared}"
     for path in sorted(phase10_r4):
         name = Path(path).name

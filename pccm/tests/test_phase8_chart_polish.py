@@ -104,6 +104,11 @@ def _part_for(title: str) -> str:
     raise AssertionError(f"no chart part carries the title {title!r}")
 
 
+def _chart_module() -> str:
+    """The Dashboard chart presentation owner's source."""
+    return (PCCM_ROOT / "src" / "vba" / "modChartPresentation.bas").read_text(encoding="utf-8")
+
+
 def _window() -> int:
     structure = load_structure_contract(SPEC / "structure_contract.yaml")
     return int(structure.limits.max_generated_year_columns)
@@ -143,56 +148,6 @@ def _rows_selected(formula: str, year_count) -> tuple[int, int]:
 # ===========================================================================
 # 1. CUMULATIVE COST PROFILE
 # ===========================================================================
-def test_01_the_s_curve_is_titled_cumulative_cost_profile_and_is_still_a_line_chart() -> None:
-    spec = _by_key()["s_curve"]
-    assert spec["title"] == "Cumulative Cost Profile"
-    assert spec["kind"] == "line"
-    chart = _chart_objects()["Cumulative Cost Profile"]
-    assert type(chart).__name__ == "LineChart"
-    for series in chart.series:
-        assert series.smooth is False or series.smooth is None
-    # THE SAME SERIES AND CATEGORY AS BEFORE, by key and by name.
-    was = {c["key"]: c for c in _previous_charts()["charts"]}["s_curve"]
-    assert was["title"] == "Cumulative Cost"
-    assert [(s["key"], s["name"]) for s in spec["series"]] == [
-        (s["key"], s["name"]) for s in was["series"]]
-    assert spec["categories"]["key"] == was["categories"] == "calendar_year"
-    assert spec["source_block"] == was["source"] == "annual"
-    assert spec["state_source"] == was["state_source"]
-
-
-def test_02_the_year_charts_plot_the_applied_years_through_the_bound_names() -> None:
-    """THE CORRECTION ITSELF. Categories and every value series of both year
-    charts read the applied-year names, never the 200-row window - in the
-    projection and in the chart parts the workbook actually carries."""
-    sheet = _projection()["bridge_sheet"]
-    block = _projection()["bridge"]["annual"]
-    binding = block["applied_binding"]
-    assert binding["name_prefix"] == "chartAnnual" and binding["extent"] == "year_count"
-    assert binding["window_rows"] == _window() == block["row_count"]
-    names = {column["key"]: column["applied_binding"] for column in block["columns"]}
-    for key in YEAR_CHARTS:
-        spec = _by_key()[key]
-        chart = _chart_objects()[spec["title"]]
-        for entry in [spec["categories"]] + spec["series"]:
-            bound = names[entry["key"]]
-            assert bound["name"] == f"chartAnnual_{entry['key']}"
-            assert entry["binding"] == bound["name"]
-            assert entry["range"] == f"{sheet}!{bound['name']}"
-            assert entry["window_range"] == bound["window_range"]
-            assert entry["range"] != entry["window_range"]
-            # A CHART BOUND TO THE RESERVED TAIL WOULD END AT ROW 478.
-            assert re.search(r"\$\d+:\$[A-Z]+\$\d+$", entry["range"]) is None
-        assert [s.val.numRef.f for s in chart.series] == [
-            f"'{sheet}'!chartAnnual_{s['key']}" for s in spec["series"]]
-        for series in chart.series:
-            assert series.cat.numRef.f == f"'{sheet}'!chartAnnual_calendar_year"
-        part = _part_for(spec["title"])
-        assert f"<f>'{sheet}'!chartAnnual_calendar_year</f>" in part
-        assert re.search(r"<f>'" + sheet + r"'!\$[A-Z]+\$\d+:\$[A-Z]+\$\d+</f>", part) is None, (
-            "a year chart still carries a cell-range reference")
-
-
 def _accepted_series_parts(title: str) -> list[tuple[str, str]]:
     """The same, from a workbook built by the ACCEPTED pre-polish builder at
     ebeae65 - the tree whose literal-range charts Windows proved at P8-3."""
@@ -244,43 +199,95 @@ def _series_parts(title: str) -> list[tuple[str, str]]:
     return out
 
 
-def test_02b_the_two_category_paths_land_where_they_should() -> None:
-    """WINDOWS, ON THE WORKBOOK BUILT AT 10f5e62: the category argument came
-    back blank on ALL FOUR charts - including the histogram and the tornado,
-    whose category markup had not moved one byte since ebeae65 and which Excel
-    had accepted before. The only thing those two charts' workbook gained at
-    10f5e62 was the `<c:numCache>` given to every NAMED reference: a cache
-    declaring a point it did not carry. It is withdrawn, and this control holds
-    the two paths apart.
+def test_01_the_s_curve_is_titled_cumulative_cost_profile_and_is_still_a_line_chart() -> None:
+    spec = _by_key()["s_curve"]
+    assert spec["title"] == "Cumulative Cost Profile"
+    assert spec["kind"] == "line"
+    chart = _chart_objects()["Cumulative Cost Profile"]
+    assert type(chart).__name__ == "LineChart"
+    for series in chart.series:
+        assert series.smooth is False or series.smooth is None
+    # THE SAME SERIES AND CATEGORY AS BEFORE, by key and by name.
+    was = {c["key"]: c for c in _previous_charts()["charts"]}["s_curve"]
+    assert was["title"] == "Cumulative Cost"
+    assert [(s["key"], s["name"]) for s in spec["series"]] == [
+        (s["key"], s["name"]) for s in was["series"]]
+    assert spec["categories"]["key"] == was["categories"] == "calendar_year"
+    assert spec["source_block"] == was["source"] == "annual"
+    assert spec["state_source"] == was["state_source"]
 
-    A CHART OVER ORDINARY RANGES is built by openpyxl's own Series factory and
-    `set_categories`, the path every accepted chart has taken since P8-3 proved
-    them on Windows, and its markup is required BYTE-IDENTICAL to the accepted
-    build. A chart over the applied-year NAMES is the only one assembled by
-    hand, because that factory parses its argument as a cell range."""
+
+def test_02_the_year_charts_plot_the_applied_years_through_the_bound_value_names() -> None:
+    """THE VALUE HALF OF THE CORRECTION, WHICH WINDOWS HAS TWICE PROVED. Every
+    value series of both year charts reads its applied-year name, never the
+    200-row window - in the projection and in the chart parts the workbook
+    actually carries. The category half is test_02b's: it is bound at runtime,
+    because a named category comes back blank."""
     sheet = _projection()["bridge_sheet"]
+    block = _projection()["bridge"]["annual"]
+    binding = block["applied_binding"]
+    assert binding["name_prefix"] == "chartAnnual" and binding["extent"] == "year_count"
+    assert binding["window_rows"] == _window() == block["row_count"]
+    names = {column["key"]: column["applied_binding"] for column in block["columns"]
+             if column["applied_binding"]}
+    for key in YEAR_CHARTS:
+        spec = _by_key()[key]
+        chart = _chart_objects()[spec["title"]]
+        for entry in spec["series"]:
+            bound = names[entry["key"]]
+            assert bound["name"] == f"chartAnnual_{entry['key']}"
+            assert entry["binding"] == bound["name"]
+            assert entry["range"] == f"{sheet}!{bound['name']}"
+            assert entry["window_range"] == bound["window_range"]
+            assert entry["range"] != entry["window_range"]
+            # A SERIES BOUND TO THE RESERVED TAIL WOULD END AT ROW 478.
+            assert re.search(r"\$\d+:\$[A-Z]+\$\d+$", entry["range"]) is None
+        assert [s.val.numRef.f for s in chart.series] == [
+            f"'{sheet}'!chartAnnual_{s['key']}" for s in spec["series"]]
+
+def test_02b_every_category_is_a_literal_range_and_the_year_charts_are_built_on_one_row() -> None:
+    """THREE WINDOWS RUNS SETTLED THIS. A defined name in a series' CATEGORY
+    slot comes back blank whatever the markup around it - first with the two
+    year charts alone, then, after a cache was added to every named reference,
+    with all four - and the axis is numbered 1, 2, 3. Excel binds a category
+    from a RANGE, at runtime, through Series.XValues, which Windows proved
+    directly by assigning one and reading the SERIES formula back.
+
+    So no chart is BUILT on a name any more. The two year charts are built on
+    the FIRST reserved annual row - a literal range Excel resolves while it
+    reads the chart part, and the right picture for a workbook with nothing
+    published - and modChartPresentation widens that binding to the published
+    year count. The histogram and the tornado keep their whole block, and their
+    markup is required byte-identical to a build from the ebeae65 worktree.
+
+    THE VALUE NAMES STAY. Windows has twice proved those survive."""
+    runtime = _projection()["bridge"]["annual"]["runtime_category"]
     for key in YEAR_CHARTS:
         spec = _by_key()[key]
         for category, value in _series_parts(spec["title"]):
-            for slot, source in (("category", category), ("value", value)):
-                assert "<numRef>" in source, (key, slot)
-                # NO CACHE ANYWHERE. It is what cost the literal charts their
-                # categories, and a reference carries its formula alone.
-                assert "<numCache>" not in source, (key, slot, "the withdrawn cache is back")
-                formula = re.search(r"<f>(.*?)</f>", source, re.S).group(1)
-                # AND IT IS A NAME, not a range: no reserved-window tail can
-                # come back through a reference that carries cells.
-                assert re.search(r"\$[A-Z]+\$\d+", formula) is None, (key, slot, formula)
-            assert re.search(r"<f>(.*?)</f>", category, re.S).group(1) == \
-                f"'{sheet}'!chartAnnual_calendar_year", (key, category)
-            assert "<numLit>" not in category and "<strLit>" not in category, key
+            # THE CATEGORY: a literal cell, no name, no cache.
+            formula = re.search(r"<f>(.*?)</f>", category, re.S).group(1)
+            assert formula == "'Results'!$D$279", (key, formula)
+            assert "chartAnnual" not in category, (key, "the failed named category is back")
+            assert "<numCache>" not in category, (key, "the withdrawn cache is back")
+            # THE VALUE: the applied-year name, unchanged and uncached.
+            value_formula = re.search(r"<f>(.*?)</f>", value, re.S).group(1)
+            assert value_formula.startswith("'Results'!chartAnnual_"), (key, value_formula)
+            assert "<numCache>" not in value, (key, "the withdrawn cache is back")
+            assert re.search(r"\$[A-Z]+\$\d+", value_formula) is None, (key, value_formula)
+        assert spec["categories"]["range"] == runtime["built_range"]
+        assert spec["categories"]["binding"] is None
+        assert spec["categories"]["runtime_binding"] == runtime["window_name"]
+    # NO 200-ROW VISIBLE CATEGORY BINDING ANYWHERE IN THE FILE.
+    for part in _chart_parts():
+        assert "$D$478" not in part, "a chart is built on the whole reserved window"
     # THE CATEGORY IS NEVER ABSENT AND NEVER EMPTY - the shape Excel left behind.
     for key in YEAR_CHARTS:
         part = _part_for(_by_key()[key]["title"])
         assert "<cat />" not in part and "<cat/>" not in part, key
         assert part.count("<ser>") == part.count("<cat>") == len(_by_key()[key]["series"]), key
     # THE TWO RANGE-BOUND CHARTS: byte-identical to the accepted build, series
-    # for series - the markup P8-3 proved, recovered exactly.
+    # for series - the markup P8-3 proved, untouched by any of this.
     for key in ("histogram", "tornado"):
         title = _by_key()[key]["title"]
         assert _series_parts(title) == _accepted_series_parts(title), (
@@ -289,98 +296,121 @@ def test_02b_the_two_category_paths_land_where_they_should() -> None:
             for source in (category, value):
                 assert "<numCache>" not in source, (key, "a plain range gained a cache")
                 assert re.search(r"<f>'[A-Za-z_]+'!\$[A-Z]+\$\d+:\$[A-Z]+\$\d+</f>", source), (key, source)
-    # AND THE BUILDER TAKES THE ACCEPTED CALL PATH FOR THEM: the factory and
-    # `set_categories`, reached only when the block declares no binding.
+        assert _by_key()[key]["categories"]["runtime_binding"] is None, key
+    # AND EVERY CATEGORY GOES THROUGH THE ACCEPTED CALL PATH.
     builder = (PCCM_ROOT / "builder" / "pccm_builder" / "workbook_builder.py").read_text(encoding="utf-8")
-    assert "item = Series(reference(str(series[\"key\"])), title=str(series[\"name\"]))" in builder
-    assert "if not bound:\n            chart.set_categories(categories)" in builder
-    assert "_chart_series(" in builder and "if bound:" in builder
+    assert builder.count("chart.set_categories(categories)") == 1
+    assert "def _chart_series(values: str, title: str):" in builder
+    assert "item.cat = " not in builder, "a category is assembled by hand again"
 
-def test_03_the_names_are_workbook_scoped_and_cut_at_the_one_year_count_cell() -> None:
-    """ONE YEAR-COUNT AUTHORITY, AND WORKBOOK SCOPE. Every name's formula is
-    its column's window range cut at the Results annual state cell the bridge
-    guard already reads, and the guard's own formula at the first row names the
-    same cell. The names are defined at WORKBOOK level - the scope a chart
-    source is resolved in, and Microsoft's own dynamic-chart pattern - after
-    Windows found the category argument of both year charts blank while they
-    were scoped to the Results worksheet. The chart still references them
-    through the sheet, `Results!<name>`, and never through a file name, so
-    nothing in the reference changes when Stage A is saved as Stage B or the
-    distribution copy is saved under another name."""
+def test_03_the_names_are_workbook_scoped_and_read_the_one_year_count_cell() -> None:
+    """ONE YEAR-COUNT AUTHORITY, AND WORKBOOK SCOPE. Every applied-year VALUE
+    name cuts its column at the Results annual state cell the bridge guard
+    already reads, and the two names the presentation owner reads point at the
+    same column window and the same cell. The names are defined at WORKBOOK
+    level and referenced through the sheet, `Results!<name>`, never through a
+    file name, so nothing in a reference changes when Stage A is saved as
+    Stage B or the distribution copy is saved under another name.
+
+    AND THE FAILED CATEGORY NAME IS GONE. The calendar-year column carries no
+    cut name at all now; it is bound at runtime from a range."""
     results = _workbook()[_projection()["bridge_sheet"]]
     block = _projection()["bridge"]["annual"]
     binding = block["applied_binding"]
+    runtime = block["runtime_category"]
     shell = _shell()
-    expected_extent = ("Results!" + _annual_extent_cell(shell["results"], "year_count"))
+    expected_extent = "Results!" + _annual_extent_cell(shell["results"], "year_count")
     assert binding["extent_cell"] == expected_extent
+    assert runtime["extent_formula"] == expected_extent, "a second year-count authority"
+    assert binding["runtime_category"] == runtime["key"] == "calendar_year"
     # THE GUARD READS THE SAME CELL: `1>$D$56` at the first bridge row.
     first = int(block["first_row"])
     guard_cell = expected_extent.split("!", 1)[1]
     for column in block["columns"]:
         formula = results[f"{column['column']}{first}"].value
         assert f",1>{guard_cell})" in formula, (column["key"], formula)
-    # THE NAMES, AT WORKBOOK LEVEL, EXACTLY AS PROJECTED - and none of them
-    # left behind on the sheet, where a sheet-qualified reference would find
-    # the local one first.
-    declared = {column["applied_binding"]["name"] for column in block["columns"]}
+    # THE NAMES, AT WORKBOOK LEVEL, EXACTLY AS PROJECTED - and none of them left
+    # behind on the sheet, where a sheet-qualified reference would find the
+    # local one first.
+    named = {column["key"]: column["applied_binding"] for column in block["columns"]
+             if column["applied_binding"]}
+    assert runtime["key"] not in named, "the failed category name is still written"
     in_book = {name: entry.attr_text for name, entry in _workbook().defined_names.items()}
-    assert declared <= set(in_book), sorted(declared - set(in_book))
     assert not any(name.startswith("chartAnnual") for name in results.defined_names)
-    for column in block["columns"]:
-        bound = column["applied_binding"]
+    for key, bound in named.items():
         assert in_book[bound["name"]] == bound["formula"]
         assert bound["scope"] == "workbook"
-        # THE REFERENCE NAMES THE SHEET AND NEVER A FILE: SaveAs must not move it.
         assert bound["reference"] == f"{_projection()['bridge_sheet']}!{bound['name']}"
         assert "." not in bound["reference"] and ".xls" not in bound["reference"]
-        assert bound["window_range"] == column["range"]
-        assert bound["extent_cell"] == expected_extent
         assert _NAME_FORMULA.fullmatch(bound["formula"]), bound["formula"]
-    # AND THE ACCEPTED CONTRACT-DERIVED NAMES ARE UNTOUCHED BESIDE THEM: the
-    # five chart names are the only addition, and the builder's own structural
-    # verification derives them from the manifest rather than listing them.
-    accepted_names = set(yaml.safe_load(subprocess.run(
-        ["git", "show", f"{PREVIOUS_HEAD}:pccm/build/stage_b_manifest.json"],
-        cwd=PCCM_ROOT.parent, stdout=subprocess.PIPE).stdout.decode() or "{}") or {})
-    assert set(in_book) - declared == set(in_book) - set(declared)
+    # THE TWO THE PRESENTATION OWNER READS: the reserved column window, and the
+    # Years Covered cell - neither cut, neither computed.
+    assert in_book[runtime["window_name"]] == runtime["window_formula"] == "Results!$D$279:$D$478"
+    assert in_book[runtime["extent_name"]] == runtime["extent_formula"]
+    assert runtime["window_formula"] == next(
+        c["range"] for c in block["columns"] if c["key"] == runtime["key"])
+    assert "INDEX" not in in_book[runtime["window_name"]]
+    assert "INDEX" not in in_book[runtime["extent_name"]]
+    # AND THE BUILDER'S OWN STRUCTURAL VERIFICATION DERIVES THEM FROM THE
+    # MANIFEST rather than listing them.
     verify = (PCCM_ROOT / "builder" / "pccm_builder" / "verify.py").read_text(encoding="utf-8")
     assert "chart_names = set(_applied_year_chart_names(spec, structure))" in verify
     assert "not (found_names - expected_names - chart_names)" in verify
     assert "and not (expected_names - found_names)" in verify
-    assert "from .workbook_builder import applied_year_bindings" in verify
     assert "chartAnnual" not in verify, "the verification lists a name it should derive"
-    # THE BUILDER AND THE PROJECTION AGREE, name for name.
-    live = applied_year_bindings(shell["charts"], shell["results"], _window())
-    assert {k: v for k, v in live.items()} == {
-        column["key"]: column["applied_binding"] for column in block["columns"]}
+
+# THE PRESENTATION OWNER'S OWN ARITHMETIC, in Python: what
+# modChartPresentation.CategoryRange resolves for one reported year count.
+def _runtime_rows(year_count, window: int) -> int:
+    if isinstance(year_count, bool) or not isinstance(year_count, (int, float)):
+        return 1
+    if float(year_count) < 1:
+        return 1
+    if float(year_count) >= float(window):
+        return window
+    return int(year_count)
 
 
 @pytest.mark.parametrize("year_count,expected_rows", [
     (1, 1), (3, 3), (7, 7), (10, 10), (30, 30), (75, 75), (200, 200),
-    # OUTSIDE THE WINDOW OR NOT A COUNT: the names stay inside the block and
-    # never below one row, whose value is NA() and whose category is blank.
+    # OUTSIDE THE WINDOW OR NOT A COUNT: the binding stays inside the reserved
+    # column and never below one row, whose label the bridge answers blank and
+    # whose value it answers NA(). No year is invented and no point is created.
     (250, 200), (0, 1), ("", 1), ("NOT PRODUCED", 1),
 ])
-def test_04_every_applied_duration_selects_exactly_its_own_rows(year_count, expected_rows) -> None:
+def test_04_every_applied_duration_binds_exactly_its_own_category_rows(year_count, expected_rows) -> None:
     """MULTIPLE DURATIONS, NOT THE DEMO'S. For each stamped year count the
-    names select first_row .. first_row + n - 1 of the block, and nothing of
-    the reserved tail beyond; the bridge guard turns every value past n to
-    NA() and every category to blank, so the two agree row for row."""
+    presentation owner resizes the reserved calendar-year column to exactly
+    that many rows, starting at the block's first row and never past its last,
+    and the bridge guard turns every value beyond it to NA() and every label to
+    blank - so the binding and the data agree row for row.
+
+    THE ARITHMETIC IS READ OFF THE MODULE, not assumed: the bounds below are
+    the ones its own source states."""
     block = _projection()["bridge"]["annual"]
+    runtime = block["runtime_category"]
+    window = int(block["row_count"])
     first = int(block["first_row"])
+    rows = _runtime_rows(year_count, window)
+    assert rows == expected_rows, (year_count, rows)
+    assert first == int(runtime["first_row"])
+    assert first + rows - 1 <= int(runtime["last_row"])
+    # THE MODULE'S OWN BOUNDS, in its own words.
+    module = _chart_module()
+    assert "If CDbl(reported) >= 1 Then" in module
+    assert "If CDbl(reported) >= CDbl(reserved.Rows.Count) Then" in module
+    assert "years = reserved.Rows.Count" in module
+    assert "years = CLng(Int(CDbl(reported)))" in module
+    assert "years = 1" in module and "If IsNumeric(reported) Then" in module
+    assert "Set categories = reserved.Resize(years, 1)" in module
+    # AND THE GUARD BEYOND THE SELECTION SAYS THE SAME THING.
     results = _workbook()[_projection()["bridge_sheet"]]
-    guard_cell = block["applied_binding"]["extent_cell"].split("!", 1)[1]
-    for column in block["columns"]:
-        start, end = _rows_selected(column["applied_binding"]["formula"], year_count)
-        assert start == first
-        assert end - start + 1 == expected_rows, (column["key"], year_count)
-        assert end <= int(block["last_row"])
-        # THE FIRST ROW PAST THE SELECTION IS GUARDED OUT BY THE SAME COUNT.
-        if end < int(block["last_row"]) and isinstance(year_count, int) and 0 < year_count < 200:
-            beyond = results[f"{column['column']}{end + 1}"].value
+    guard_cell = runtime["extent_formula"].split("!", 1)[1]
+    if isinstance(year_count, int) and not isinstance(year_count, bool) and 0 < year_count < window:
+        for column in block["columns"]:
+            beyond = results[f"{column['column']}{first + rows}"].value
             assert f",{year_count + 1}>{guard_cell})" in beyond, beyond
             assert (',"",' in beyond) if column["absent"] == '""' else (",NA()," in beyond)
-
 
 def test_05_a_year_chart_bound_back_to_the_reserved_window_is_refused() -> None:
     """THE REGRESSION THIS CORRECTION FORBIDS: a year chart reading the whole
@@ -393,18 +423,30 @@ def test_05_a_year_chart_bound_back_to_the_reserved_window_is_refused() -> None:
     validate_phase8_charts_inspection(inspection)
     assert inspection == _projection()
     for key in YEAR_CHARTS:
-        for field in ("categories", "series"):
-            damaged = copy.deepcopy(inspection)
-            chart = next(c for c in damaged["charts"] if c["key"] == key)
-            entry = chart["categories"] if field == "categories" else chart["series"][0]
-            entry["range"] = entry["window_range"]
-            entry["binding"] = None
-            with pytest.raises(ValueError, match="applied-year name|whole reserved window|whole window"):
-                validate_phase8_charts_inspection(damaged)
+        # A VALUE SERIES BOUND BACK TO THE WHOLE WINDOW.
         damaged = copy.deepcopy(inspection)
         chart = next(c for c in damaged["charts"] if c["key"] == key)
         chart["series"][0]["range"] = chart["series"][0]["window_range"]
-        with pytest.raises(ValueError):
+        chart["series"][0]["binding"] = None
+        with pytest.raises(ValueError, match="applied-year name|whole reserved window|whole window"):
+            validate_phase8_charts_inspection(damaged)
+        # THE CATEGORY BUILT ON THE WHOLE WINDOW instead of the first row - the
+        # 200 crowded slots this correction exists to remove.
+        damaged = copy.deepcopy(inspection)
+        chart = next(c for c in damaged["charts"] if c["key"] == key)
+        chart["categories"]["range"] = chart["categories"]["window_range"]
+        with pytest.raises(ValueError, match="not the first reserved row"):
+            validate_phase8_charts_inspection(damaged)
+        # OR BOUND THROUGH A NAME AGAIN, which is what Excel returns blank.
+        damaged = copy.deepcopy(inspection)
+        chart = next(c for c in damaged["charts"] if c["key"] == key)
+        chart["categories"]["binding"] = "chartAnnual_calendar_year"
+        with pytest.raises(ValueError, match="Excel returns a named category blank"):
+            validate_phase8_charts_inspection(damaged)
+        # OR CUT AT A CELL THAT IS NOT THE ONE YEAR-COUNT AUTHORITY.
+        damaged = copy.deepcopy(inspection)
+        damaged["bridge"]["annual"]["runtime_category"]["extent_formula"] = "Results!$D$57"
+        with pytest.raises(ValueError, match="not the block's extent cell"):
             validate_phase8_charts_inspection(damaged)
     # A NAME THAT DOES NOT CUT AT THE EXTENT CELL, OR OUTSIDE THE WINDOW.
     for mutate in (
@@ -414,14 +456,19 @@ def test_05_a_year_chart_bound_back_to_the_reserved_window_is_refused() -> None:
         lambda b: b.__setitem__("extent_cell", "Results!$D$57"),
     ):
         damaged = copy.deepcopy(inspection)
-        mutate(damaged["bridge"]["annual"]["columns"][1]["applied_binding"])
+        plotted = {series["key"] for chart in damaged["charts"]
+                   if chart["source_block"] == "annual" for series in chart["series"]}
+        named = next(column for column in damaged["bridge"]["annual"]["columns"]
+                     if column["applied_binding"] and column["key"] in plotted)
+        mutate(named["applied_binding"])
         with pytest.raises(ValueError):
             validate_phase8_charts_inspection(damaged)
     # AND THE MANIFEST WITHOUT THE BINDING BUILDS WINDOW-BOUND CHARTS AGAIN,
     # which is exactly the shape the projection's own validator accepts as
     # "no binding declared" - so the binding's presence is pinned here.
     assert _shell()["charts"]["bridge"]["annual"]["applied_binding"] == {
-        "name_prefix": "chartAnnual", "extent": "year_count"}
+        "name_prefix": "chartAnnual", "extent": "year_count",
+        "runtime_category": "calendar_year"}
 
 
 def test_06_the_manifest_refuses_a_binding_it_cannot_resolve() -> None:
@@ -467,36 +514,39 @@ def _gate_lines() -> dict[str, str]:
 
 
 @pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
-def test_05b_the_windows_gate_reads_a_series_formula_and_refuses_the_defect() -> None:
+def test_05b_the_windows_gate_reads_the_live_binding_and_refuses_every_wrong_one() -> None:
     """EXECUTED. The gate's decision functions, lifted from the inspector and
-    driven over real SERIES formulas - including the three Windows returned at
-    a2da277, verbatim. A blank categories argument, the reserved window as a
-    cell range and a category source this workbook does not declare are each
-    refused by their own verdict; the bound shape is accepted in both spellings
-    Excel uses; and a comma inside a series name or inside a reference does not
-    shift the argument the gate reads."""
+    driven over real SERIES formulas - the blanks Excel returned at a2da277 and
+    again at 10f5e62 among them, and the bound shape Windows proved by
+    assigning XValues and reading the formula back.
+
+    THE YEAR CONTRACT IS A ROW RANGE NOW, not a name: first annual row through
+    the row the published count implies. One row when nothing is published, the
+    whole window only when the whole window is published, and refused at either
+    end when it is wrong. A defined name in the category slot - the mechanism
+    that failed three times - is refused like any other wrong source."""
     lines = _gate_lines()
-    for case in ("windows.a2da277.s-curve-nominal", "windows.a2da277.s-curve-pv",
-                 "windows.a2da277.cash-flow"):
+    for case in ("windows.blank.s-curve-nominal", "windows.blank.cash-flow"):
         assert lines[case].startswith("categories=<blank>|"), (case, lines[case])
         assert lines[case].endswith("|verdict=blank-categories"), (case, lines[case])
         assert "values=Results!chartAnnual_" in lines[case], case
-    for case in ("bound.plain", "bound.quoted", "parsing.comma-in-name",
-                 "parsing.comma-in-reference"):
+    for case in ("bound.ten-years", "bound.quoted", "bound.one-year",
+                 "bound.nothing-published", "bound.whole-window-published",
+                 "parsing.comma-in-name"):
         assert lines[case].endswith("|verdict=accepted"), (case, lines[case])
-        assert "chartAnnual_calendar_year" in lines[case].split("|")[0], case
-    for case in ("regression.window-range", "regression.short-range"):
-        assert lines[case].endswith("|verdict=cell-range"), (case, lines[case])
-    for case in ("regression.other-name", "regression.other-sheet"):
+    assert lines["regression.whole-window"].endswith("|verdict=wrong-last-row")
+    assert lines["regression.wrong-first"].endswith("|verdict=wrong-first-row")
+    assert lines["regression.wrong-last"].endswith("|verdict=wrong-last-row")
+    for case in ("regression.named-category", "regression.other-column",
+                 "regression.other-sheet"):
         assert lines[case].endswith("|verdict=wrong-source"), (case, lines[case])
     # AND THE SECOND CONTRACT: a fixed-population chart plots an ordinary
     # range, is refused when it comes back blank - as the histogram did at
-    # 10f5e62 - and is refused if the applied-year correction reaches it.
+    # 10f5e62 - and is refused if a name reaches it.
     for case in ("literal.histogram-accepted", "literal.tornado-accepted"):
         assert lines[case].endswith("|verdict=accepted"), (case, lines[case])
     assert lines["literal.windows.10f5e62"].endswith("|verdict=blank-categories")
     assert lines["literal.name-instead-of-range"].endswith("|verdict=not-a-range")
-
 
 def test_05c_the_windows_gate_reports_four_fields_per_series_and_fails_the_run() -> None:
     """THE INSPECTOR IS A GATE, NOT A REPORT. It prints the formula, the
@@ -509,12 +559,25 @@ def test_05c_the_windows_gate_reports_four_fields_per_series_and_fails_the_run()
         assert code.count(field) == 1, field
     assert "$script:YearCharts = @('Cumulative Cost Profile', 'Annual Cash Flow')" in code
     assert "$script:LiteralCharts = @('Total Cost Distribution', 'Top Drivers by Rank Correlation')" in code
-    assert "$script:CategoryName = 'chartAnnual_calendar_year'" in code
-    for reason in ("BLANK XValues/categories", "the whole reserved year window",
-                   "not Results!' + $script:CategoryName", "is not on the Dashboard at all",
+    runtime = _projection()["bridge"]["annual"]["runtime_category"]
+    assert f"$script:CategoryWindowName = '{runtime['window_name']}'" in code
+    assert f"$script:YearCountName = '{runtime['extent_name']}'" in code
+    for reason in ("BLANK XValues/categories", "is bound to the whole reserved year window",
+                   "not the first annual row", "published year(s)",
+                   "is not on the Dashboard at all",
                    "its categories are an ordinary cell range",
                    "more than the reserved year window holds"):
         assert reason in code, reason
+    # THE NAMES ARE READ FROM THE WORKBOOK, NOT FROM Results.Names: they are
+    # workbook-scoped, and looking only inside the sheet would report every one
+    # of them missing while they were all present.
+    assert "$names = $workbook.Names" in code
+    assert "$results.Names" not in code
+    # AND THE CONTRACT IT JUDGES AGAINST IS READ FROM THE WORKBOOK TOO - the
+    # window name's own range and the year-count name's own value.
+    assert "$script:CategoryFirstRow = [int]$windowRange.Row" in code
+    assert "$script:PublishedYears = [int]$parsed" in code
+    assert "chartAnnual_calendar_year" not in code, "the gate still wants the failed name"
     # THE BLANK CHECK IS NOT SCOPED TO THE YEAR CHARTS: every chart is held to
     # it, which is what the histogram and the tornado needed at 10f5e62.
     blank = code.index("has BLANK XValues/categories")
@@ -533,7 +596,135 @@ def test_05c_the_windows_gate_reports_four_fields_per_series_and_fails_the_run()
         assert f"'{titles[key]}'" in code, key
     block = _projection()["bridge"]["annual"]
     category = next(c for c in block["columns"] if c["key"] == "calendar_year")
-    assert category["applied_binding"]["name"] == "chartAnnual_calendar_year"
+    assert category["applied_binding"] is None, "the failed category name is back"
+
+
+# ===========================================================================
+# 1b. THE RUNTIME CATEGORY BINDING - THE PRESENTATION OWNER
+# ===========================================================================
+def test_06b_the_presentation_owner_is_declared_and_owns_only_the_binding() -> None:
+    """ONE NARROWLY-OWNED MODULE. The structure contract declares it, the
+    builder imports it from the same list every other module comes from, and it
+    computes nothing: no arithmetic on a published value, no state word, no
+    publication, no protection policy of its own, and no chart geometry."""
+    import yaml as _yaml
+    contract = _yaml.safe_load((SPEC / "structure_contract.yaml").read_text(encoding="utf-8"))
+    modules = next(section["modules"] for section in
+                   ([contract] + [v for v in contract.values() if isinstance(v, dict)])
+                   if isinstance(section, dict) and "modules" in section)
+    declared = {str(module["name"]): str(module["responsibility"]) for module in modules}
+    assert "modChartPresentation" in declared
+    responsibility = declared["modChartPresentation"]
+    assert "Computes nothing" in responsibility and "owns no year count" in responsibility
+    manifest = json.loads((BUILD / "stage_b_manifest.json").read_text(encoding="utf-8"))
+    assert "modChartPresentation" in {str(m["name"]) for m in manifest["vba"]["modules"]}
+    assert (PCCM_ROOT / "src" / "vba" / "modChartPresentation.bas").is_file()
+    module = _chart_module()
+    assert module.startswith('Attribute VB_Name = "modChartPresentation"\nOption Explicit\n')
+    # IT READS THE WORKBOOK AND WRITES ONE PROPERTY. Nothing else.
+    assert module.count("item.XValues = categories") == 1
+    for banned in ("Value2 =", ".Formula =", "PCCM_", "ListRows", "ListColumns",
+                   "Application.Calculate", ".Protect ", ".Unprotect",
+                   "SimAnnualStore", "CalcReport", "SimReport", "Fingerprint",
+                   "Rnd", "WorksheetFunction"):
+        assert banned not in module, banned
+    # AND NO ANALYTICAL OWNER GAINED A CHART LINE.
+    for other in sorted((PCCM_ROOT / "src" / "vba").glob("*.bas")):
+        if other.name in ("modChartPresentation.bas", "modReset.bas", "modSimAnnualRun.bas"):
+            continue
+        text = other.read_text(encoding="utf-8")
+        assert "modChartPresentation" not in text, other.name
+        assert "XValues" not in text, other.name
+
+
+def test_06c_the_owner_reads_the_workbook_and_declares_no_address() -> None:
+    """NO ADDRESS, NO YEAR COUNT, NO SECOND AUTHORITY. Every number it uses
+    arrives through a defined name the builder writes: the reserved category
+    window, and the Years Covered cell the bridge's own guard cuts at. It names
+    a series by the applied-year name that series already plots, so no chart
+    title, position or index is written down either."""
+    module = _chart_module()
+    runtime = _projection()["bridge"]["annual"]["runtime_category"]
+    binding = _projection()["bridge"]["annual"]["applied_binding"]
+    assert f'Private Const CHART_CATEGORY_WINDOW As String = "{runtime["window_name"]}"' in module
+    assert f'Private Const CHART_YEAR_COUNT As String = "{runtime["extent_name"]}"' in module
+    assert f'Private Const CHART_APPLIED_PREFIX As String = "{binding["name_prefix"]}_"' in module
+    assert 'ThisWorkbook.Names(DefinedName).RefersToRange' in module
+    assert "ThisWorkbook.Worksheets(SH_DASHBOARD)" in module
+    # NOT ONE CELL ADDRESS, NOT ONE ROW NUMBER, NOT ONE CHART TITLE.
+    assert re.search(r'"\$?[A-Z]{1,3}\$?\d+', module) is None, "the owner spells an address"
+    for title in (chart["title"] for chart in _projection()["charts"]):
+        assert title not in module, title
+    assert "279" not in module and "478" not in module and "200" not in module
+    # A SERIES IS IDENTIFIED BY WHAT IT PLOTS.
+    assert "PlotsAppliedYears = (InStr(1, formula, CHART_APPLIED_PREFIX, vbBinaryCompare) > 0)" in module
+    assert "If PlotsAppliedYears(item) Then" in module
+
+
+def test_06d_the_owner_opens_the_accepted_window_and_restores_it_on_every_path() -> None:
+    """PRESENTATION DOES NOT WEAKEN PROTECTION. Windows proved a chart on a
+    protected sheet is not writable, so the binding is made inside the ACCEPTED
+    modProtection structural window - the one mechanism this workbook has - and
+    that window is closed again on the success path AND on the failure path. It
+    protects nothing, unprotects nothing and touches workbook structure not at
+    all."""
+    module = _chart_module()
+    assert module.count("modProtection.ProtectionBeginStructural(windowDetail)") == 1
+    assert module.count("modProtection.ProtectionEndStructural(windowDetail)") == 2
+    # ONE OF THE TWO CLOSES IS ON THE FAILURE PATH, behind the open flag.
+    failed = module[module.index("\nFailed:"):]
+    assert "If windowOpen Then" in failed
+    assert "ProtectionEndStructural(windowDetail)" in failed
+    assert "protection was not restored" in failed
+    # THE FLAG IS CLEARED BEFORE THE SUCCESS CLOSE, so the failure path cannot
+    # close a window that is already closed.
+    success = module[module.index("windowOpen = True"): module.index("\nFailed:")]
+    assert success.index("windowOpen = False") < success.index("ProtectionEndStructural")
+    # AND THE BINDING HAPPENS INSIDE THE WINDOW.
+    assert success.index("BindAppliedSeries(categories, detail)") < success.index("windowOpen = False")
+    # NO SECOND PROTECTION MECHANISM.
+    for banned in ("ProtectionApply", "ProtectionRelease", "ProtectStructure",
+                   "Protect Structure", "UserInterfaceOnly"):
+        assert banned not in module, banned
+    # AND THE ENVELOPE IS THE ACCEPTED ONE, counted, as production declares it.
+    protection = (PCCM_ROOT / "src" / "vba" / "modProtection.bas").read_text(encoding="utf-8")
+    assert "Public Function ProtectionBeginStructural(ByRef detail As String) As Boolean" in protection
+    assert "Public Function ProtectionEndStructural(ByRef detail As String) As Boolean" in protection
+
+
+def test_06e_the_owner_is_called_at_the_three_presentation_boundaries_and_nowhere_else() -> None:
+    """THE SMALLEST CORRECT BOUNDARIES: the workbook opening, an annual run that
+    published, a reset that cleared. Never inside a calculation or a simulation,
+    which produce no chart and would pay for this on every iteration."""
+    call = "modChartPresentation.ChartPresentationApplyCategories(chartDetail)"
+    sources = {path.name: path.read_text(encoding="utf-8")
+               for path in sorted((PCCM_ROOT / "src" / "vba").glob("*.bas"))}
+    sources["ThisWorkbook.vba"] = (PCCM_ROOT / "src" / "vba" / "ThisWorkbook.vba").read_text(encoding="utf-8")
+    callers = {name for name, text in sources.items() if call in text}
+    assert callers == {"ThisWorkbook.vba", "modSimAnnualRun.bas", "modReset.bas"}, sorted(callers)
+    for name in callers:
+        assert sources[name].count(call) == 1, name
+    # OPEN: after protection is applied, because the window needs it in force.
+    handler = sources["ThisWorkbook.vba"]
+    assert handler.index("modProtection.ProtectionApply(detail)") < handler.index(call)
+    assert handler.index(call) < handler.index("modAppState.FailPointCheck FAILPOINT_WORKBOOK_OPEN")
+    # ANNUAL: after the publication succeeded, before the message is composed.
+    annual = sources["modSimAnnualRun.bas"]
+    assert annual.index("SimAnnualStorePublish(run, flat, fields, detail)") < annual.index(call)
+    assert annual.index(call) < annual.index("RunAnnual.Ok = True")
+    # RESET: inside the branch where the clear succeeded.
+    reset = sources["modReset.bas"]
+    assert reset.index("If ClearEveryPublication(") < reset.index(call)
+    assert reset.index(call) < reset.index("ResetResults = modAppState.Succeeded(RESET_SUCCEEDED)")
+    # AND NEITHER CALLER LETS A PRESENTATION FAULT FAIL THE COMMAND IT FOLLOWS.
+    for name in ("modSimAnnualRun.bas", "modReset.bas"):
+        after = sources[name][sources[name].index(call):]
+        assert "chartDetail = vbNullString" in after[:200], name
+    assert 'modAppState.RecordResult "Workbook_Open: " & chartDetail' in handler
+    # NO CALCULATION OR SIMULATION OWNER CALLS IT.
+    for name in ("modCalcAnalytical.bas", "modCalcReport.bas", "modSimEngine.bas",
+                 "modSimReport.bas", "modSimSample.bas", "modSimStats.bas"):
+        assert call not in sources[name], name
 
 
 def test_10_the_annual_cash_flow_is_still_a_column_chart_of_the_published_profile() -> None:
@@ -545,7 +736,9 @@ def test_10_the_annual_cash_flow_is_still_a_column_chart_of_the_published_profil
     assert [(s["key"], s["name"]) for s in spec["series"]] == [
         (s["key"], s["name"]) for s in was["series"]] == [("annual_nominal", "Annual Nominal")]
     assert spec["categories"]["key"] == was["categories"] == "calendar_year"
-    assert spec["categories"]["binding"] == "chartAnnual_calendar_year"
+    # ITS CATEGORY IS BOUND AT RUNTIME; only its value carries a name.
+    assert spec["categories"]["binding"] is None
+    assert spec["categories"]["runtime_binding"] == "chartAnnual_category_window"
     assert spec["series"][0]["binding"] == "chartAnnual_annual_nominal"
     assert spec["value_axis_scale"] is None and spec["category_label_interval"] is None
 
@@ -719,23 +912,41 @@ def test_20d_the_safety_correction_moved_the_bounds_and_nothing_else() -> None:
                                             load_sim_contract(SPEC / "sim_contract.yaml"))
     now = _projection()
     assert set(before) == set(now)
-    for key in set(before) - {"charts"}:
+    # THE BRIDGE GAINED THE RUNTIME CATEGORY CONTRACT and the category column
+    # lost its cut name; everything else about the layer is unchanged.
+    for key in set(before) - {"charts", "bridge"}:
         assert before[key] == now[key], f"{key} moved"
-    assert before["charts"] == now["charts"], "the chart layer moved beyond the bounds"
+    was_bridge = copy.deepcopy(before["bridge"])
+    now_bridge = copy.deepcopy(now["bridge"])
+    runtime = now_bridge["annual"].pop("runtime_category")
+    assert now_bridge["annual"]["applied_binding"].pop("runtime_category") == runtime["key"]
+    for block in (was_bridge["annual"], now_bridge["annual"]):
+        for column in block["columns"]:
+            if column["key"] == runtime["key"]:
+                column["applied_binding"] = None
+    assert was_bridge == now_bridge, "the bridge moved beyond the runtime category"
     was = {c["key"]: c for c in before["charts"]}
     current = {c["key"]: c for c in now["charts"]}
     assert list(was) == list(current), "the chart order moved"
     for key, chart in was.items():
         after = current[key]
         assert set(chart) == set(after), key
-        for field in set(chart):
+        for field in set(chart) - {"categories", "series"}:
             assert chart[field] == after[field], (key, field)
+        # THE CATEGORY AND THE SERIES CARRY THE RUNTIME CONTRACT NOW; their
+        # KEYS, names and the window each is written over are unchanged.
+        assert chart["categories"]["key"] == after["categories"]["key"], key
+        assert chart["categories"]["window_range"] == after["categories"]["window_range"], key
+        assert [(s["key"], s["name"], s["window_range"]) for s in chart["series"]] == \
+            [(s["key"], s["name"], s["window_range"]) for s in after["series"]], key
         if key == "tornado":
             assert after["value_axis_scale"] == {"major_unit": 0.1}
+            assert after["categories"] == chart["categories"], key
     # AND THE THREE OTHER CORRECTIONS, NAMED, straight out of that comparison.
     assert current["s_curve"]["title"] == was["s_curve"]["title"] == "Cumulative Cost Profile"
     for year_chart in YEAR_CHARTS:
-        assert current[year_chart]["categories"]["binding"] == "chartAnnual_calendar_year"
+        assert current[year_chart]["categories"]["binding"] is None
+        assert current[year_chart]["categories"]["runtime_binding"] == "chartAnnual_category_window"
         assert [s["binding"] for s in current[year_chart]["series"]] == \
             [s["binding"] for s in was[year_chart]["series"]]
     assert current["histogram"]["category_label_interval"] == 2
@@ -857,7 +1068,12 @@ def test_42_the_polish_is_declared_by_exact_reversal_to_the_previous_head() -> N
         "builder/pccm_builder/phase8_charts.py", "builder/pccm_builder/spec_loader.py",
         # The structural verification, which derives the applied-year chart
         # names from the manifest now that they are workbook-scoped.
-        "builder/pccm_builder/verify.py"}
+        "builder/pccm_builder/verify.py",
+        # The presentation owner's declaration, and the three owners that reach
+        # a presentation boundary and call it. modChartPresentation.bas is a NEW
+        # file and carries no reversal: it did not exist at ebeae65.
+        "spec/structure_contract.yaml", "src/vba/ThisWorkbook.vba",
+        "src/vba/modReset.bas", "src/vba/modSimAnnualRun.bas"}
     for name in DECLARED_CHART_POLISH_CHANGES:
         now = (PCCM_ROOT / name).read_text(encoding="utf-8")
         then = _git_show(name)
@@ -867,6 +1083,11 @@ def test_42_the_polish_is_declared_by_exact_reversal_to_the_previous_head() -> N
         # A LAYER THAT IS ONLY PARTLY THERE IS REFUSED, not quietly half-taken
         # off: one declared fragment of this file's own layer, edited.
         from chart_polish_declaration import _HUNKS
+        if len(_HUNKS[name]) < 2:
+            # ONE FRAGMENT IS THE WHOLE LAYER for this file: removing it leaves
+            # nothing partly present to refuse, which is the reversal's own
+            # all-or-none rule and is covered by the round trip above.
+            continue
         first = _HUNKS[name][0][0]
         damaged = now.replace(first, "# an undeclared edit\n", 1)
         assert damaged != now and first not in damaged, name
@@ -874,13 +1095,47 @@ def test_42_the_polish_is_declared_by_exact_reversal_to_the_previous_head() -> N
             strip_chart_polish(name, damaged)
 
 
-def test_41_no_production_source_or_contract_moved() -> None:
-    for path in ("src", "spec/sim_contract.yaml", "spec/calc_contract.yaml",
-                 "spec/structure_contract.yaml", "spec/input_contract.yaml",
-                 "spec/driver_contract.yaml"):
+def test_41_production_moved_only_by_the_declared_presentation_owner() -> None:
+    """NO ANALYTICAL OWNER MOVED. The calculation, the simulation, the
+    fingerprint, the statistics, the annual store and the state derivations are
+    byte-identical to ebeae65. What changed is the new presentation module, the
+    structure contract entry that declares it, and one call line in each of the
+    three owners that reach a presentation boundary - the workbook opening, an
+    annual run that published, a reset that cleared."""
+    changed = {line for line in subprocess.run(
+        ["git", "diff", "--name-only", PREVIOUS_HEAD, "--", "pccm/src", "pccm/spec"],
+        cwd=PCCM_ROOT.parent, check=True, stdout=subprocess.PIPE).stdout.decode().split()}
+    # A MODULE ADDED BUT NOT YET COMMITTED IS STILL A CHANGE TO PRODUCTION.
+    changed |= {line for line in subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard", "pccm/src", "pccm/spec"],
+        cwd=PCCM_ROOT.parent, check=True, stdout=subprocess.PIPE).stdout.decode().split()}
+    assert changed == {
+        "pccm/spec/structure_contract.yaml",
+        "pccm/spec/workbook.yaml",
+        "pccm/src/vba/ThisWorkbook.vba",
+        "pccm/src/vba/modChartPresentation.bas",
+        "pccm/src/vba/modReset.bas",
+        "pccm/src/vba/modSimAnnualRun.bas",
+    }, sorted(changed)
+    # EVERY OTHER CONTRACT IS UNTOUCHED.
+    for path in ("spec/sim_contract.yaml", "spec/calc_contract.yaml",
+                 "spec/input_contract.yaml", "spec/driver_contract.yaml"):
         done = subprocess.run(["git", "diff", "--quiet", PREVIOUS_HEAD, "--", f"pccm/{path}"],
                               cwd=PCCM_ROOT.parent)
         assert done.returncode == 0, f"{path} changed since {PREVIOUS_HEAD}"
+    # AND THE THREE TOUCHED OWNERS GAINED A CALL AND LOST NOTHING.
+    for module in ("ThisWorkbook.vba", "modReset.bas", "modSimAnnualRun.bas"):
+        diff = subprocess.run(["git", "diff", PREVIOUS_HEAD, "--", f"pccm/src/vba/{module}"],
+                              cwd=PCCM_ROOT.parent, check=True,
+                              stdout=subprocess.PIPE).stdout.decode()
+        removed = [line for line in diff.splitlines()
+                   if line.startswith("-") and not line.startswith("---")]
+        assert removed == [], (module, removed)
+        added = "\n".join(line for line in diff.splitlines()
+                           if line.startswith("+") and not line.startswith("+++"))
+        assert "modChartPresentation.ChartPresentationApplyCategories(chartDetail)" in added, module
+        for banned in ("Value2", "SimAnnualStore", "CalcReport", "SimReport", "Fingerprint"):
+            assert banned not in added, (module, banned)
 
 
 if __name__ == "__main__":  # pragma: no cover

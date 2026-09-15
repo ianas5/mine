@@ -1126,6 +1126,18 @@ phase6_shell:
         applied_binding:
           name_prefix: "chartAnnual"
           extent: "year_count"
+          # THE CATEGORY COLUMN IS BOUND AT RUNTIME, NOT BY A NAME. Three
+          # Windows runs proved a defined name in a series' CATEGORY slot comes
+          # back blank whatever the markup around it, and the axis is then
+          # numbered 1, 2, 3. Excel binds a category from a RANGE through
+          # Series.XValues, which Windows proved directly. So this column gets
+          # no cut name: the charts are built on its FIRST reserved row - a
+          # literal one-row range, which is also exactly the right picture when
+          # nothing is published - and modChartPresentation resizes that
+          # binding to the published year count at the presentation boundaries.
+          # The builder writes the two names that owner reads: the reserved
+          # column window, and the same Years Covered cell the guard reads.
+          runtime_category: "calendar_year"
         columns:
           - {key: "project_index", header: "Project Year", column: "B", source: "annual", field: "project_index", format: "year"}
           # UX-001. BLANK WHEN ABSENT, NOT NA(). This column is a chart's

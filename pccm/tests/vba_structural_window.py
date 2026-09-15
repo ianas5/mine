@@ -148,9 +148,15 @@ def strip_declared_changes(module_name: str, text: str) -> str:
     Workbook_Open failpoint closure, then the P10-2C Repair reconstruction, then
     the P10-RP structural window.
     """
+    from chart_polish_declaration import strip_chart_polish
     from vba_open_failpoint import strip_open_failpoint
     from vba_repair_reconstruction import strip_repair_reconstruction
     from vba_runtime_lock_state import strip_runtime_lock_state
+    # THE NEWEST LAYER COMES OFF FIRST. The final-delivery chart polish added
+    # the presentation owner's call to three modules, ON TOP of everything
+    # below, so a reversal that ran the other way round would find the layer
+    # beneath it interrupted by a line that was not there when it was made.
+    text = strip_chart_polish(f"src/vba/{module_name}", text)
     text = strip_runtime_lock_state(module_name, text)
     text = strip_open_failpoint(module_name, text)
     text = strip_repair_reconstruction(module_name, text)
@@ -166,12 +172,22 @@ def strip_declared_changes(module_name: str, text: str) -> str:
 
 def declared_production_changes() -> dict[str, str]:
     """Every production module a declared change touches, and why."""
+    from chart_polish_declaration import DECLARED_CHART_POLISH_CHANGES
     from vba_open_failpoint import DECLARED_OPEN_FAILPOINT_CHANGES
     from vba_repair_reconstruction import DECLARED_REPAIR_RECONSTRUCTION_CHANGES
     from vba_runtime_lock_state import DECLARED_RUNTIME_LOCK_STATE_CHANGES
+    chart_polish = {path.rsplit("/", 1)[-1]: why
+                    for path, why in DECLARED_CHART_POLISH_CHANGES.items()
+                    if path.startswith("src/vba/")}
+    # THE PRESENTATION OWNER IS A NEW FILE, not an edit: it reverses to nothing
+    # because it did not exist, and it is declared here so a control that asks
+    # what moved in production is told about it by name.
+    chart_polish.setdefault(
+        "modChartPresentation.bas",
+        "the Dashboard chart presentation owner, added whole (final-delivery chart polish)")
     merged = dict(DECLARED_STRUCTURAL_WINDOW_CHANGES)
     for layer in (DECLARED_REPAIR_RECONSTRUCTION_CHANGES, DECLARED_OPEN_FAILPOINT_CHANGES,
-                  DECLARED_RUNTIME_LOCK_STATE_CHANGES):
+                  DECLARED_RUNTIME_LOCK_STATE_CHANGES, chart_polish):
         for name, why in layer.items():
             merged[name] = (merged[name] + "; " + why) if name in merged else why
     return merged

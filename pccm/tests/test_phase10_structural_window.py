@@ -417,17 +417,29 @@ def test_40_workbook_open_still_establishes_the_protected_resting_state() -> Non
     """REQUIRED CONTROL 15. Untouched but for the declared P10-R3 closure - the
     dormant failpoint and the early Err read - which comes off exactly and
     leaves the accepted handler byte for byte; a control says so."""
+    import sys as _sys
+    _sys.path.insert(0, str(PCCM_ROOT / "tests"))
+    from chart_polish_declaration import strip_chart_polish
     from vba_open_failpoint import strip_open_failpoint
     current = (SRC / "ThisWorkbook.vba").read_bytes()
     accepted = subprocess.run(["git", "show", "58b2394:pccm/src/vba/ThisWorkbook.vba"],
                               cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE).stdout
     assert current != accepted, "the declared closure is absent"
-    assert strip_open_failpoint("ThisWorkbook.vba", current.decode("utf-8")) == accepted.decode("utf-8"), \
-        "the open handler moved outside the declared closure"
+    # THE NEWEST LAYER COMES OFF FIRST: the final-delivery chart polish added the
+    # presentation binding to this handler ON TOP of the declared closure, so a
+    # reversal that ran the other way round would find the closure interrupted.
     text = current.decode("utf-8")
+    beneath = strip_chart_polish("src/vba/ThisWorkbook.vba", text)
+    assert beneath != text, "the declared chart binding is absent from the open handler"
+    assert strip_open_failpoint("ThisWorkbook.vba", beneath) == accepted.decode("utf-8"), \
+        "the open handler moved outside the declared closure"
     assert "modProtection.ProtectionApply(detail)" in text
     assert "BeginStructuralOperation" not in text
     assert "ProtectionBeginStructural" not in text
+    # AND THE BINDING IS PRESENTATION, AFTER THE APPLY: it opens no window of
+    # its own here and releases nothing.
+    assert text.index("modProtection.ProtectionApply(detail)") < \
+        text.index("modChartPresentation.ChartPresentationApplyCategories(chartDetail)")
 
 
 def test_41_command_feedback_is_unchanged() -> None:

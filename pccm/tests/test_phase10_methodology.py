@@ -955,7 +955,17 @@ def test_72_no_contract_specification_changed_except_the_manifest() -> None:
     changed = {Path(line).name for line in
                _git("diff", "--name-only", ACCEPTED, "--", "pccm/spec").splitlines()
                if line.strip()}
-    assert changed <= {"workbook.yaml"}, sorted(changed)
+    # THE STRUCTURE CONTRACT LATER DECLARED THE CHART PRESENTATION OWNER, under
+    # its own authorisation; taking that declared layer off reproduces the
+    # accepted bytes, and no other contract moved.
+    assert changed <= {"workbook.yaml", "structure_contract.yaml"}, sorted(changed)
+    if "structure_contract.yaml" in changed:
+        import sys as _sys
+        _sys.path.insert(0, str(PCCM_ROOT / "tests"))
+        from chart_polish_declaration import strip_chart_polish
+        name = "spec/structure_contract.yaml"
+        assert strip_chart_polish(name, (PCCM_ROOT / name).read_text(encoding="utf-8")) == \
+            _git("show", f"{ACCEPTED}:pccm/{name}"), "the structure contract moved beyond the polish"
 
 
 def test_73_the_manifest_changed_only_where_this_batch_was_authorised_to() -> None:

@@ -761,6 +761,9 @@ vba:
     - name: "modReset"
       generated: false
       responsibility: "The Phase-10 Reset Results owner: confirms the destructive change, asks each publication owner to clear what it wrote, and restores every one of them if any step fails. Holds no bank address, no stamp row, no table name and no fingerprint layout; it names four owners and the order they are asked in, and nothing else."
+    - name: "modChartPresentation"
+      generated: false
+      responsibility: "The Dashboard chart presentation owner: binds the two year-based charts' category axes, at runtime, to the reserved calendar-year column of the annual chart bridge resized to the published year count. Computes nothing, publishes nothing and owns no year count - it reads the same Results Years Covered cell the bridge's own guard reads, identifies a series by the applied-year name it already plots, and opens the accepted modProtection structural window to write. No analytical value, no state word and no chart geometry."
     - name: "modRepair"
       generated: false
       responsibility: "The Phase-10 Repair Profiling owner: decides whether the two profiling grids are structurally reconstructable, refuses every case whose semantic intent is ambiguous, and otherwise asks modProfiling to rebuild the year columns and the rows. Holds no grid address, no register column, no id pattern and no structural rule; it partitions the accepted checker's own fault keys and calls the accepted profiling owner."

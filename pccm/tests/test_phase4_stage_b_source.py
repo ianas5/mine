@@ -273,7 +273,11 @@ PHASE4_RAW_LINE_LIMIT = 900
 PHASE8_VBA_MODULES = ("modResultsState",)
 
 # P10-2A. The protection owner, and the whole of Phase 10 so far.
-PHASE10_VBA_MODULES = ("modProtection", "modReset", "modRepair")
+PHASE10_VBA_MODULES = ("modProtection", "modReset", "modRepair",
+                       # The Dashboard chart presentation owner, added with the
+                       # final-delivery chart polish: it binds the two year charts'
+                       # category axes at runtime and computes nothing.
+                       "modChartPresentation")
 
 PHASE7_VBA_MODULES = (
     "modSimSensitivity",

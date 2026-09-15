@@ -1116,11 +1116,26 @@ def test_58_production_is_byte_identical_to_the_candidate_the_width_growth_fixtu
     # the manifest's chart layer and three builder files moved later, under their own
     # authorisation, and each reverses to this commit's bytes exactly on both sides.
     from chart_polish_declaration import undeclared_after_chart_polish
-    assert undeclared_after_chart_polish("3af1837", _git("diff", "--name-only", "3af1837", "--", "pccm/src", "pccm/spec", "pccm/builder").split(), PCCM_ROOT) == ["pccm/src/vba/modWorkbook.bas"]
+    # THE DECLARED CHART PRESENTATION OWNER AND THE THREE MODULES THAT REACH A
+    # PRESENTATION BOUNDARY, plus the P10-R4 lock-state layer. The owner is a
+    # new file, which git lists only once it is committed.
+    moved = [path for path in undeclared_after_chart_polish(
+        "3af1837", _git("diff", "--name-only", "3af1837", "--",
+                        "pccm/src", "pccm/spec", "pccm/builder").split(), PCCM_ROOT)
+        if path != "pccm/src/vba/modChartPresentation.bas"]
+    assert (PCCM_ROOT / "src" / "vba" / "modChartPresentation.bas").is_file()
+    assert sorted(moved) == [
+        "pccm/src/vba/ThisWorkbook.vba", "pccm/src/vba/modReset.bas",
+        "pccm/src/vba/modSimAnnualRun.bas", "pccm/src/vba/modWorkbook.bas"]
+    from chart_polish_declaration import strip_chart_polish
     for key, path in (("repair", REPAIR_VBA), ("handler", HANDLER_VBA), ("appstate", APPSTATE_VBA),
                       ("profiling", PROFILING_VBA), ("inflation", INFLATION_VBA),
                       ("protection", PROTECTION_VBA)):
-        assert _src(key, path) == _git("show", f"3af1837:pccm/src/vba/{path.name}"), path.name
+        # THE DECLARED CHART BINDING COMES OFF BOTH SIDES: the open handler
+        # carries it, every other module here carries nothing to take off.
+        relative = f"src/vba/{path.name}"
+        assert strip_chart_polish(relative, _src(key, path)) == \
+            strip_chart_polish(relative, _git("show", f"3af1837:pccm/src/vba/{path.name}")), path.name
     workbook = _src("workbook", WORKBOOK_VBA)
     assert strip_runtime_lock_state("modWorkbook.bas", workbook) == _git("show", "3af1837:pccm/src/vba/modWorkbook.bas")
     # RUN 10 PROVED the runtime-materialised year cells locked while the
@@ -1610,6 +1625,13 @@ def test_57_the_handler_carries_one_dormant_failpoint_after_the_apply_and_reads_
                           "Application.ScreenUpdating = False",
                           "restored = False",
                           "If Not modProtection.ProtectionApply(detail) Then GoTo Failed",
+                          # DECLARED: the Dashboard chart categories, bound after
+                          # protection is established and before the failpoint,
+                          # recorded rather than raised if they cannot be.
+                          "Dim chartDetail As String",
+                          "If Not modChartPresentation.ChartPresentationApplyCategories(chartDetail) Then",
+                          'modAppState.RecordResult "Workbook_Open: " & chartDetail',
+                          "End If",
                           "modAppState.FailPointCheck FAILPOINT_WORKBOOK_OPEN",
                           "Application.ScreenUpdating = previousUpdating",
                           "restored = True",
@@ -1618,7 +1640,11 @@ def test_57_the_handler_carries_one_dormant_failpoint_after_the_apply_and_reads_
     sys.path.insert(0, str(PCCM_ROOT / "tests"))
     from vba_open_failpoint import ACCEPTED_BEFORE_OPEN_FAILPOINT, strip_open_failpoint
     tested = _git("show", f"{ACCEPTED_BEFORE_OPEN_FAILPOINT}:pccm/src/vba/ThisWorkbook.vba")
-    assert strip_open_failpoint("ThisWorkbook.vba", handler) == tested
+    # THE NEWEST LAYER COMES OFF FIRST: the declared chart binding sits on top
+    # of the closure, between the apply and the failpoint.
+    from chart_polish_declaration import strip_chart_polish
+    assert strip_open_failpoint(
+        "ThisWorkbook.vba", strip_chart_polish("src/vba/ThisWorkbook.vba", handler)) == tested
     assert "FailPointCheck" not in tested
 
 
@@ -2831,7 +2857,11 @@ def test_70_production_vba_spec_and_builder_are_byte_identical_to_the_accepted_h
     from chart_polish_declaration import undeclared_after_chart_polish
     changed = undeclared_after_chart_polish(
         ACCEPTED, _git("diff", "--name-only", ACCEPTED, "--", "pccm/src", "pccm/spec", "pccm/builder").split(), PCCM_ROOT)
-    assert sorted(changed) == ["pccm/src/vba/ThisWorkbook.vba", "pccm/src/vba/modRepair.bas", "pccm/src/vba/modWorkbook.bas"], changed
+    changed = [path for path in changed if path != "pccm/src/vba/modChartPresentation.bas"]
+    assert (PCCM_ROOT / "src" / "vba" / "modChartPresentation.bas").is_file()
+    assert sorted(changed) == ["pccm/src/vba/ThisWorkbook.vba", "pccm/src/vba/modRepair.bas",
+                               "pccm/src/vba/modReset.bas", "pccm/src/vba/modSimAnnualRun.bas",
+                               "pccm/src/vba/modWorkbook.bas"], changed
     # P10-R4 (final acceptance run 10): the runtime year-cell lock state, in
     # modWorkbook.bas only, reversing to 5e0df9b, which is byte-identical to the
     # accepted head for that file.
@@ -2856,15 +2886,20 @@ def test_70_production_vba_spec_and_builder_are_byte_identical_to_the_accepted_h
     assert ACCEPTED_BEFORE_OPEN_FAILPOINT == R3_AUTHORITY
     handler = _src("handler", HANDLER_VBA)
     handler_then = _git("show", f"{ACCEPTED_BEFORE_OPEN_FAILPOINT}:pccm/src/vba/ThisWorkbook.vba")
-    assert strip_open_failpoint("ThisWorkbook.vba", handler) == handler_then
+    from chart_polish_declaration import strip_chart_polish
+    assert strip_open_failpoint(
+        "ThisWorkbook.vba", strip_chart_polish("src/vba/ThisWorkbook.vba", handler)) == handler_then
     assert handler != handler_then, "the declared closure is absent"
     assert _git("diff", "--name-only", ACCEPTED, ACCEPTED_BEFORE_OPEN_FAILPOINT, "--",
                 "pccm/src/vba/ThisWorkbook.vba").strip() == ""
-    assert sorted(undeclared_after_chart_polish(
+    since_closure = [path for path in undeclared_after_chart_polish(
         ACCEPTED_BEFORE_OPEN_FAILPOINT,
         _git("diff", "--name-only", ACCEPTED_BEFORE_OPEN_FAILPOINT, "--",
-             "pccm/src", "pccm/spec", "pccm/builder").split(), PCCM_ROOT)) == \
-        ["pccm/src/vba/ThisWorkbook.vba", "pccm/src/vba/modWorkbook.bas"]
+             "pccm/src", "pccm/spec", "pccm/builder").split(), PCCM_ROOT)
+        if path != "pccm/src/vba/modChartPresentation.bas"]
+    assert sorted(since_closure) == [
+        "pccm/src/vba/ThisWorkbook.vba", "pccm/src/vba/modReset.bas",
+        "pccm/src/vba/modSimAnnualRun.bas", "pccm/src/vba/modWorkbook.bas"]
 
 
 def test_71_the_runner_is_declared_and_documented() -> None:

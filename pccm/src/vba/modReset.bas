@@ -150,6 +150,14 @@ Private Function ResetResults() As OperationResult
     End If
 
     If ClearEveryPublication(calcUndo, simUndo, annualUndo, sensitivityUndo, detail) Then
+        ' THE ANNUAL PUBLICATION IS GONE, so the two year charts' category axes
+        ' go back to the one reserved row they are built on - whose label the
+        ' bridge already answers blank. Presentation only, after the clear
+        ' succeeded, and it cannot fail a reset that did.
+        Dim chartDetail As String
+        If Not modChartPresentation.ChartPresentationApplyCategories(chartDetail) Then
+            chartDetail = vbNullString
+        End If
         ResetResults = modAppState.Succeeded(RESET_SUCCEEDED)
         Exit Function
     End If

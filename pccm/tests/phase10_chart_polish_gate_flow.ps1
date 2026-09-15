@@ -18,7 +18,7 @@ $ErrorActionPreference = 'Stop'
 
 $source = Get-Content -LiteralPath $Inspector -Raw
 $ast = [System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$null, [ref]$null)
-foreach ($name in @('Split-SeriesFormula', 'Get-SeriesField', 'Test-CategoryBinding', 'Test-CellRange')) {
+foreach ($name in @('Split-SeriesFormula', 'Get-SeriesField', 'Get-CategoryRows', 'Test-CellRange')) {
     $definition = $ast.FindAll({ param($node)
         ($node -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and ($node.Name -eq $name) }, $true)
     if (@($definition).Count -ne 1) { throw ('the inspector defines ' + $name + ' ' + [string]@($definition).Count + ' times') }
@@ -26,7 +26,10 @@ foreach ($name in @('Split-SeriesFormula', 'Get-SeriesField', 'Test-CategoryBind
 }
 # The two script variables the lifted functions read, bound exactly as the
 # inspector binds them.
-$script:CategoryName = 'chartAnnual_calendar_year'
+$script:CategorySheet = 'Results'
+$script:CategoryColumn = 'D'
+$script:CategoryFirstRow = 279
+$script:CategoryLastRow = 478
 
 function Emit { param([string]$Case, [string]$Text) Write-Output ('GATE|' + $Case + '|' + $Text) }
 # THE LITERAL CONTRACT, read the same way: a fixed-population chart plots an
@@ -41,36 +44,57 @@ function Read-Literal {
     Emit $Case ('categories=' + $(if ($categories -eq '') { '<blank>' } else { $categories }) + '|verdict=' + $verdict)
 }
 
+# THE YEAR-CHART CONTRACT, read exactly as the gate reads it: the categories
+# must cover the first annual row through the row the published count implies.
 function Read-Series {
-    param([string]$Case, [string]$Formula)
+    param([string]$Case, [string]$Formula, [int]$PublishedYears)
     $parts = Split-SeriesFormula -Formula $Formula
     $categories = Get-SeriesField -Parts $parts -Index 1
     $values = Get-SeriesField -Parts $parts -Index 2
+    $wantFirst = $script:CategoryFirstRow
+    $wantLast = $wantFirst
+    if ($PublishedYears -ge 1) {
+        $wantLast = $wantFirst + $PublishedYears - 1
+        if ($wantLast -gt $script:CategoryLastRow) { $wantLast = $script:CategoryLastRow }
+    }
     $verdict = 'accepted'
     if ([string]::IsNullOrWhiteSpace($categories)) { $verdict = 'blank-categories' }
-    elseif (Test-CellRange -Reference $categories) { $verdict = 'cell-range' }
-    elseif (-not (Test-CategoryBinding -Reference $categories)) { $verdict = 'wrong-source' }
+    else {
+        $rows = Get-CategoryRows -Reference $categories
+        if (@($rows)[0] -eq 0) { $verdict = 'wrong-source' }
+        elseif (@($rows)[0] -ne $wantFirst) { $verdict = 'wrong-first-row' }
+        elseif (@($rows)[1] -ne $wantLast) { $verdict = 'wrong-last-row' }
+        elseif ((@($rows)[1] -eq $script:CategoryLastRow) -and ($PublishedYears -lt ($script:CategoryLastRow - $script:CategoryFirstRow + 1))) {
+            $verdict = 'whole-window'
+        }
+    }
     Emit $Case ('categories=' + $(if ($categories -eq '') { '<blank>' } else { $categories }) +
                 '|values=' + $(if ($values -eq '') { '<blank>' } else { $values }) + '|verdict=' + $verdict)
 }
 
-# 1. THE DEFECT EXCEL RETURNED AT a2da277, both year charts, verbatim.
-Read-Series 'windows.a2da277.s-curve-nominal' '=SERIES("Cumulative Nominal",,Results!chartAnnual_cumulative_nominal,1)'
-Read-Series 'windows.a2da277.s-curve-pv' '=SERIES("Cumulative PV",,Results!chartAnnual_cumulative_pv,2)'
-Read-Series 'windows.a2da277.cash-flow' '=SERIES("Annual Nominal",,Results!chartAnnual_annual_nominal,1)'
-# 2. THE SHAPE THE CORRECTION MUST PRODUCE, in both spellings Excel uses.
-Read-Series 'bound.plain' '=SERIES("Cumulative Nominal",Results!chartAnnual_calendar_year,Results!chartAnnual_cumulative_nominal,1)'
-Read-Series 'bound.quoted' "=SERIES(`"Cumulative Nominal`",'Results'!chartAnnual_calendar_year,'Results'!chartAnnual_cumulative_nominal,1)"
-# 3. THE RESERVED WINDOW COMING BACK.
-Read-Series 'regression.window-range' '=SERIES("Cumulative Nominal",Results!$D$279:$D$478,Results!chartAnnual_cumulative_nominal,1)'
-Read-Series 'regression.short-range' '=SERIES("Annual Nominal",Results!$D$279:$D$288,Results!chartAnnual_annual_nominal,1)'
-# 4. A CATEGORY SOURCE THIS WORKBOOK DOES NOT DECLARE.
-Read-Series 'regression.other-name' '=SERIES("Annual Nominal",Results!chartAnnual_project_index,Results!chartAnnual_annual_nominal,1)'
-Read-Series 'regression.other-sheet' '=SERIES("Annual Nominal",Dashboard!chartAnnual_calendar_year,Results!chartAnnual_annual_nominal,1)'
-# 5. A SERIES NAME CARRYING A COMMA, which a naive split would misread as the
-#    category argument - and a reference carrying one inside brackets.
-Read-Series 'parsing.comma-in-name' '=SERIES("Cumulative, Nominal",Results!chartAnnual_calendar_year,Results!chartAnnual_cumulative_nominal,1)'
-Read-Series 'parsing.comma-in-reference' '=SERIES("Annual Nominal",Results!chartAnnual_calendar_year,OFFSET(Results!$F$279,0,0,MAX(1,2),1),1)'
+# 1. THE DEFECT EXCEL RETURNED AT a2da277 AND AGAIN AT 10f5e62, verbatim.
+Read-Series 'windows.blank.s-curve-nominal' '=SERIES("Cumulative Nominal",,Results!chartAnnual_cumulative_nominal,1)' 10
+Read-Series 'windows.blank.cash-flow' '=SERIES("Annual Nominal",,Results!chartAnnual_annual_nominal,1)' 10
+# 2. THE SHAPE THE RUNTIME BINDING PRODUCES, which Windows proved by assigning
+#    XValues and reading the SERIES formula back. Both spellings Excel uses.
+Read-Series 'bound.ten-years' '=SERIES("Cumulative Nominal",Results!$D$279:$D$288,Results!chartAnnual_cumulative_nominal,1)' 10
+Read-Series 'bound.quoted' "=SERIES(`"Cumulative Nominal`",'Results'!`$D`$279:`$D`$288,'Results'!chartAnnual_cumulative_nominal,1)" 10
+Read-Series 'bound.one-year' '=SERIES("Annual Nominal",Results!$D$279,Results!chartAnnual_annual_nominal,1)' 1
+Read-Series 'bound.nothing-published' '=SERIES("Annual Nominal",Results!$D$279,Results!chartAnnual_annual_nominal,1)' 0
+Read-Series 'bound.whole-window-published' '=SERIES("Annual Nominal",Results!$D$279:$D$478,Results!chartAnnual_annual_nominal,1)' 200
+# 3. THE RESERVED WINDOW COMING BACK while less than that is published.
+Read-Series 'regression.whole-window' '=SERIES("Cumulative Nominal",Results!$D$279:$D$478,Results!chartAnnual_cumulative_nominal,1)' 10
+# 4. THE WRONG ROWS, either end.
+Read-Series 'regression.wrong-first' '=SERIES("Annual Nominal",Results!$D$280:$D$289,Results!chartAnnual_annual_nominal,1)' 10
+Read-Series 'regression.wrong-last' '=SERIES("Annual Nominal",Results!$D$279:$D$300,Results!chartAnnual_annual_nominal,1)' 10
+# 5. A CATEGORY SOURCE THAT IS NOT THE CALENDAR-YEAR COLUMN AT ALL - including
+#    the failed defined name, which must no longer be accepted.
+Read-Series 'regression.named-category' '=SERIES("Annual Nominal",Results!chartAnnual_calendar_year,Results!chartAnnual_annual_nominal,1)' 10
+Read-Series 'regression.other-column' '=SERIES("Annual Nominal",Results!$B$279:$B$288,Results!chartAnnual_annual_nominal,1)' 10
+Read-Series 'regression.other-sheet' '=SERIES("Annual Nominal",Dashboard!$D$279:$D$288,Results!chartAnnual_annual_nominal,1)' 10
+# 5b. A SERIES NAME CARRYING A COMMA, which a naive split would misread as the
+#     category argument.
+Read-Series 'parsing.comma-in-name' '=SERIES("Cumulative, Nominal",Results!$D$279:$D$288,Results!chartAnnual_cumulative_nominal,1)' 10
 # 6. THE FIXED-POPULATION CHARTS, whose categories Windows also found blank at
 #    10f5e62 and whose accepted source is an ordinary range.
 Read-Literal 'literal.histogram-accepted' '=SERIES("Iterations",Results!$B$487:$B$506,Results!$F$487:$F$506,1)'

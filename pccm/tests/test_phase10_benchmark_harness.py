@@ -700,7 +700,11 @@ def _production_changed_since(commit: str) -> list[str]:
     # layer moved for the four Dashboard charts, and the same reversal is
     # applied to both sides before the comparison.
     from chart_polish_declaration import DECLARED_CHART_POLISH_CHANGES, strip_chart_polish
-    polished = {f"pccm/{name}" for name in DECLARED_CHART_POLISH_CHANGES}
+    # THE VBA MODULES GO TO THE DECLARED-LAYER REVERSAL BELOW, which takes this
+    # polish off first and the layers beneath it after; only the spec and the
+    # builder are settled here.
+    polished = {f"pccm/{name}" for name in DECLARED_CHART_POLISH_CHANGES
+                if not name.startswith("src/vba/")}
     for path in sorted(set(changed) & polished):
         name = path[len("pccm/"):]
         current = strip_chart_polish(name, (PCCM_ROOT / name).read_text(encoding="utf-8"))
@@ -1881,13 +1885,21 @@ def test_137_the_correction_introduces_no_release_of_protection() -> None:
     # FINAL-DELIVERY CHART POLISH DECLARED: the manifest's chart layer,
     # phase8_charts.py and spec_loader.py, proved by reversal in
     # _production_changed_since and _builder_diff_beneath_the_chart_polish.
+    # THE PRESENTATION OWNER IS A NEW FILE: git lists it only once it is
+    # committed, so it is settled separately - it must be on disk, and it must
+    # be the declared one.
+    assert (PCCM_ROOT / "src" / "vba" / "modChartPresentation.bas").is_file()
+    changed = [path for path in changed if path != "pccm/src/vba/modChartPresentation.bas"]
     assert changed == ["pccm/builder/pccm_builder/phase8_charts.py",
                        "pccm/builder/pccm_builder/spec_loader.py",
                        "pccm/builder/pccm_builder/verify.py",
                        "pccm/builder/pccm_builder/workbook_builder.py",
+                       "pccm/spec/structure_contract.yaml",
                        "pccm/spec/workbook.yaml",
                        "pccm/src/vba/ThisWorkbook.vba",
                        "pccm/src/vba/modRepair.bas",
+                       "pccm/src/vba/modReset.bas",
+                       "pccm/src/vba/modSimAnnualRun.bas",
                        "pccm/src/vba/modWorkbook.bas"], \
         f"production changed for a harness correction: {changed}"
     assert _production_changed_since("0119bee") == []
@@ -3433,7 +3445,11 @@ def test_292_production_vba_is_unchanged() -> None:
     # modRepair.bas and ThisWorkbook.vba, and _production_changed_since has just
     # proved each move is its declared reversal and nothing else.
     assert set(_git("diff", "--name-only", "d90a186", "--", "pccm/src/vba").split()) <= {
-        "pccm/src/vba/modRepair.bas", "pccm/src/vba/ThisWorkbook.vba", "pccm/src/vba/modWorkbook.bas"}
+        "pccm/src/vba/modRepair.bas", "pccm/src/vba/ThisWorkbook.vba", "pccm/src/vba/modWorkbook.bas",
+        # The declared chart presentation owner and the two other modules that
+        # call it at a presentation boundary (final-delivery chart polish).
+        "pccm/src/vba/modChartPresentation.bas", "pccm/src/vba/modReset.bas",
+        "pccm/src/vba/modSimAnnualRun.bas"}
 
 
 def test_293_calcequiv_remains_an_independent_requirement() -> None:
@@ -3701,7 +3717,11 @@ def test_304_the_snapshot_calcequiv_production_and_timed_path_are_unchanged() ->
                     "pccm/bootstrap/windows/build_stage_b.ps1", "pccm/bootstrap/windows/com_lifecycle.ps1",
                     "pccm/bootstrap/windows/phase5_gate_b_scenarios.ps1",
                     "pccm/bootstrap/windows/phase10_fixture_window.bas").split()) <= {
-        "pccm/src/vba/modRepair.bas", "pccm/src/vba/ThisWorkbook.vba", "pccm/src/vba/modWorkbook.bas"}
+        "pccm/src/vba/modRepair.bas", "pccm/src/vba/ThisWorkbook.vba", "pccm/src/vba/modWorkbook.bas",
+        # The declared chart presentation owner and the two other modules that
+        # call it at a presentation boundary (final-delivery chart polish).
+        "pccm/src/vba/modChartPresentation.bas", "pccm/src/vba/modReset.bas",
+        "pccm/src/vba/modSimAnnualRun.bas"}
     for name in ("Invoke-BenchmarkExecution", "Test-BenchmarkSample", "Get-BenchmarkMedian",
                  "New-BenchmarkWeightBlock", "New-BenchmarkRegisterBlock", "Set-BenchmarkRangeBlock",
                  "Set-BenchmarkRegisterRowCount", "Set-BenchmarkBulkFixture",

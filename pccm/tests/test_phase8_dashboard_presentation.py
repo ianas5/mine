@@ -193,10 +193,20 @@ def test_03_the_reserved_chart_region_is_declared_and_empty() -> None:
 def test_04_no_dashboard_state_owner_was_added_to_the_vba() -> None:
     """FORMULA-ONLY. No module gained a Dashboard procedure, and the Phase-8 VBA
     surface is still the four Results adapters and nothing else."""
+    # RESTATED AT THE FINAL-DELIVERY CHART POLISH. No module DERIVES a Dashboard
+    # state: the claim this control makes is unchanged. One declared
+    # presentation owner now reaches the sheet, to bind a chart's category axis
+    # to a range, and it reaches it through the contract-derived constant like
+    # every other sheet access in this tree.
+    presentation = "modChartPresentation.bas"
     for module in sorted(SRC.glob("*.bas")):
         text = module.read_text(encoding="utf-8")
         code = "\n".join(line for line in text.splitlines()
                          if not line.lstrip().startswith("'"))
+        if module.name == presentation:
+            assert '"Dashboard"' not in code, f"{module.name} spells the sheet name"
+            assert "SH_DASHBOARD" in code
+            continue
         assert "Dashboard" not in code, (
             f"{module.name} names the Dashboard in executable code")
     adapter = (SRC / "modResultsState.bas").read_text(encoding="utf-8")
@@ -543,10 +553,14 @@ def test_41_every_later_production_change_is_declared_and_additive() -> None:
     replaces prohibition, and adds an additive-only clause the old blanket claim
     could not express."""
     _declared_production_changes(_git, P81_ACCEPTANCE)
-    # AND THE DASHBOARD STILL OWNS NO VBA OF ITS OWN.
+    # AND THE DASHBOARD OWNS NO STATE VBA OF ITS OWN. The one declared
+    # presentation owner binds a category axis and derives nothing.
     for module in sorted(SRC.glob("*.bas")):
         code = "\n".join(line for line in module.read_text(encoding="utf-8").splitlines()
                          if not line.lstrip().startswith("'"))
+        if module.name == "modChartPresentation.bas":
+            assert '"Dashboard"' not in code and "SH_DASHBOARD" in code
+            continue
         assert "Dashboard" not in code, f"{module.name} names the Dashboard"
 
 

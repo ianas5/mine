@@ -39,9 +39,12 @@ $ErrorActionPreference = 'Stop'
 
 # THE CONTRACT THIS GATE HOLDS THE WORKBOOK TO, AND IT IS TWO CONTRACTS.
 #
-# THE TWO YEAR CHARTS plot the applied years, so their categories must be the
-# dynamic calendar-year name and must never be a cell range - a range there is
-# the 200-row reserved window coming back.
+# THE TWO YEAR CHARTS plot the applied years, and their categories are bound at
+# RUNTIME by modChartPresentation - Excel returns a named category blank, and
+# Windows proved Series.XValues instead. So their categories must be a RANGE on
+# the bridge sheet that starts at the first annual row and ends at the row the
+# published year count implies. Never a name, never blank, and never the whole
+# reserved window.
 #
 # THE HISTOGRAM AND THE TORNADO plot fixed populations - the declared bin count
 # and the top-N drivers - so their categories must be an ordinary cell RANGE,
@@ -53,7 +56,16 @@ $ErrorActionPreference = 'Stop'
 # when it drops a binding, and it is the defect this gate exists for.
 $script:YearCharts = @('Cumulative Cost Profile', 'Annual Cash Flow')
 $script:LiteralCharts = @('Total Cost Distribution', 'Top Drivers by Rank Correlation')
-$script:CategoryName = 'chartAnnual_calendar_year'
+# The bridge sheet, the first annual row and the reserved window, read from the
+# workbook rather than assumed: the presentation owner's own window name is
+# what says where the categories may start and how far they may reach.
+$script:CategoryWindowName = 'chartAnnual_category_window'
+$script:YearCountName = 'chartAnnual_year_count'
+$script:CategoryFirstRow = 0
+$script:CategoryLastRow = 0
+$script:CategoryColumn = ''
+$script:CategorySheet = ''
+$script:PublishedYears = 0
 $script:Lines = New-Object System.Collections.ArrayList
 $script:Failures = New-Object System.Collections.ArrayList
 
@@ -109,12 +121,21 @@ function Get-PointCount {
     param($Series)
     try { return [string]@($Series.Values).Count } catch { return '<unreadable>' }
 }
-# TRUE when a reference names the applied-year category, however Excel spells
-# the sheet: Results!name and 'Results'!name are the same reference.
-function Test-CategoryBinding {
+# THE ROWS A CATEGORY REFERENCE COVERS, as Excel spells it back:
+# Results!$D$279:$D$288 -> 279, 288. Zero rows when it is not a range on the
+# bridge sheet's category column at all.
+function Get-CategoryRows {
     param([string]$Reference)
-    $plain = $Reference.Replace("'", '')
-    return ($plain -eq ('Results!' + $script:CategoryName))
+    $plain = $Reference.Replace("'", '').Trim()
+    $pattern = '^' + [regex]::Escape($script:CategorySheet) + '!\$?' +
+               [regex]::Escape($script:CategoryColumn) + '\$?(\d+)(?::\$?' +
+               [regex]::Escape($script:CategoryColumn) + '\$?(\d+))?$'
+    $match = [regex]::Match($plain, $pattern)
+    if (-not $match.Success) { return @(0, 0) }
+    $first = [int]$match.Groups[1].Value
+    $last = $first
+    if ($match.Groups[2].Success) { $last = [int]$match.Groups[2].Value }
+    return @($first, $last)
 }
 function Test-CellRange {
     param([string]$Reference)
@@ -137,10 +158,14 @@ try {
         $sheets = $workbook.Worksheets
         $dashboard = $sheets.Item('Dashboard')
         $results = $sheets.Item('Results')
-        # THE APPLIED-YEAR NAMES, as Excel resolves them right now.
-        $names = $results.Names
+        # THE APPLIED-YEAR NAMES, as Excel resolves them right now. They are
+        # WORKBOOK-scoped, so they are read from the workbook's own collection:
+        # looking only inside Results.Names would report every one of them
+        # missing while they were all present.
+        $names = $workbook.Names
         $nameCount = [int]$names.Count
-        $seenCategoryName = $false
+        $seenWindow = $false
+        $seenCount = $false
         for ($n = 1; $n -le $nameCount; $n++) {
             $name = $null
             try {
@@ -150,12 +175,50 @@ try {
                     $rowsNow = '<no range>'
                     try { $rowsNow = [string]$name.RefersToRange.Rows.Count } catch { $rowsNow = '<not a range now>' }
                     Emit-Line ('NAME|' + $shortName + '|refers_to=' + [string]$name.RefersTo + '|rows_now=' + $rowsNow)
-                    if ($shortName -like ('*' + $script:CategoryName)) { $seenCategoryName = $true }
+                    if ($shortName -like ('*' + $script:CategoryWindowName)) {
+                        $seenWindow = $true
+                        # THE RESERVED CATEGORY WINDOW, WHICH IS THE CONTRACT the
+                        # bound range is judged against: its sheet, its column,
+                        # its first row and its last.
+                        $windowRange = $null
+                        try {
+                            $windowRange = $name.RefersToRange
+                            $script:CategorySheet = [string]$windowRange.Worksheet.Name
+                            $script:CategoryFirstRow = [int]$windowRange.Row
+                            $script:CategoryLastRow = [int]$windowRange.Row + [int]$windowRange.Rows.Count - 1
+                            $script:CategoryColumn = [string]$windowRange.Cells(1, 1).Address($true, $true).Split([char]36)[1]
+                        } catch {
+                            Add-Failure 'Results' ('the category window name does not resolve to a range: ' + $_.Exception.Message)
+                        } finally { Release-Object $windowRange }
+                    }
+                    if ($shortName -like ('*' + $script:YearCountName)) {
+                        $seenCount = $true
+                        # THE PUBLISHED YEAR COUNT, from the one authority, read
+                        # the same way the presentation owner reads it.
+                        $countRange = $null
+                        try {
+                            $countRange = $name.RefersToRange
+                            $reported = $countRange.Cells(1, 1).Value2
+                            if ($null -ne $reported) {
+                                $parsed = 0
+                                if ([double]::TryParse([string]$reported, [ref]$parsed)) {
+                                    $script:PublishedYears = [int]$parsed
+                                }
+                            }
+                            Emit-Line ('YEARS|published=' + [string]$script:PublishedYears + '|reported=' +
+                                       $(if ($null -eq $reported) { '<blank>' } else { [string]$reported }))
+                        } catch {
+                            Add-Failure 'Results' ('the year count name does not resolve to a range: ' + $_.Exception.Message)
+                        } finally { Release-Object $countRange }
+                    }
                 }
             } finally { Release-Object $name }
         }
-        if (-not $seenCategoryName) {
-            Add-Failure 'Results' ('the applied-year category name ' + $script:CategoryName + ' is not defined on the sheet')
+        if (-not $seenWindow) {
+            Add-Failure 'Results' ('the category window name ' + $script:CategoryWindowName + ' is not defined in the workbook')
+        }
+        if (-not $seenCount) {
+            Add-Failure 'Results' ('the year count name ' + $script:YearCountName + ' is not defined in the workbook')
         }
         $objects = $null
         try {
@@ -203,16 +266,41 @@ try {
                                 Add-Failure $title ('series ' + [string]$s +
                                     ' has BLANK XValues/categories; Excel dropped the binding and is numbering the categories 1, 2, 3')
                             } elseif ($isYearChart) {
-                                # A YEAR CHART PLOTS THE APPLIED-YEAR NAME. A cell range
-                                # is the reserved window coming back; anything else is a
-                                # category source this workbook does not declare.
-                                if (Test-CellRange -Reference $categories) {
+                                # A YEAR CHART'S CATEGORIES ARE BOUND AT RUNTIME to the
+                                # reserved calendar-year column, resized to the published
+                                # year count. This is the live Excel object's own answer,
+                                # after the presentation owner has run: the first row must
+                                # be the block's first row, and the last must be the one
+                                # the published count implies - one row when nothing is
+                                # published, and never the whole reserved window.
+                                $rows = Get-CategoryRows -Reference $categories
+                                $wantFirst = $script:CategoryFirstRow
+                                $wantLast = $wantFirst
+                                if ($script:PublishedYears -ge 1) {
+                                    $wantLast = $wantFirst + $script:PublishedYears - 1
+                                    if ($wantLast -gt $script:CategoryLastRow) { $wantLast = $script:CategoryLastRow }
+                                }
+                                if (@($rows)[0] -eq 0) {
                                     Add-Failure $title ('series ' + [string]$s +
-                                        ' plots the cell range ' + $categories +
-                                        '; the whole reserved year window, not the applied years')
-                                } elseif (-not (Test-CategoryBinding -Reference $categories)) {
-                                    Add-Failure $title ('series ' + [string]$s +
-                                        ' plots categories from ' + $categories + ', not Results!' + $script:CategoryName)
+                                        ' plots categories from ' + $categories +
+                                        '; a year chart is bound at runtime to ' + $script:CategorySheet +
+                                        '!' + $script:CategoryColumn + ' and this is not that column')
+                                } else {
+                                    if (@($rows)[0] -ne $wantFirst) {
+                                        Add-Failure $title ('series ' + [string]$s +
+                                            ' starts its categories at row ' + [string]@($rows)[0] +
+                                            ', not the first annual row ' + [string]$wantFirst)
+                                    }
+                                    if (@($rows)[1] -ne $wantLast) {
+                                        Add-Failure $title ('series ' + [string]$s +
+                                            ' ends its categories at row ' + [string]@($rows)[1] +
+                                            ', not row ' + [string]$wantLast + ' implied by ' +
+                                            [string]$script:PublishedYears + ' published year(s)')
+                                    }
+                                    if (@($rows)[1] -eq $script:CategoryLastRow -and $script:PublishedYears -lt ($script:CategoryLastRow - $script:CategoryFirstRow + 1)) {
+                                        Add-Failure $title ('series ' + [string]$s +
+                                            ' is bound to the whole reserved year window')
+                                    }
                                 }
                             } elseif ($isLiteralChart) {
                                 # A FIXED-POPULATION CHART PLOTS ITS ACCEPTED LITERAL

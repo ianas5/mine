@@ -1006,6 +1006,13 @@ def test_42_no_production_vba_or_spec_changed() -> None:
         accepted = strip_chart_polish(name, _git("show", f"{ACCEPTED}:{path}"))
         if name == "builder/pccm_builder/workbook_builder.py":
             stripped_builder = (accepted, current)
+        elif name.startswith("src/vba/"):
+            # A VBA MODULE CARRIES THE OLDER DECLARED LAYERS TOO, and the loop
+            # above has already reversed those on both sides; here only the
+            # chart polish is taken off, so the comparison is made through the
+            # shared reverser rather than against the raw accepted bytes.
+            assert strip_declared_changes(Path(name).name, current) == \
+                strip_declared_changes(Path(name).name, accepted), path
         else:
             assert current == accepted, path
     # P10-9 DECLARED. The final static reconciliation added the contract's Source

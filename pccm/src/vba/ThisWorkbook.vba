@@ -54,6 +54,16 @@ Private Sub Workbook_Open()
     restored = False
 
     If Not modProtection.ProtectionApply(detail) Then GoTo Failed
+    ' THE DASHBOARD CHARTS' CATEGORY AXES, BOUND FOR WHAT IS PUBLISHED. It runs
+    ' here because this is the first moment a person can see the Dashboard, and
+    ' AFTER the apply above because binding a chart needs the accepted
+    ' structural window, which protection has to be in force to open. A binding
+    ' that could not be applied is a presentation fault, not a failed open: it
+    ' is recorded and the workbook opens.
+    Dim chartDetail As String
+    If Not modChartPresentation.ChartPresentationApplyCategories(chartDetail) Then
+        modAppState.RecordResult "Workbook_Open: " & chartDetail
+    End If
     modAppState.FailPointCheck FAILPOINT_WORKBOOK_OPEN
 
     Application.ScreenUpdating = previousUpdating
