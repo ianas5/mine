@@ -2463,7 +2463,17 @@ def test_68_the_accepted_phase_6_to_8_geometry_did_not_move() -> None:
                               cwd=REPO_ROOT, check=True, stdout=subprocess.PIPE,
                               text=True).stdout
     before = yaml.safe_load(accepted)
-    now = _manifest()
+    # FINAL-DELIVERY CHART POLISH: the chart layer moved later, under its own
+    # authorisation - the applied-year binding, the s-curve title, the tornado's
+    # fixed axis and format, the histogram's label interval - and is declared by
+    # exact reversal (tests/chart_polish_declaration.py). The polish is taken off
+    # the current manifest before this control's claim is made on what is left;
+    # test_phase8_chart_polish pins the polish itself.
+    import sys as _sys
+    _sys.path.insert(0, str(MANIFEST.parent.parent / "tests"))
+    from chart_polish_declaration import strip_chart_polish
+    now = yaml.safe_load(strip_chart_polish("spec/workbook.yaml",
+                                            MANIFEST.read_text(encoding="utf-8")))
     was, current = before["phase6_shell"], now["phase6_shell"]
     assert set(was) == set(current), sorted(set(was) ^ set(current))
     for key in was:

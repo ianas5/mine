@@ -220,7 +220,17 @@ def test_09_the_correction_reverses_exactly_to_the_candidate_and_nothing_else_mo
     assert strip_runtime_lock_state("modWorkbook.bas", current) == then
     assert current != then, "the correction is absent"
     changed = _git("diff", "--name-only", CANDIDATE, "--", "pccm/src", "pccm/spec", "pccm/builder").split()
-    assert changed == ["pccm/src/vba/modWorkbook.bas"], changed
+    # FINAL-DELIVERY CHART POLISH, DECLARED THE SAME WAY: the manifest's chart
+    # layer and three builder files moved later, under their own authorisation,
+    # and each reverses to the candidate's bytes exactly on both sides.
+    from chart_polish_declaration import DECLARED_CHART_POLISH_CHANGES, strip_chart_polish
+    polished = {f"pccm/{name}" for name in DECLARED_CHART_POLISH_CHANGES}
+    for path in sorted(set(changed) & polished):
+        name = path[len("pccm/"):]
+        current = strip_chart_polish(name, (PCCM_ROOT / name).read_text(encoding="utf-8"))
+        accepted = strip_chart_polish(name, _git("show", f"{CANDIDATE}:{path}"))
+        assert current == accepted, f"{path} moved outside the declared chart polish"
+    assert [path for path in changed if path not in polished] == ["pccm/src/vba/modWorkbook.bas"], changed
 
 
 # ===========================================================================
