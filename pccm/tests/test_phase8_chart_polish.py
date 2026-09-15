@@ -54,6 +54,8 @@ MANIFEST = SPEC / "workbook.yaml"
 PREVIOUS_HEAD = "ebeae65"
 # THE ACCEPTED CHART PACKAGE, before the value-axis bounds were taken off.
 ACCEPTED_CHART_PACKAGE = "e87d566"
+# The PowerShell the executed harnesses run under, as the other suites name it.
+PWSH = "/opt/pwsh/pwsh"
 
 YEAR_CHARTS = ("s_curve", "annual_cash_flow")
 _CACHE: dict = {}
@@ -191,6 +193,66 @@ def test_02_the_year_charts_plot_the_applied_years_through_the_bound_names() -> 
             "a year chart still carries a cell-range reference")
 
 
+def _series_parts(title: str) -> list[tuple[str, str]]:
+    """Every series of one chart, as (category reference, value reference) read
+    out of the chart part itself - the bytes Excel is handed."""
+    part = _part_for(title)
+    out = []
+    for block in re.findall(r"<ser>.*?</ser>", part, re.S):
+        category = re.search(r"<cat>(.*?)</cat>", block, re.S)
+        value = re.search(r"<val>(.*?)</val>", block, re.S)
+        assert category is not None, f"{title}: a series carries no category source"
+        assert value is not None, f"{title}: a series carries no value source"
+        out.append((category.group(1), value.group(1)))
+    assert out, title
+    return out
+
+
+def test_02b_every_year_chart_series_carries_the_category_name_with_the_cache_excel_keeps() -> None:
+    """WINDOWS, FROM THE WORKBOOK BUILT AT a2da277: both year charts came back
+    with an EMPTY second SERIES argument, so the applied-year VALUE names had
+    survived and the applied-year CATEGORY name had not. Excel binds the two
+    slots at different times - values when the workbook calculates, categories
+    while the chart part is read - and a name in the category slot has to be
+    evaluated to yield a range, which that early pass does not do. With no
+    cached data beside it Excel had nothing to resolve and nothing to draw, so
+    it dropped the reference and numbered the categories 1, 2, 3.
+
+    `c:numRef` is defined as a reference to numeric data WITH A CACHE of the
+    last values used, and a chart built on a dynamic name through Excel's own
+    UI carries one. So every NAMED reference now carries that cache - the
+    format the bridge column declares and the point count the name selects in
+    the workbook as built - and every plain range is left exactly as it was,
+    because a range resolves without evaluation and Windows has already proved
+    those survive."""
+    sheet = _projection()["bridge_sheet"]
+    for key in YEAR_CHARTS:
+        spec = _by_key()[key]
+        for category, value in _series_parts(spec["title"]):
+            for slot, source in (("category", category), ("value", value)):
+                assert "<numRef>" in source, (key, slot)
+                assert "<numCache>" in source, (key, slot, "a named reference carries no cache")
+                assert "<formatCode>" in source and "<ptCount " in source, (key, slot)
+                # AND IT IS A NAME, not a range: no reserved-window tail can
+                # come back through a reference that carries cells.
+                formula = re.search(r"<f>(.*?)</f>", source, re.S).group(1)
+                assert re.search(r"\$[A-Z]+\$\d+", formula) is None, (key, slot, formula)
+            assert re.search(r"<f>(.*?)</f>", category, re.S).group(1) == \
+                f"'{sheet}'!chartAnnual_calendar_year", (key, category)
+            assert "<numLit>" not in category and "<strLit>" not in category, key
+    # THE CATEGORY IS NEVER ABSENT AND NEVER EMPTY - the shape Excel left behind.
+    for key in YEAR_CHARTS:
+        part = _part_for(_by_key()[key]["title"])
+        assert "<cat />" not in part and "<cat/>" not in part, key
+        assert part.count("<ser>") == part.count("<cat>") == len(_by_key()[key]["series"]), key
+    # AND THE TWO RANGE-BOUND CHARTS ARE UNTOUCHED: plain area, no cache.
+    for key in ("histogram", "tornado"):
+        for category, value in _series_parts(_by_key()[key]["title"]):
+            for source in (category, value):
+                assert "<numCache>" not in source, (key, "a plain range gained a cache")
+                assert re.search(r"<f>'[A-Za-z_]+'!\$[A-Z]+\$\d+:\$[A-Z]+\$\d+</f>", source), (key, source)
+
+
 def test_03_the_names_are_sheet_scoped_and_cut_at_the_one_year_count_cell() -> None:
     """ONE YEAR-COUNT AUTHORITY. Every name's formula is its column's window
     range cut at the Results annual state cell the bridge guard already reads;
@@ -318,6 +380,79 @@ def test_06_the_manifest_refuses_a_binding_it_cannot_resolve() -> None:
 # ===========================================================================
 # 2. ANNUAL CASH FLOW
 # ===========================================================================
+INSPECTOR = PCCM_ROOT / "bootstrap" / "windows" / "phase10_chart_polish_inspect.ps1"
+GATE_HARNESS = PCCM_ROOT / "tests" / "phase10_chart_polish_gate_flow.ps1"
+
+
+def _gate_lines() -> dict[str, str]:
+    done = subprocess.run([PWSH, "-NoProfile", "-File", str(GATE_HARNESS),
+                           "-Inspector", str(INSPECTOR)],
+                          capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stdout + done.stderr
+    lines = {}
+    for line in done.stdout.splitlines():
+        parts = line.split("|", 2)
+        if len(parts) == 3 and parts[0] == "GATE":
+            lines[parts[1]] = parts[2]
+    assert lines, done.stdout
+    return lines
+
+
+@pytest.mark.skipif(not Path(PWSH).exists(), reason="no PowerShell on this host")
+def test_05b_the_windows_gate_reads_a_series_formula_and_refuses_the_defect() -> None:
+    """EXECUTED. The gate's decision functions, lifted from the inspector and
+    driven over real SERIES formulas - including the three Windows returned at
+    a2da277, verbatim. A blank categories argument, the reserved window as a
+    cell range and a category source this workbook does not declare are each
+    refused by their own verdict; the bound shape is accepted in both spellings
+    Excel uses; and a comma inside a series name or inside a reference does not
+    shift the argument the gate reads."""
+    lines = _gate_lines()
+    for case in ("windows.a2da277.s-curve-nominal", "windows.a2da277.s-curve-pv",
+                 "windows.a2da277.cash-flow"):
+        assert lines[case].startswith("categories=<blank>|"), (case, lines[case])
+        assert lines[case].endswith("|verdict=blank-categories"), (case, lines[case])
+        assert "values=Results!chartAnnual_" in lines[case], case
+    for case in ("bound.plain", "bound.quoted", "parsing.comma-in-name",
+                 "parsing.comma-in-reference"):
+        assert lines[case].endswith("|verdict=accepted"), (case, lines[case])
+        assert "chartAnnual_calendar_year" in lines[case].split("|")[0], case
+    for case in ("regression.window-range", "regression.short-range"):
+        assert lines[case].endswith("|verdict=cell-range"), (case, lines[case])
+    for case in ("regression.other-name", "regression.other-sheet"):
+        assert lines[case].endswith("|verdict=wrong-source"), (case, lines[case])
+
+
+def test_05c_the_windows_gate_reports_four_fields_per_series_and_fails_the_run() -> None:
+    """THE INSPECTOR IS A GATE, NOT A REPORT. It prints the formula, the
+    categories, the values and the point count for every series, and it exits
+    non-zero naming the chart when a year chart plots blank categories, the
+    reserved window, or any other category source. It still opens read-only,
+    runs no endpoint and saves nothing."""
+    code = INSPECTOR.read_text(encoding="utf-8")
+    for field in (".formula=", ".categories=", ".values=", ".points="):
+        assert code.count(field) == 1, field
+    assert "$script:YearCharts = @('Cumulative Cost Profile', 'Annual Cash Flow')" in code
+    assert "$script:CategoryName = 'chartAnnual_calendar_year'" in code
+    for reason in ("BLANK XValues/categories", "the whole reserved year window",
+                   "not Results!' + $script:CategoryName", "is not on the Dashboard at all"):
+        assert reason in code, reason
+    assert "if ($script:Failures.Count -eq 0) { exit 0 } else { exit 1 }" in code
+    assert "CHART BINDING FAIL" in code and "CHART BINDING PASS" in code
+    # READ-ONLY, STILL: opened read-only, closed unsaved, no endpoint run.
+    assert "$workbooks.Open($resolved, 0, $true)" in code
+    assert "$workbook.Close($false)" in code
+    for banned in (".Value2 =", "PCCM_", "SaveAs", ".Save()", "ListRows.Add"):
+        assert banned not in code, banned
+    # AND THE GATE NAMES THE SAME TWO CHARTS AND THE SAME NAME THE BUILDER WRITES.
+    titles = {chart["key"]: chart["title"] for chart in _projection()["charts"]}
+    for key in YEAR_CHARTS:
+        assert f"'{titles[key]}'" in code, key
+    block = _projection()["bridge"]["annual"]
+    category = next(c for c in block["columns"] if c["key"] == "calendar_year")
+    assert category["applied_binding"]["name"] == "chartAnnual_calendar_year"
+
+
 def test_10_the_annual_cash_flow_is_still_a_column_chart_of_the_published_profile() -> None:
     spec = _by_key()["annual_cash_flow"]
     assert spec["title"] == "Annual Cash Flow" and spec["kind"] == "column"
@@ -604,8 +739,19 @@ def test_40_the_bridge_formula_writers_are_the_previous_heads_and_the_extent_cel
     now = (PCCM_ROOT / "builder" / "pccm_builder" / "workbook_builder.py").read_text(encoding="utf-8")
     before = _git_show("builder/pccm_builder/workbook_builder.py")
     for name in ("_chart_bridge_distribution", "_chart_bridge_drivers", "_chart_bridge_status",
-                 "_absent", "_chart_ranges"):
+                 "_absent"):
         assert _function_text(now, name) == _function_text(before, name), name
+    # `_chart_ranges` RESOLVES ADDRESSES, it writes no formula, and it gained
+    # one mapping: the format each bridge column declares, which the cache a
+    # named reference carries states about its own data. Lines added, none
+    # removed, and taking the addition back out reproduces the previous head.
+    ranges_now = _function_text(now, "_chart_ranges")
+    added = ('            # The format each column declares, for the cache a named reference\n'
+             '            # carries: a cache states the format of the data it holds.\n'
+             '            "formats": {str(column["key"]): str(column["format"])\n'
+             '                        for column in block["columns"]},\n')
+    assert ranges_now.count(added) == 1
+    assert ranges_now.replace(added, "") == _function_text(before, "_chart_ranges")
     old_line = '    years = f"${nominal_col}${annual[\'year_count_row\']}"\n'
     new_lines = ('    # THE ONE YEAR-COUNT AUTHORITY: the same cell the applied-year chart names\n'
                  '    # cut at (_annual_extent_cell), so a chart can never outreach its guard.\n'

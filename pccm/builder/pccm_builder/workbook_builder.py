@@ -1536,6 +1536,15 @@ def applied_year_bindings(charts: dict[str, Any], results: dict[str, Any],
             "reference": f"{sheet}!{name}",
             "window_range": f"{sheet}!{window_range}",
             "extent_cell": f"{sheet}!{extent}",
+            # WHAT THE NAME SELECTS IN THE WORKBOOK AS BUILT, for the cache the
+            # chart part carries beside it. Stage A publishes no annual result,
+            # so the extent cell is blank, N() reads it as 0 and the MAX(1, ...)
+            # floor leaves exactly one selected row - a blank one. The cache
+            # therefore states one point and holds no value; Excel rewrites it
+            # from the plot on every save. This is not a second year-count
+            # authority: it is the floor of the one formula above, which the
+            # cache cannot contradict because it computes nothing.
+            "cached_points": 1,
             "formula": (f"{sheet}!${letter}${first}:INDEX({sheet}!{window_range},"
                         f"MAX(1,MIN({int(window)},N({sheet}!{extent}))))"),
         }
@@ -1564,6 +1573,10 @@ def _chart_ranges(charts: dict[str, Any], window: int) -> dict[str, dict[str, An
                         for column in block["columns"]},
             "headers": {str(column["key"]): str(column["header"])
                         for column in block["columns"]},
+            # The format each column declares, for the cache a named reference
+            # carries: a cache states the format of the data it holds.
+            "formats": {str(column["key"]): str(column["format"])
+                        for column in block["columns"]},
         }
     return out
 
@@ -1585,18 +1598,63 @@ def _axis_label_text(size: int):
                                  endParaRPr=properties)])
 
 
+# A REFERENCE INTO THE CHART PART, WITH THE CACHE EXCEL WRITES FOR A NAME.
+#
+# WINDOWS, FROM THE WORKBOOK BUILT AT a2da277. Both year charts came back from
+# Excel with an EMPTY second SERIES argument -
+#
+#     SERIES("Cumulative Nominal",,Results!chartAnnual_cumulative_nominal,1)
+#
+# - so the applied-year VALUE names survived and the applied-year CATEGORY name
+# did not. The markup was identical for both slots: `<c:numRef><c:f>` naming the
+# same kind of sheet-scoped name, and no `<c:numCache>` in either.
+#
+# WHY ONE SLOT AND NOT THE OTHER. Excel binds the two slots at different times.
+# A series' VALUES are re-bound when the workbook calculates, which is after
+# names are available, so a name there survives whatever the chart part cached.
+# The CATEGORY axis is built while the chart part is being read, before any
+# calculation: Excel resolves `c:cat` then and there. A literal area needs no
+# evaluation and resolves - which is why the histogram's and the tornado's
+# plain-range categories were never affected - but a defined name whose formula
+# is `$D$279:INDEX(...)` has to be EVALUATED to yield a range, and with no
+# cached data beside it Excel has neither a resolved reference nor anything to
+# draw. It drops the reference and numbers the categories 1, 2, 3 instead.
+#
+# THE CACHE IS WHAT EXCEL ITSELF WRITES, and `c:numRef` is defined as "a
+# reference to numeric data WITH A CACHE of the last values used" (ISO/IEC
+# 29500-1 §21.2.2.123). A chart built through Excel's own UI on a dynamic name -
+# the ordinary way this is done - carries one, which is why that chart keeps its
+# category binding across save and open and ours did not. So every reference
+# that names a bound range now carries the cache: the format code the bridge
+# column declares, and the point count the name selects in the workbook as
+# built. Nothing is fabricated - Stage A publishes no annual result, so the one
+# selected row is blank and the cache holds no point. Excel rewrites the cache
+# from the plot on every save.
+#
+# A PLAIN RANGE IS LEFT ALONE. It resolves without evaluation, it is what the
+# accepted charts have always carried, and adding a cache there would change a
+# reference that Windows has already proved survives.
+def _chart_reference(reference: str, cache: dict[str, Any] | None):
+    from openpyxl.chart.data_source import NumData, NumRef
+
+    item = NumRef(f=reference)
+    if cache is not None:
+        item.numCache = NumData(formatCode=str(cache["format_code"]),
+                                ptCount=int(cache["point_count"]))
+    return item
+
+
 # A SERIES OVER A REFERENCE THAT MAY BE A DEFINED NAME. openpyxl's Series
 # factory parses its argument as a cell range, which a name is not, so the
 # series is assembled from its parts: the value reference, the literal series
 # name, and the category reference - exactly what the factory builds for a
 # range, written the same way into the chart part.
-def _chart_series(reference: str, title: str, categories: str):
-    from openpyxl.chart.data_source import AxDataSource, NumDataSource, NumRef
+def _chart_series(values, title: str, categories):
+    from openpyxl.chart.data_source import AxDataSource, NumDataSource
     from openpyxl.chart.series import Series, SeriesLabel
 
-    item = Series(val=NumDataSource(numRef=NumRef(f=reference)),
-                  tx=SeriesLabel(v=title))
-    item.cat = AxDataSource(numRef=NumRef(f=categories))
+    item = Series(val=NumDataSource(numRef=values), tx=SeriesLabel(v=title))
+    item.cat = AxDataSource(numRef=categories)
     return item
 
 
@@ -1619,12 +1677,17 @@ def _render_dashboard_charts(worksheet: Worksheet, charts: dict[str, Any],
         # block declares one, its whole window range otherwise. Spelled with
         # its sheet either way, because an openpyxl reference without one
         # resolves against the chart's OWN sheet - the Dashboard - which holds
-        # none of this data.
-        def reference(key: str) -> str:
+        # none of this data. A NAME ALSO CARRIES THE CACHE Excel writes for
+        # one, without which Excel drops the reference while it reads the part;
+        # a plain range resolves without evaluation and carries none.
+        def reference(key: str):
             if key in bound:
-                return f"'{sheet}'!{bound[key]['name']}"
+                return _chart_reference(f"'{sheet}'!{bound[key]['name']}",
+                                        {"format_code": formats[block["formats"][key]],
+                                         "point_count": bound[key]["cached_points"]})
             column = block["columns"][key]
-            return f"'{sheet}'!${column}${first}:${column}${last}"
+            return _chart_reference(
+                f"'{sheet}'!${column}${first}:${column}${last}", None)
 
         if str(spec["kind"]) == "line":
             chart = LineChart()
