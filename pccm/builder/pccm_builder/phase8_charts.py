@@ -607,10 +607,26 @@ def _check_applied_binding_formula(chart_key: str, column_key: str,
         raise ValueError(
             f"{INSPECTION_FILENAME}: chart {chart_key!r} cuts {column_key!r} at "
             f"{bound['extent_cell']}; the block's extent is {binding['extent_cell']}")
-    if bound["window_range"] != window_range or bound["scope"] != sheet:
+    if bound["window_range"] != window_range:
         raise ValueError(
             f"{INSPECTION_FILENAME}: chart {chart_key!r} binds {column_key!r} "
             "to a window that is not its column's")
+    # WORKBOOK SCOPE, WHICH IS WHAT A CHART SOURCE IS RESOLVED IN. A
+    # worksheet-scoped name is what Windows found the category argument blank
+    # over; the reference keeps its sheet prefix and carries no file name, so
+    # it is stable across SaveAs.
+    if bound["scope"] != "workbook":
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: chart {chart_key!r} binds {column_key!r} through a "
+            f"{bound['scope']!r}-scoped name; a chart source is resolved at workbook scope")
+    if not bound["reference"].startswith(f"{sheet}!"):
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: chart {chart_key!r} reads {bound['reference']}, "
+            f"which does not name the {sheet} sheet the name's range lives on")
+    if "." in bound["reference"] or "!" != bound["reference"][len(sheet)]:
+        raise ValueError(
+            f"{INSPECTION_FILENAME}: chart {chart_key!r} reads {bound['reference']}, "
+            "which looks file-qualified; a chart reference must survive SaveAs")
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(bound["name"])):
         raise ValueError(
             f"{INSPECTION_FILENAME}: {bound['name']!r} is not a defined name")

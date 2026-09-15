@@ -163,11 +163,26 @@ def verify_workbook(
         if structure is not None and contract is not None:
             expected_names |= set(structure.defined_names)
             expected_names |= set(structure.alias_defined_names(contract))
+        # THE APPLIED-YEAR CHART NAMES, DERIVED FROM THE MANIFEST THAT DECLARES
+        # THEM - never listed here. The Dashboard's two year charts plot the
+        # applied years through one workbook-scoped name per annual bridge
+        # column, because a chart source is resolved at workbook scope. They
+        # name a range; they carry no value, decide nothing and are read by
+        # nothing but a chart.
+        #
+        # PERMITTED, NOT REQUIRED, and the difference matters: a workbook built
+        # without the chart layer - which this verification also runs over -
+        # carries none of them and is not thereby broken. What the control
+        # refuses is unchanged: a name the contracts do not declare and the
+        # manifest does not produce is still a build failure, and every
+        # contract-declared name must still be present.
+        chart_names = set(_applied_year_chart_names(spec, structure))
         found_names = set(workbook.defined_names)
         result.check(
             "only contract-declared defined names exist",
-            found_names == expected_names,
-            f"unexpected {sorted(found_names - expected_names)}, "
+            not (found_names - expected_names - chart_names)
+            and not (expected_names - found_names),
+            f"unexpected {sorted(found_names - expected_names - chart_names)}, "
             f"missing {sorted(expected_names - found_names)}",
         )
         expected_tables = (
@@ -384,6 +399,20 @@ def _phase9_formula_cells(spec, contract: InputContract | None = None) -> dict[s
                     if int("".join(c for c in cell if c.isdigit())) in captions)
     assert not landed, f"the Model Check plan writes a formula onto a caption row: {landed}"
     return {plan.sheet: cells}
+
+
+def _applied_year_chart_names(spec, structure) -> set[str]:
+    """Every workbook-scoped name the chart layer's applied-year binding
+    produces, asked of the one builder that produces them."""
+    from .workbook_builder import applied_year_bindings
+
+    shell = getattr(spec, "phase6_shell", None) or {}
+    charts = shell.get("charts")
+    if not charts or structure is None:
+        return set()
+    bindings = applied_year_bindings(
+        charts, shell["results"], int(structure.limits.max_generated_year_columns))
+    return {entry["name"] for entry in (bindings or {}).values()}
 
 
 def _formula_cells(workbook) -> list[str]:

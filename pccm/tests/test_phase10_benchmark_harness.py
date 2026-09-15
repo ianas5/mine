@@ -740,7 +740,8 @@ def test_55_no_builder_owner_changed_except_the_new_plan_and_its_wiring() -> Non
     # them too; each is proved by exact reversal before the Source Revision
     # claim is made on what is left.
     assert changed <= {"benchmark.py", "__init__.py", "build_stage_a.py",
-                       "workbook_builder.py", "phase8_charts.py", "spec_loader.py"}, sorted(changed)
+                       "workbook_builder.py", "phase8_charts.py", "spec_loader.py",
+                       "verify.py"}, sorted(changed)
     assert "workbook_builder.py" in changed, "the declared Source Revision change is absent"
     _assert_only_source_revision_added(_builder_diff_beneath_the_chart_polish(ACCEPTED))
 
@@ -754,7 +755,8 @@ def _builder_diff_beneath_the_chart_polish(commit: str) -> str:
     import sys as _sys
     _sys.path.insert(0, str(PCCM_ROOT / "tests"))
     from chart_polish_declaration import strip_chart_polish
-    for name in ("builder/pccm_builder/phase8_charts.py", "builder/pccm_builder/spec_loader.py"):
+    for name in ("builder/pccm_builder/phase8_charts.py", "builder/pccm_builder/spec_loader.py",
+                 "builder/pccm_builder/verify.py"):
         current = strip_chart_polish(name, (PCCM_ROOT / name).read_text(encoding="utf-8"))
         assert current == _git("show", f"{commit}:pccm/{name}"), (
             f"{name} moved outside the declared chart polish")
@@ -1881,6 +1883,7 @@ def test_137_the_correction_introduces_no_release_of_protection() -> None:
     # _production_changed_since and _builder_diff_beneath_the_chart_polish.
     assert changed == ["pccm/builder/pccm_builder/phase8_charts.py",
                        "pccm/builder/pccm_builder/spec_loader.py",
+                       "pccm/builder/pccm_builder/verify.py",
                        "pccm/builder/pccm_builder/workbook_builder.py",
                        "pccm/spec/workbook.yaml",
                        "pccm/src/vba/ThisWorkbook.vba",

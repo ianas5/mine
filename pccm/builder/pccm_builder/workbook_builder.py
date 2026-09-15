@@ -1441,11 +1441,31 @@ def _render_chart_bridge(worksheet: Worksheet, charts: dict[str, Any],
     bindings = applied_year_bindings(charts, results, window)
     if bindings:
         from openpyxl.workbook.defined_name import DefinedName
+
+        # WORKBOOK SCOPE, WHICH IS WHAT A CHART SOURCE NEEDS. These were
+        # WORKSHEET-scoped names on Results, and Windows then reported the
+        # category argument of both year charts blank while the value argument
+        # - the same kind of name, in the same chart, on the same sheet - came
+        # through. Microsoft's own dynamic-chart pattern defines the names at
+        # WORKBOOK level, and that is the scope a chart source is resolved in.
+        #
+        # THE REFERENCE KEEPS ITS SHEET PREFIX, `Results!<name>`, and carries no
+        # file name. A sheet-qualified reference to a workbook-scoped name
+        # resolves to that name, and nothing in it changes when Stage A is saved
+        # as Stage B or the distribution copy is saved under another name, which
+        # a file-qualified reference could not promise.
+        #
+        # NOTHING ELSE MOVES: the same five columns of the same annual bridge,
+        # cut at the same Years Covered cell by the same formula.
+        book = worksheet.parent
         for entry in bindings.values():
+            if entry["name"] in book.defined_names:
+                raise ValueError(
+                    f"defined name {entry['name']!r} already exists in the workbook")
             if entry["name"] in worksheet.defined_names:
                 raise ValueError(
-                    f"defined name {entry['name']!r} already exists on {worksheet.title}")
-            worksheet.defined_names[entry["name"]] = DefinedName(
+                    f"defined name {entry['name']!r} is scoped to {worksheet.title}")
+            book.defined_names[entry["name"]] = DefinedName(
                 name=entry["name"], attr_text=entry["formula"])
     header(bridge["distribution"])
     emit(bridge["distribution"],
@@ -1532,19 +1552,13 @@ def applied_year_bindings(charts: dict[str, Any], results: dict[str, Any],
         window_range = f"${letter}${first}:${letter}${last}"
         out[key] = {
             "name": name,
-            "scope": sheet,
+            # WORKBOOK-SCOPED: the scope a chart source is resolved in. The
+            # reference below still names the sheet, which is what keeps it
+            # stable across SaveAs.
+            "scope": "workbook",
             "reference": f"{sheet}!{name}",
             "window_range": f"{sheet}!{window_range}",
             "extent_cell": f"{sheet}!{extent}",
-            # WHAT THE NAME SELECTS IN THE WORKBOOK AS BUILT, for the cache the
-            # chart part carries beside it. Stage A publishes no annual result,
-            # so the extent cell is blank, N() reads it as 0 and the MAX(1, ...)
-            # floor leaves exactly one selected row - a blank one. The cache
-            # therefore states one point and holds no value; Excel rewrites it
-            # from the plot on every save. This is not a second year-count
-            # authority: it is the floor of the one formula above, which the
-            # cache cannot contradict because it computes nothing.
-            "cached_points": 1,
             "formula": (f"{sheet}!${letter}${first}:INDEX({sheet}!{window_range},"
                         f"MAX(1,MIN({int(window)},N({sheet}!{extent}))))"),
         }
@@ -1573,10 +1587,6 @@ def _chart_ranges(charts: dict[str, Any], window: int) -> dict[str, dict[str, An
                         for column in block["columns"]},
             "headers": {str(column["key"]): str(column["header"])
                         for column in block["columns"]},
-            # The format each column declares, for the cache a named reference
-            # carries: a cache states the format of the data it holds.
-            "formats": {str(column["key"]): str(column["format"])
-                        for column in block["columns"]},
         }
     return out
 
@@ -1598,69 +1608,36 @@ def _axis_label_text(size: int):
                                  endParaRPr=properties)])
 
 
-# A REFERENCE INTO THE CHART PART, WITH THE CACHE EXCEL WRITES FOR A NAME.
+# A SERIES OVER A REFERENCE THAT IS A DEFINED NAME. openpyxl's Series factory
+# parses its argument as a cell range, which a name is not, so a NAMED series is
+# assembled from its parts - the value reference, the literal series name, the
+# category reference - producing exactly the markup the factory produces for a
+# range. A series over ordinary ranges does NOT come through here: it is built
+# by openpyxl's own factory and `set_categories`, the path the accepted charts
+# have always used and that Windows proved at P8-3.
 #
-# WINDOWS, FROM THE WORKBOOK BUILT AT a2da277. Both year charts came back from
-# Excel with an EMPTY second SERIES argument -
-#
-#     SERIES("Cumulative Nominal",,Results!chartAnnual_cumulative_nominal,1)
-#
-# - so the applied-year VALUE names survived and the applied-year CATEGORY name
-# did not. The markup was identical for both slots: `<c:numRef><c:f>` naming the
-# same kind of sheet-scoped name, and no `<c:numCache>` in either.
-#
-# WHY ONE SLOT AND NOT THE OTHER. Excel binds the two slots at different times.
-# A series' VALUES are re-bound when the workbook calculates, which is after
-# names are available, so a name there survives whatever the chart part cached.
-# The CATEGORY axis is built while the chart part is being read, before any
-# calculation: Excel resolves `c:cat` then and there. A literal area needs no
-# evaluation and resolves - which is why the histogram's and the tornado's
-# plain-range categories were never affected - but a defined name whose formula
-# is `$D$279:INDEX(...)` has to be EVALUATED to yield a range, and with no
-# cached data beside it Excel has neither a resolved reference nor anything to
-# draw. It drops the reference and numbers the categories 1, 2, 3 instead.
-#
-# THE CACHE IS WHAT EXCEL ITSELF WRITES, and `c:numRef` is defined as "a
-# reference to numeric data WITH A CACHE of the last values used" (ISO/IEC
-# 29500-1 §21.2.2.123). A chart built through Excel's own UI on a dynamic name -
-# the ordinary way this is done - carries one, which is why that chart keeps its
-# category binding across save and open and ours did not. So every reference
-# that names a bound range now carries the cache: the format code the bridge
-# column declares, and the point count the name selects in the workbook as
-# built. Nothing is fabricated - Stage A publishes no annual result, so the one
-# selected row is blank and the cache holds no point. Excel rewrites the cache
-# from the plot on every save.
-#
-# A PLAIN RANGE IS LEFT ALONE. It resolves without evaluation, it is what the
-# accepted charts have always carried, and adding a cache there would change a
-# reference that Windows has already proved survives.
-def _chart_reference(reference: str, cache: dict[str, Any] | None):
-    from openpyxl.chart.data_source import NumData, NumRef
-
-    item = NumRef(f=reference)
-    if cache is not None:
-        item.numCache = NumData(formatCode=str(cache["format_code"]),
-                                ptCount=int(cache["point_count"]))
-    return item
-
-
-# A SERIES OVER A REFERENCE THAT MAY BE A DEFINED NAME. openpyxl's Series
-# factory parses its argument as a cell range, which a name is not, so the
-# series is assembled from its parts: the value reference, the literal series
-# name, and the category reference - exactly what the factory builds for a
-# range, written the same way into the chart part.
-def _chart_series(values, title: str, categories):
-    from openpyxl.chart.data_source import AxDataSource, NumDataSource
+# THE CACHE THAT WAS HERE IS GONE. The build at 10f5e62 gave every named
+# reference a `<c:numCache>` carrying a format code and a point count with no
+# points beside it, on the reasoning that Excel keeps a reference it has
+# something cached for. Windows then reported the categories blank on ALL FOUR
+# charts - including the histogram and the tornado, whose category markup had
+# not changed by one byte since ebeae65 and which Excel had accepted before. A
+# cache that declares a point it does not carry is the only thing those two
+# charts' workbook gained, so it is what cost them their categories, and it is
+# withdrawn. A reference carries its formula and nothing else, exactly as the
+# value references that Windows has twice proved survive.
+def _chart_series(values: str, title: str, categories: str):
+    from openpyxl.chart.data_source import AxDataSource, NumDataSource, NumRef
     from openpyxl.chart.series import Series, SeriesLabel
 
-    item = Series(val=NumDataSource(numRef=values), tx=SeriesLabel(v=title))
-    item.cat = AxDataSource(numRef=categories)
+    item = Series(val=NumDataSource(numRef=NumRef(f=values)), tx=SeriesLabel(v=title))
+    item.cat = AxDataSource(numRef=NumRef(f=categories))
     return item
 
 
 def _render_dashboard_charts(worksheet: Worksheet, charts: dict[str, Any],
                              results: dict[str, Any], window: int) -> None:
-    from openpyxl.chart import BarChart, LineChart
+    from openpyxl.chart import BarChart, LineChart, Series
 
     ranges = _chart_ranges(charts, window)
     bindings = applied_year_bindings(charts, results, window) or {}
@@ -1677,17 +1654,12 @@ def _render_dashboard_charts(worksheet: Worksheet, charts: dict[str, Any],
         # block declares one, its whole window range otherwise. Spelled with
         # its sheet either way, because an openpyxl reference without one
         # resolves against the chart's OWN sheet - the Dashboard - which holds
-        # none of this data. A NAME ALSO CARRIES THE CACHE Excel writes for
-        # one, without which Excel drops the reference while it reads the part;
-        # a plain range resolves without evaluation and carries none.
-        def reference(key: str):
+        # none of this data.
+        def reference(key: str) -> str:
             if key in bound:
-                return _chart_reference(f"'{sheet}'!{bound[key]['name']}",
-                                        {"format_code": formats[block["formats"][key]],
-                                         "point_count": bound[key]["cached_points"]})
+                return f"'{sheet}'!{bound[key]['name']}"
             column = block["columns"][key]
-            return _chart_reference(
-                f"'{sheet}'!${column}${first}:${column}${last}", None)
+            return f"'{sheet}'!${column}${first}:${column}${last}"
 
         if str(spec["kind"]) == "line":
             chart = LineChart()
@@ -1721,13 +1693,25 @@ def _render_dashboard_charts(worksheet: Worksheet, charts: dict[str, Any],
                 x=float(area["x"]), y=float(area["y"]),
                 w=float(area["w"]), h=float(area["h"])))
 
+        # TWO PATHS, AND ORDINARY RANGES TAKE THE ACCEPTED ONE. A chart whose
+        # block declares no applied-year binding is built exactly as every
+        # accepted chart in this workbook has been since P8-3 proved them on
+        # Windows: openpyxl's own Series factory over a range string, and
+        # `set_categories` for the category range. Only a chart plotting the
+        # applied-year NAMES is assembled by hand, because that factory parses
+        # its argument as a cell range and a name is not one.
         categories = reference(str(spec["categories"]))
         for series in spec["series"]:
-            item = _chart_series(reference(str(series["key"])), str(series["name"]),
-                                 categories)
+            if bound:
+                item = _chart_series(reference(str(series["key"])), str(series["name"]),
+                                     categories)
+            else:
+                item = Series(reference(str(series["key"])), title=str(series["name"]))
             if str(spec["kind"]) == "line":
                 item.smooth = False
             chart.series.append(item)
+        if not bound:
+            chart.set_categories(categories)
 
         # A LEGEND EARNS ITS SPACE OR IT GOES. One series needs no key.
         if len(spec["series"]) < 2:

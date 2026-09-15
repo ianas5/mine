@@ -29,6 +29,18 @@ foreach ($name in @('Split-SeriesFormula', 'Get-SeriesField', 'Test-CategoryBind
 $script:CategoryName = 'chartAnnual_calendar_year'
 
 function Emit { param([string]$Case, [string]$Text) Write-Output ('GATE|' + $Case + '|' + $Text) }
+# THE LITERAL CONTRACT, read the same way: a fixed-population chart plots an
+# ordinary cell range and must never come back blank either.
+function Read-Literal {
+    param([string]$Case, [string]$Formula)
+    $parts = Split-SeriesFormula -Formula $Formula
+    $categories = Get-SeriesField -Parts $parts -Index 1
+    $verdict = 'accepted'
+    if ([string]::IsNullOrWhiteSpace($categories)) { $verdict = 'blank-categories' }
+    elseif (-not (Test-CellRange -Reference $categories)) { $verdict = 'not-a-range' }
+    Emit $Case ('categories=' + $(if ($categories -eq '') { '<blank>' } else { $categories }) + '|verdict=' + $verdict)
+}
+
 function Read-Series {
     param([string]$Case, [string]$Formula)
     $parts = Split-SeriesFormula -Formula $Formula
@@ -59,3 +71,9 @@ Read-Series 'regression.other-sheet' '=SERIES("Annual Nominal",Dashboard!chartAn
 #    category argument - and a reference carrying one inside brackets.
 Read-Series 'parsing.comma-in-name' '=SERIES("Cumulative, Nominal",Results!chartAnnual_calendar_year,Results!chartAnnual_cumulative_nominal,1)'
 Read-Series 'parsing.comma-in-reference' '=SERIES("Annual Nominal",Results!chartAnnual_calendar_year,OFFSET(Results!$F$279,0,0,MAX(1,2),1),1)'
+# 6. THE FIXED-POPULATION CHARTS, whose categories Windows also found blank at
+#    10f5e62 and whose accepted source is an ordinary range.
+Read-Literal 'literal.histogram-accepted' '=SERIES("Iterations",Results!$B$487:$B$506,Results!$F$487:$F$506,1)'
+Read-Literal 'literal.tornado-accepted' '=SERIES("Rho",Results!$B$515:$B$524,Results!$D$515:$D$524,1)'
+Read-Literal 'literal.windows.10f5e62' '=SERIES("Iterations",,Results!$F$487:$F$506,1)'
+Read-Literal 'literal.name-instead-of-range' '=SERIES("Iterations",Results!chartAnnual_calendar_year,Results!$F$487:$F$506,1)'

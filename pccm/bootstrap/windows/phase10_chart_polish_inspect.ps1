@@ -37,11 +37,22 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
-# THE CONTRACT THIS GATE HOLDS THE WORKBOOK TO. The two year charts and the one
-# category source they must plot. The name is the builder's, from the manifest's
-# declared prefix and the calendar-year column key; it is spelled once here
-# because a Windows gate cannot import the projection.
+# THE CONTRACT THIS GATE HOLDS THE WORKBOOK TO, AND IT IS TWO CONTRACTS.
+#
+# THE TWO YEAR CHARTS plot the applied years, so their categories must be the
+# dynamic calendar-year name and must never be a cell range - a range there is
+# the 200-row reserved window coming back.
+#
+# THE HISTOGRAM AND THE TORNADO plot fixed populations - the declared bin count
+# and the top-N drivers - so their categories must be an ordinary cell RANGE,
+# the accepted literal source every Windows round before the chart polish
+# proved. A name there would mean the correction had wandered into a chart that
+# never needed one.
+#
+# NEITHER may be blank. A blank category argument is what Excel leaves behind
+# when it drops a binding, and it is the defect this gate exists for.
 $script:YearCharts = @('Cumulative Cost Profile', 'Annual Cash Flow')
+$script:LiteralCharts = @('Total Cost Distribution', 'Top Drivers by Rank Correlation')
 $script:CategoryName = 'chartAnnual_calendar_year'
 $script:Lines = New-Object System.Collections.ArrayList
 $script:Failures = New-Object System.Collections.ArrayList
@@ -152,6 +163,7 @@ try {
             $count = [int]$objects.Count
             Emit-Line ('CHARTS|count=' + [string]$count)
             $seenYearCharts = @()
+            $seenLiteralCharts = @()
             for ($i = 1; $i -le $count; $i++) {
                 $object = $null; $chart = $null; $collection = $null
                 try {
@@ -161,7 +173,9 @@ try {
                     try { if ($chart.HasTitle) { $title = [string]$chart.ChartTitle.Text } } catch { $title = '<unreadable>' }
                     Emit-Line ('CHART|' + $title + '|type=' + [string]$chart.ChartType)
                     $isYearChart = ($script:YearCharts -contains $title)
+                    $isLiteralChart = ($script:LiteralCharts -contains $title)
                     if ($isYearChart) { $seenYearCharts = $seenYearCharts + $title }
+                    if ($isLiteralChart) { $seenLiteralCharts = $seenLiteralCharts + $title }
                     $collection = $chart.SeriesCollection()
                     $seriesCount = [int]$collection.Count
                     if ($isYearChart -and ($seriesCount -lt 1)) {
@@ -182,16 +196,17 @@ try {
                             Emit-Line ($label + '.categories=' + $(if ($categories -eq '') { '<blank>' } else { $categories }))
                             Emit-Line ($label + '.values=' + $(if ($values -eq '') { '<blank>' } else { $values }))
                             Emit-Line ($label + '.points=' + $points)
-                            if ($isYearChart) {
-                                # THE GATE, AND IT IS THREE SEPARATE FAILURES. A blank
-                                # categories argument is what Excel leaves behind when it
-                                # drops the binding; a cell range is the reserved window
-                                # coming back; anything else is a category source this
-                                # workbook does not declare.
-                                if ([string]::IsNullOrWhiteSpace($categories)) {
-                                    Add-Failure $title ('series ' + [string]$s +
-                                        ' has BLANK XValues/categories; Excel dropped the applied-year binding and is numbering the categories 1, 2, 3')
-                                } elseif (Test-CellRange -Reference $categories) {
+                            # THE GATE. A BLANK CATEGORY ARGUMENT FAILS EVERY CHART -
+                            # it is what Excel leaves behind when it drops a binding,
+                            # and the histogram and the tornado came back blank too.
+                            if ([string]::IsNullOrWhiteSpace($categories)) {
+                                Add-Failure $title ('series ' + [string]$s +
+                                    ' has BLANK XValues/categories; Excel dropped the binding and is numbering the categories 1, 2, 3')
+                            } elseif ($isYearChart) {
+                                # A YEAR CHART PLOTS THE APPLIED-YEAR NAME. A cell range
+                                # is the reserved window coming back; anything else is a
+                                # category source this workbook does not declare.
+                                if (Test-CellRange -Reference $categories) {
                                     Add-Failure $title ('series ' + [string]$s +
                                         ' plots the cell range ' + $categories +
                                         '; the whole reserved year window, not the applied years')
@@ -199,9 +214,25 @@ try {
                                     Add-Failure $title ('series ' + [string]$s +
                                         ' plots categories from ' + $categories + ', not Results!' + $script:CategoryName)
                                 }
-                                if ([string]::IsNullOrWhiteSpace($values)) {
-                                    Add-Failure $title ('series ' + [string]$s + ' has BLANK values')
+                            } elseif ($isLiteralChart) {
+                                # A FIXED-POPULATION CHART PLOTS ITS ACCEPTED LITERAL
+                                # RANGE. A name here would mean the applied-year
+                                # correction had reached a chart that never needed it.
+                                if (-not (Test-CellRange -Reference $categories)) {
+                                    Add-Failure $title ('series ' + [string]$s +
+                                        ' plots categories from ' + $categories +
+                                        '; this chart plots a fixed population and its categories are an ordinary cell range')
                                 }
+                            }
+                            if ([string]::IsNullOrWhiteSpace($values)) {
+                                Add-Failure $title ('series ' + [string]$s + ' has BLANK values')
+                            }
+                            # AND THE POINT COUNT IS REPORTED FOR EVERY SERIES, so a
+                            # year chart drawing 200 points instead of the produced
+                            # years is visible in the record even where it passes.
+                            if ($isYearChart -and ($points -ne '<unreadable>') -and ([int]$points -gt 200)) {
+                                Add-Failure $title ('series ' + [string]$s +
+                                    ' draws ' + $points + ' points, more than the reserved year window holds')
                             }
                         } finally { Release-Object $series }
                     }
@@ -228,6 +259,11 @@ try {
             }
             foreach ($wanted in $script:YearCharts) {
                 if (-not ($seenYearCharts -contains $wanted)) {
+                    Add-Failure $wanted 'is not on the Dashboard at all'
+                }
+            }
+            foreach ($wanted in $script:LiteralCharts) {
+                if (-not ($seenLiteralCharts -contains $wanted)) {
                     Add-Failure $wanted 'is not on the Dashboard at all'
                 }
             }

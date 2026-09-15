@@ -920,6 +920,11 @@ def test_71_no_implementation_owner_in_the_builder_changed() -> None:
         # - it plots published values and computes none - and its polish
         # reverses to the accepted bytes exactly.
         "phase8_charts.py",
+        # And the structural verification beside it, which now derives those
+        # workbook-scoped chart names from the manifest rather than refusing
+        # them. It computes nothing and owns no rule; the reversal below proves
+        # it moved only for the declared chart polish.
+        "verify.py",
     }
     forbidden = sorted(changed - allowed)
     assert forbidden == [], f"implementation modules changed: {forbidden}"
@@ -927,10 +932,11 @@ def test_71_no_implementation_owner_in_the_builder_changed() -> None:
     import sys as _sys
     _sys.path.insert(0, str(PCCM_ROOT / "tests"))
     from chart_polish_declaration import strip_chart_polish
-    name = "builder/pccm_builder/phase8_charts.py"
-    if "phase8_charts.py" in changed:
-        assert strip_chart_polish(name, (PCCM_ROOT / name).read_text(encoding="utf-8")) == \
-            _git("show", f"{ACCEPTED}:pccm/{name}"), "phase8_charts.py moved outside the chart polish"
+    for short in ("phase8_charts.py", "verify.py"):
+        name = f"builder/pccm_builder/{short}"
+        if short in changed:
+            assert strip_chart_polish(name, (PCCM_ROOT / name).read_text(encoding="utf-8")) == \
+                _git("show", f"{ACCEPTED}:pccm/{name}"), f"{short} moved outside the chart polish"
     # AND THE TWO SHARED FILES CHANGED ONLY WHERE THEY HAD TO. `workbook_builder`
     # gained a dispatch arm and a version literal; nothing else in it moved -
     # beneath the declared chart polish, which is taken off the current side.

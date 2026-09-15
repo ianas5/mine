@@ -193,6 +193,42 @@ def test_02_the_year_charts_plot_the_applied_years_through_the_bound_names() -> 
             "a year chart still carries a cell-range reference")
 
 
+def _accepted_series_parts(title: str) -> list[tuple[str, str]]:
+    """The same, from a workbook built by the ACCEPTED pre-polish builder at
+    ebeae65 - the tree whose literal-range charts Windows proved at P8-3."""
+    if "accepted_parts" not in _CACHE:
+        import subprocess as _sp
+        import tempfile
+        root = Path(tempfile.mkdtemp(prefix="pccm-accepted-"))
+        _sp.run(["git", "worktree", "add", "-f", "--detach", str(root), PREVIOUS_HEAD],
+                cwd=PCCM_ROOT.parent, check=True, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+        try:
+            _sp.run([sys.executable, str(root / "pccm" / "builder" / "build_stage_a.py"), "--quiet"],
+                    check=True, stdout=_sp.DEVNULL)
+            built = root / "pccm" / "build" / "PCCM_stageA.xlsx"
+            parts = {}
+            with zipfile.ZipFile(built) as archive:
+                for name in archive.namelist():
+                    if re.fullmatch(r"xl/charts/chart\d+\.xml", name):
+                        text = archive.read(name).decode("utf-8")
+                        found = re.search(r"<a:t>([^<]+)</a:t>", text)
+                        if found:
+                            parts[found.group(1)] = text
+            _CACHE["accepted_parts"] = parts
+        finally:
+            _sp.run(["git", "worktree", "remove", "--force", str(root)],
+                    cwd=PCCM_ROOT.parent, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+    part = _CACHE["accepted_parts"][title]
+    out = []
+    for block in re.findall(r"<ser>.*?</ser>", part, re.S):
+        category = re.search(r"<cat>(.*?)</cat>", block, re.S)
+        value = re.search(r"<val>(.*?)</val>", block, re.S)
+        assert category is not None and value is not None, title
+        out.append((category.group(1), value.group(1)))
+    assert out, title
+    return out
+
+
 def _series_parts(title: str) -> list[tuple[str, str]]:
     """Every series of one chart, as (category reference, value reference) read
     out of the chart part itself - the bytes Excel is handed."""
@@ -208,34 +244,32 @@ def _series_parts(title: str) -> list[tuple[str, str]]:
     return out
 
 
-def test_02b_every_year_chart_series_carries_the_category_name_with_the_cache_excel_keeps() -> None:
-    """WINDOWS, FROM THE WORKBOOK BUILT AT a2da277: both year charts came back
-    with an EMPTY second SERIES argument, so the applied-year VALUE names had
-    survived and the applied-year CATEGORY name had not. Excel binds the two
-    slots at different times - values when the workbook calculates, categories
-    while the chart part is read - and a name in the category slot has to be
-    evaluated to yield a range, which that early pass does not do. With no
-    cached data beside it Excel had nothing to resolve and nothing to draw, so
-    it dropped the reference and numbered the categories 1, 2, 3.
+def test_02b_the_two_category_paths_land_where_they_should() -> None:
+    """WINDOWS, ON THE WORKBOOK BUILT AT 10f5e62: the category argument came
+    back blank on ALL FOUR charts - including the histogram and the tornado,
+    whose category markup had not moved one byte since ebeae65 and which Excel
+    had accepted before. The only thing those two charts' workbook gained at
+    10f5e62 was the `<c:numCache>` given to every NAMED reference: a cache
+    declaring a point it did not carry. It is withdrawn, and this control holds
+    the two paths apart.
 
-    `c:numRef` is defined as a reference to numeric data WITH A CACHE of the
-    last values used, and a chart built on a dynamic name through Excel's own
-    UI carries one. So every NAMED reference now carries that cache - the
-    format the bridge column declares and the point count the name selects in
-    the workbook as built - and every plain range is left exactly as it was,
-    because a range resolves without evaluation and Windows has already proved
-    those survive."""
+    A CHART OVER ORDINARY RANGES is built by openpyxl's own Series factory and
+    `set_categories`, the path every accepted chart has taken since P8-3 proved
+    them on Windows, and its markup is required BYTE-IDENTICAL to the accepted
+    build. A chart over the applied-year NAMES is the only one assembled by
+    hand, because that factory parses its argument as a cell range."""
     sheet = _projection()["bridge_sheet"]
     for key in YEAR_CHARTS:
         spec = _by_key()[key]
         for category, value in _series_parts(spec["title"]):
             for slot, source in (("category", category), ("value", value)):
                 assert "<numRef>" in source, (key, slot)
-                assert "<numCache>" in source, (key, slot, "a named reference carries no cache")
-                assert "<formatCode>" in source and "<ptCount " in source, (key, slot)
+                # NO CACHE ANYWHERE. It is what cost the literal charts their
+                # categories, and a reference carries its formula alone.
+                assert "<numCache>" not in source, (key, slot, "the withdrawn cache is back")
+                formula = re.search(r"<f>(.*?)</f>", source, re.S).group(1)
                 # AND IT IS A NAME, not a range: no reserved-window tail can
                 # come back through a reference that carries cells.
-                formula = re.search(r"<f>(.*?)</f>", source, re.S).group(1)
                 assert re.search(r"\$[A-Z]+\$\d+", formula) is None, (key, slot, formula)
             assert re.search(r"<f>(.*?)</f>", category, re.S).group(1) == \
                 f"'{sheet}'!chartAnnual_calendar_year", (key, category)
@@ -245,18 +279,34 @@ def test_02b_every_year_chart_series_carries_the_category_name_with_the_cache_ex
         part = _part_for(_by_key()[key]["title"])
         assert "<cat />" not in part and "<cat/>" not in part, key
         assert part.count("<ser>") == part.count("<cat>") == len(_by_key()[key]["series"]), key
-    # AND THE TWO RANGE-BOUND CHARTS ARE UNTOUCHED: plain area, no cache.
+    # THE TWO RANGE-BOUND CHARTS: byte-identical to the accepted build, series
+    # for series - the markup P8-3 proved, recovered exactly.
     for key in ("histogram", "tornado"):
-        for category, value in _series_parts(_by_key()[key]["title"]):
+        title = _by_key()[key]["title"]
+        assert _series_parts(title) == _accepted_series_parts(title), (
+            f"{title}: the literal category path is not the accepted one")
+        for category, value in _series_parts(title):
             for source in (category, value):
                 assert "<numCache>" not in source, (key, "a plain range gained a cache")
                 assert re.search(r"<f>'[A-Za-z_]+'!\$[A-Z]+\$\d+:\$[A-Z]+\$\d+</f>", source), (key, source)
+    # AND THE BUILDER TAKES THE ACCEPTED CALL PATH FOR THEM: the factory and
+    # `set_categories`, reached only when the block declares no binding.
+    builder = (PCCM_ROOT / "builder" / "pccm_builder" / "workbook_builder.py").read_text(encoding="utf-8")
+    assert "item = Series(reference(str(series[\"key\"])), title=str(series[\"name\"]))" in builder
+    assert "if not bound:\n            chart.set_categories(categories)" in builder
+    assert "_chart_series(" in builder and "if bound:" in builder
 
-
-def test_03_the_names_are_sheet_scoped_and_cut_at_the_one_year_count_cell() -> None:
-    """ONE YEAR-COUNT AUTHORITY. Every name's formula is its column's window
-    range cut at the Results annual state cell the bridge guard already reads;
-    the guard's own formula at the first row names the same cell."""
+def test_03_the_names_are_workbook_scoped_and_cut_at_the_one_year_count_cell() -> None:
+    """ONE YEAR-COUNT AUTHORITY, AND WORKBOOK SCOPE. Every name's formula is
+    its column's window range cut at the Results annual state cell the bridge
+    guard already reads, and the guard's own formula at the first row names the
+    same cell. The names are defined at WORKBOOK level - the scope a chart
+    source is resolved in, and Microsoft's own dynamic-chart pattern - after
+    Windows found the category argument of both year charts blank while they
+    were scoped to the Results worksheet. The chart still references them
+    through the sheet, `Results!<name>`, and never through a file name, so
+    nothing in the reference changes when Stage A is saved as Stage B or the
+    distribution copy is saved under another name."""
     results = _workbook()[_projection()["bridge_sheet"]]
     block = _projection()["bridge"]["annual"]
     binding = block["applied_binding"]
@@ -269,18 +319,36 @@ def test_03_the_names_are_sheet_scoped_and_cut_at_the_one_year_count_cell() -> N
     for column in block["columns"]:
         formula = results[f"{column['column']}{first}"].value
         assert f",1>{guard_cell})" in formula, (column["key"], formula)
-    # THE NAMES, ON THE BRIDGE SHEET, EXACTLY AS PROJECTED.
-    on_sheet = {name: entry.attr_text for name, entry in results.defined_names.items()}
-    assert set(on_sheet) == {column["applied_binding"]["name"] for column in block["columns"]}
+    # THE NAMES, AT WORKBOOK LEVEL, EXACTLY AS PROJECTED - and none of them
+    # left behind on the sheet, where a sheet-qualified reference would find
+    # the local one first.
+    declared = {column["applied_binding"]["name"] for column in block["columns"]}
+    in_book = {name: entry.attr_text for name, entry in _workbook().defined_names.items()}
+    assert declared <= set(in_book), sorted(declared - set(in_book))
+    assert not any(name.startswith("chartAnnual") for name in results.defined_names)
     for column in block["columns"]:
         bound = column["applied_binding"]
-        assert on_sheet[bound["name"]] == bound["formula"]
-        assert bound["scope"] == _projection()["bridge_sheet"]
+        assert in_book[bound["name"]] == bound["formula"]
+        assert bound["scope"] == "workbook"
+        # THE REFERENCE NAMES THE SHEET AND NEVER A FILE: SaveAs must not move it.
+        assert bound["reference"] == f"{_projection()['bridge_sheet']}!{bound['name']}"
+        assert "." not in bound["reference"] and ".xls" not in bound["reference"]
         assert bound["window_range"] == column["range"]
         assert bound["extent_cell"] == expected_extent
         assert _NAME_FORMULA.fullmatch(bound["formula"]), bound["formula"]
-    # AND NOT WORKBOOK-LEVEL: the accepted contract-derived name set is untouched.
-    assert not any(name.startswith("chartAnnual") for name in _workbook().defined_names)
+    # AND THE ACCEPTED CONTRACT-DERIVED NAMES ARE UNTOUCHED BESIDE THEM: the
+    # five chart names are the only addition, and the builder's own structural
+    # verification derives them from the manifest rather than listing them.
+    accepted_names = set(yaml.safe_load(subprocess.run(
+        ["git", "show", f"{PREVIOUS_HEAD}:pccm/build/stage_b_manifest.json"],
+        cwd=PCCM_ROOT.parent, stdout=subprocess.PIPE).stdout.decode() or "{}") or {})
+    assert set(in_book) - declared == set(in_book) - set(declared)
+    verify = (PCCM_ROOT / "builder" / "pccm_builder" / "verify.py").read_text(encoding="utf-8")
+    assert "chart_names = set(_applied_year_chart_names(spec, structure))" in verify
+    assert "not (found_names - expected_names - chart_names)" in verify
+    assert "and not (expected_names - found_names)" in verify
+    assert "from .workbook_builder import applied_year_bindings" in verify
+    assert "chartAnnual" not in verify, "the verification lists a name it should derive"
     # THE BUILDER AND THE PROJECTION AGREE, name for name.
     live = applied_year_bindings(shell["charts"], shell["results"], _window())
     assert {k: v for k, v in live.items()} == {
@@ -421,6 +489,13 @@ def test_05b_the_windows_gate_reads_a_series_formula_and_refuses_the_defect() ->
         assert lines[case].endswith("|verdict=cell-range"), (case, lines[case])
     for case in ("regression.other-name", "regression.other-sheet"):
         assert lines[case].endswith("|verdict=wrong-source"), (case, lines[case])
+    # AND THE SECOND CONTRACT: a fixed-population chart plots an ordinary
+    # range, is refused when it comes back blank - as the histogram did at
+    # 10f5e62 - and is refused if the applied-year correction reaches it.
+    for case in ("literal.histogram-accepted", "literal.tornado-accepted"):
+        assert lines[case].endswith("|verdict=accepted"), (case, lines[case])
+    assert lines["literal.windows.10f5e62"].endswith("|verdict=blank-categories")
+    assert lines["literal.name-instead-of-range"].endswith("|verdict=not-a-range")
 
 
 def test_05c_the_windows_gate_reports_four_fields_per_series_and_fails_the_run() -> None:
@@ -433,10 +508,18 @@ def test_05c_the_windows_gate_reports_four_fields_per_series_and_fails_the_run()
     for field in (".formula=", ".categories=", ".values=", ".points="):
         assert code.count(field) == 1, field
     assert "$script:YearCharts = @('Cumulative Cost Profile', 'Annual Cash Flow')" in code
+    assert "$script:LiteralCharts = @('Total Cost Distribution', 'Top Drivers by Rank Correlation')" in code
     assert "$script:CategoryName = 'chartAnnual_calendar_year'" in code
     for reason in ("BLANK XValues/categories", "the whole reserved year window",
-                   "not Results!' + $script:CategoryName", "is not on the Dashboard at all"):
+                   "not Results!' + $script:CategoryName", "is not on the Dashboard at all",
+                   "its categories are an ordinary cell range",
+                   "more than the reserved year window holds"):
         assert reason in code, reason
+    # THE BLANK CHECK IS NOT SCOPED TO THE YEAR CHARTS: every chart is held to
+    # it, which is what the histogram and the tornado needed at 10f5e62.
+    blank = code.index("has BLANK XValues/categories")
+    assert code.rindex("if ([string]::IsNullOrWhiteSpace($categories)) {", 0, blank) > \
+        code.index("$isLiteralChart = ($script:LiteralCharts -contains $title)")
     assert "if ($script:Failures.Count -eq 0) { exit 0 } else { exit 1 }" in code
     assert "CHART BINDING FAIL" in code and "CHART BINDING PASS" in code
     # READ-ONLY, STILL: opened read-only, closed unsaved, no endpoint run.
@@ -446,7 +529,7 @@ def test_05c_the_windows_gate_reports_four_fields_per_series_and_fails_the_run()
         assert banned not in code, banned
     # AND THE GATE NAMES THE SAME TWO CHARTS AND THE SAME NAME THE BUILDER WRITES.
     titles = {chart["key"]: chart["title"] for chart in _projection()["charts"]}
-    for key in YEAR_CHARTS:
+    for key in ("s_curve", "annual_cash_flow", "histogram", "tornado"):
         assert f"'{titles[key]}'" in code, key
     block = _projection()["bridge"]["annual"]
     category = next(c for c in block["columns"] if c["key"] == "calendar_year")
@@ -739,19 +822,8 @@ def test_40_the_bridge_formula_writers_are_the_previous_heads_and_the_extent_cel
     now = (PCCM_ROOT / "builder" / "pccm_builder" / "workbook_builder.py").read_text(encoding="utf-8")
     before = _git_show("builder/pccm_builder/workbook_builder.py")
     for name in ("_chart_bridge_distribution", "_chart_bridge_drivers", "_chart_bridge_status",
-                 "_absent"):
+                 "_absent", "_chart_ranges"):
         assert _function_text(now, name) == _function_text(before, name), name
-    # `_chart_ranges` RESOLVES ADDRESSES, it writes no formula, and it gained
-    # one mapping: the format each bridge column declares, which the cache a
-    # named reference carries states about its own data. Lines added, none
-    # removed, and taking the addition back out reproduces the previous head.
-    ranges_now = _function_text(now, "_chart_ranges")
-    added = ('            # The format each column declares, for the cache a named reference\n'
-             '            # carries: a cache states the format of the data it holds.\n'
-             '            "formats": {str(column["key"]): str(column["format"])\n'
-             '                        for column in block["columns"]},\n')
-    assert ranges_now.count(added) == 1
-    assert ranges_now.replace(added, "") == _function_text(before, "_chart_ranges")
     old_line = '    years = f"${nominal_col}${annual[\'year_count_row\']}"\n'
     new_lines = ('    # THE ONE YEAR-COUNT AUTHORITY: the same cell the applied-year chart names\n'
                  '    # cut at (_annual_extent_cell), so a chart can never outreach its guard.\n'
@@ -782,14 +854,22 @@ def test_42_the_polish_is_declared_by_exact_reversal_to_the_previous_head() -> N
     assert ACCEPTED_BEFORE_CHART_POLISH == PREVIOUS_HEAD
     assert set(DECLARED_CHART_POLISH_CHANGES) == {
         "spec/workbook.yaml", "builder/pccm_builder/workbook_builder.py",
-        "builder/pccm_builder/phase8_charts.py", "builder/pccm_builder/spec_loader.py"}
+        "builder/pccm_builder/phase8_charts.py", "builder/pccm_builder/spec_loader.py",
+        # The structural verification, which derives the applied-year chart
+        # names from the manifest now that they are workbook-scoped.
+        "builder/pccm_builder/verify.py"}
     for name in DECLARED_CHART_POLISH_CHANGES:
         now = (PCCM_ROOT / name).read_text(encoding="utf-8")
         then = _git_show(name)
         assert now != then, name
         assert strip_chart_polish(name, now) == then, name
         assert strip_chart_polish(name, then) == then, name
-        damaged = now.replace("value_axis_scale", "value_axis_scal3", 1)
+        # A LAYER THAT IS ONLY PARTLY THERE IS REFUSED, not quietly half-taken
+        # off: one declared fragment of this file's own layer, edited.
+        from chart_polish_declaration import _HUNKS
+        first = _HUNKS[name][0][0]
+        damaged = now.replace(first, "# an undeclared edit\n", 1)
+        assert damaged != now and first not in damaged, name
         with pytest.raises(AssertionError, match="partly present"):
             strip_chart_polish(name, damaged)
 
